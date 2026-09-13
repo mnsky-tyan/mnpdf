@@ -1,0 +1,8 @@
+node_modules/
+dist/
+public/cmaps/
+public/pdf.worker.min.mjs
+public/*.pdf
+src-tauri/target/
+src-tauri/gen/schemas/
+dev-assets/

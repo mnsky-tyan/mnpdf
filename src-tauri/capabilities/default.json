@@ -1,0 +1,11 @@
+{
+  "identifier": "default",
+  "description": "mnpdf main window capabilities",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "dialog:default",
+    "core:window:allow-destroy",
+    "core:window:allow-set-title"
+  ]
+}
