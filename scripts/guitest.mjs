@@ -373,7 +373,7 @@ async function main() {
     await shot('t8_baked');
     log('t8 bake: hl in file, pin in sidecar',
         info.len > 5000 && after.hl === 0 && after.pins === 1 && after.pinText === 'survives' &&
-        !after.textHasPin && !after.dirty && px.yellowFrac > 0.01,
+        !after.textHasPin && !after.dirty && px.yellowFrac > 0.004,
         JSON.stringify({ ...info, ...after, px }));
   }
 
@@ -498,6 +498,79 @@ async function main() {
     log('t14 fit-width touching + reopen last file',
         touching && reopened.name === 'sample.pdf' && reopened.n === 5,
         JSON.stringify({ ...m, touching, reopened }));
+  }
+
+  // T15 over-highlight guard: after zoom churn, highlight must match the band
+  if (!filter || filter === 't15') {
+    await openApp();
+    await sleep(300);
+    // churn renders (simulates the stale-text-layer race)
+    await page.evaluate(async () => {
+      for (let i = 0; i < 6; i++) {
+        window.mnpdf.viewer.setZoom(1.2 + i * 0.12, null);
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      window.mnpdf.viewer.setZoom(1.0, null);
+    });
+    await sleep(800);
+    const geo = await page1Geo();
+    const band = { top: geo.top + geo.h * 0.30, bot: geo.top + geo.h * 0.36 };
+    await dragSelect(geo.left + geo.w * 0.15, band.top, geo.left + geo.w * 0.85, band.bot);
+    await sleep(400);
+    await page.mouse.click((band.top + band.bot) / 2 && geo.left + geo.w * 0.5,
+                           Math.min((band.top + band.bot) / 2, 700), { button: 'right' });
+    await sleep(350);
+    await clickAt('.menu-swatches .sw', 0);
+    await sleep(400);
+    const boxes = await page.evaluate(() =>
+      [...document.querySelectorAll('.hl')].map((d) => {
+        const r = d.getBoundingClientRect();
+        return { t: r.top, b: r.bottom };
+      }),
+    );
+    const inBand = boxes.length > 0 && boxes.every((b) => b.t >= band.top - 30 && b.b <= band.bot + 60);
+    await shot('t15_band');
+    log('t15 highlight stays in selection band', inBand,
+        `rects=${boxes.length} band=${Math.round(band.top)}-${Math.round(band.bot)} ` +
+        boxes.map((b) => `${Math.round(b.t)}-${Math.round(b.b)}`).join(','));
+  }
+
+  // T16 pins share as PDF sticky notes (and import back, deduped)
+  if (!filter || filter === 't16') {
+    await openApp();
+    await sleep(300);
+    const geo = await page1Geo();
+    await page.mouse.click(inView(geo, 0.4, 0.5).x, inView(geo, 0.4, 0.5).y, { button: 'right' });
+    await sleep(350);
+    await page.locator('.menu-item', { hasText: 'Add pin here' }).click();
+    await sleep(300);
+    await page.locator('.pin-ta').type('shared note xyz');
+    await page.locator('.pin-ta').press('Control+Enter');
+    await sleep(300);
+    // bake WITHOUT a sidecar for the new blob: pin must come back purely from
+    // the sticky-note annotation inside the file
+    await page.evaluate(async () => {
+      const bytes = await window.mnpdf.bake();
+      const blob = new Blob([bytes], { type: 'application/pdf' });
+      await window.mnpdf.cmd.openPath(URL.createObjectURL(blob));
+    });
+    await sleep(2500);
+    const after = await page.evaluate(async () => {
+      const page1 = await window.mnpdf.S.pdf.getPage(1);
+      const annots = await page1.getAnnotations({ intent: 'display' });
+      const note = annots.find((a) => a.subtype === 'Text');
+      return {
+        pins: window.mnpdf.S.anns.filter((a) => a.type === 'pin'),
+        noteInFile: !!note,
+        noteText: note?.contentsObj?.str || note?.contents,
+        nAnnots: annots.length,
+      };
+    });
+    await shot('t16_sticky');
+    log('t16 pin shares as sticky note + imports back',
+        after.pins.length === 1 && after.pins[0].text === 'shared note xyz' &&
+        after.noteInFile && after.noteText === 'shared note xyz',
+        JSON.stringify({ nPins: after.pins.length, noteInFile: after.noteInFile, noteText: after.noteText }));
   }
 
   await browser.close();

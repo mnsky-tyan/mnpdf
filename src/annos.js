@@ -48,6 +48,99 @@ function renderWrapOverlays(i, w, vp) {
 
 // ---- selection -> highlight rects ----
 
+// The browser's drag-selection overshoots badly on text layers (a 2-line drag
+// can select to the end of the page when an endpoint lands in a gap). So for
+// drags we derive highlight rects from the POINTER BAND ∩ text spans instead
+// of trusting the selection. Double-click/keyboard selections keep the
+// selection-based path.
+let dragBand = null;    // {wrapEl, x0, y0, x1, y1} viewport coords
+let bandSel = null;     // last band-derived selection info
+let bandSelAt = 0;
+
+function initDragBandTracking() {
+  document.addEventListener(
+    'pointerdown',
+    (e) => {
+      if (e.button !== 0) return;
+      const wrapEl = e.target.closest?.('.textLayer')?.closest('.pagewrap');
+      if (wrapEl) dragBand = { wrapEl, x0: e.clientX, y0: e.clientY, x1: e.clientX, y1: e.clientY };
+    },
+    true,
+  );
+  document.addEventListener(
+    'pointermove',
+    (e) => {
+      if (dragBand && e.buttons & 1) {
+        dragBand.x1 = e.clientX;
+        dragBand.y1 = e.clientY;
+      }
+    },
+    true,
+  );
+  document.addEventListener(
+    'pointerup',
+    () => {
+      if (dragBand) {
+        const derived = deriveBandSelection(dragBand);
+        if (derived) {
+          bandSel = derived;
+          bandSelAt = Date.now();
+          lastSel = derived;
+        }
+        dragBand = null;
+      }
+    },
+    true,
+  );
+}
+
+// rects covered by the pointer band: every text span the band crosses,
+// horizontally clipped to the band
+function deriveBandSelection(band) {
+  const i = +band.wrapEl.dataset.i;
+  if (!S.pageList[i]) return null;
+  const vp = viewportFor(i);
+  if (!vp) return null;
+  const wr = band.wrapEl.getBoundingClientRect();
+  const bx0 = Math.min(band.x0, band.x1), bx1 = Math.max(band.x0, band.x1);
+  const by0 = Math.min(band.y0, band.y1), by1 = Math.max(band.y0, band.y1);
+  const rects = [];
+  for (const span of band.wrapEl.querySelectorAll('.textLayer span')) {
+    const r = span.getBoundingClientRect();
+    if (r.height < 2 || r.width < 1) continue;
+    if (r.bottom < by0 - 6 || r.top > by1 + 6) continue;
+    const sx = Math.max(bx0, r.left);
+    const ex = Math.min(bx1, r.right);
+    if (ex - sx < 1) continue;
+    const p1 = vp.convertToPdfPoint(sx - wr.left, r.top - wr.top);
+    const p2 = vp.convertToPdfPoint(ex - wr.left, r.bottom - wr.top);
+    rects.push([
+      Math.min(p1[0], p2[0]), Math.min(p1[1], p2[1]),
+      Math.max(p1[0], p2[0]), Math.max(p1[1], p2[1]),
+    ]);
+  }
+  if (!rects.length) return null;
+  return {
+    srcIdx: S.pageList[i].src, rects,
+    text: String(window.getSelection() || ''),
+    band: { x0: bx0, y0: by0, x1: bx1, y1: by1 },
+  };
+}
+
+// what context menus should treat as "the selection": a recent pointer-band
+// drag wins over the (overshooting) browser selection — but only when the
+// right-click actually happened on the dragged region
+export function preferredSelection(x, y) {
+  if (
+    bandSel && Date.now() - bandSelAt < 2500 &&
+    x >= bandSel.band.x0 - 40 && x <= bandSel.band.x1 + 40 &&
+    y >= bandSel.band.y0 - 40 && y <= bandSel.band.y1 + 40
+  ) {
+    return bandSel;
+  }
+  return selectionInfo() || lastSel;
+}
+
 // Clean line rects for the selected characters: walk text nodes of the page's
 // text layer and take a sub-range per node (raw range.getClientRects() mixes in
 // container-element junk when the range ends between spans).
@@ -87,8 +180,13 @@ export function selectionInfo() {
   const vp = viewportFor(i);
   if (!vp) return null;
   const wr = wrapEl.getBoundingClientRect();
-  const clientRects = clientRectsFor(range, wrapEl.querySelector('.textLayer'), wr);
+  let clientRects = clientRectsFor(range, wrapEl.querySelector('.textLayer'), wr);
   if (!clientRects.length) return null;
+  // sanity: drop any rect far taller than the typical selected line — a stale
+  // text layer can leave overlapping spans that produce runaway rects
+  const hs = clientRects.map((r) => r.height).sort((a, b) => a - b);
+  const med = hs[Math.floor(hs.length / 2)] || 0;
+  clientRects = clientRects.filter((r) => r.height <= med * 3 + 1);
   const rects = clientRects.map((cr) => {
     const p1 = vp.convertToPdfPoint(cr.left - wr.left, cr.top - wr.top);
     const p2 = vp.convertToPdfPoint(cr.right - wr.left, cr.bottom - wr.top);
@@ -254,6 +352,7 @@ export function startPinEdit(ann, isNew = false) {
 
 export function init() {
   setOverlayRenderer(renderWrapOverlays);
+  initDragBandTracking();
   document.addEventListener('selectionchange', () => {
     clearTimeout(selTimer);
     selTimer = setTimeout(() => { lastSel = selectionInfo(); }, 120);

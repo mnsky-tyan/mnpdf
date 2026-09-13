@@ -105,7 +105,7 @@ function initContextMenu() {
         del: cmd.deletePage,
       }));
     }
-    const sel = annos.selectionInfo() || annos.lastSelection();
+    const sel = annos.preferredSelection(e.clientX, e.clientY);
     if (sel) return menuForSelection(e, sel);
     const wrapEl = e.target.closest?.('.pagewrap');
     if (wrapEl && S.pdf) return menuForPage(e, wrapEl);

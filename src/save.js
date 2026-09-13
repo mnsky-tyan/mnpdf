@@ -1,7 +1,8 @@
-// Saving: bakes highlights + page ops into the PDF with pdf-lib.
-// Edits are applied in place on the original document (preserves bookmarks);
-// if low-level page-tree surgery fails, falls back to copyPages rebuild.
-import { PDFDocument, degrees, rgb, PDFName } from 'pdf-lib';
+// Saving: bakes highlights, pins (as real PDF sticky-note annotations) and page
+// ops into the PDF with pdf-lib. Edits are applied in place on the original
+// document (preserves bookmarks); if low-level page-tree surgery fails, falls
+// back to copyPages rebuild.
+import { PDFDocument, PDFArray, PDFHexString, PDFName, PDFString, degrees, rgb } from 'pdf-lib';
 import { S } from './state.js';
 import { hexRgb } from './util.js';
 
@@ -34,7 +35,60 @@ export async function bake() {
     }
   }
 
-  // 2. page rotations
+  // 2. pins → PDF "Text" (sticky note) annotations, synced: adds new/changed
+  // pins, drops our own annotations for deleted pins, never touches foreign
+  // annotations (only ones mnpdf wrote carry the Mnpdf marker key)
+  const matchPin = (text, x, y) =>
+    S.anns.find(
+      (a) =>
+        a.type === 'pin' && a.text === text &&
+        Math.abs(a.x - x) < 12 && Math.abs(a.y - y) < 12,
+    );
+  const synced = new Set();
+  for (const page of pages) {
+    const annots = page.node.lookupMaybe(PDFName.of('Annots'), PDFArray);
+    if (!annots) continue;
+    for (let i = annots.size() - 1; i >= 0; i--) {
+      const dict = doc.context.lookup(annots.get(i));
+      if (!dict || String(dict.get(PDFName.of('Subtype'))) !== '/Text') continue;
+      if (!dict.get(PDFName.of('Mnpdf'))) continue;
+      let text = '', x = 0, y = 0;
+      try { text = dict.lookup(PDFName.of('Contents')).decodeText(); } catch {}
+      try {
+        const r = dict.lookup(PDFName.of('Rect'));
+        x = (r.getNumber(0) + r.getNumber(2)) / 2;
+        y = (r.getNumber(1) + r.getNumber(3)) / 2;
+      } catch {}
+      const pin = matchPin(text, x, y);
+      if (pin) synced.add(pin.id);
+      else annots.remove(i);
+    }
+  }
+  for (const a of S.anns) {
+    if (a.type !== 'pin' || !a.text || synced.has(a.id)) continue;
+    const page = pages[a.page];
+    if (!page) continue;
+    const annot = doc.context.obj({
+      Type: 'Annot',
+      Subtype: 'Text',
+      Rect: [a.x - 8, a.y - 8, a.x + 8, a.y + 8], // centered on the pin point
+      Contents: PDFHexString.fromText(a.text),
+      F: 4, // print flag
+      C: [0.9, 0.28, 0.3],
+      Name: PDFName.of('Commentary'),
+      M: PDFString.of(new Date().toISOString()),
+      Mnpdf: PDFName.of('yes'),
+    });
+    const annotRef = doc.context.register(annot);
+    let annots = page.node.lookupMaybe(PDFName.of('Annots'), PDFArray);
+    if (!annots) {
+      annots = doc.context.obj([]);
+      page.node.set(PDFName.of('Annots'), annots);
+    }
+    annots.push(annotRef);
+  }
+
+  // 3. page rotations
   for (const p of S.pageList) {
     const page = pages[p.src];
     if (!page) continue;
@@ -42,6 +96,7 @@ export async function bake() {
     page.setRotation(degrees(total));
   }
 
+  // 4. delete + reorder pages, in place to keep the outline intact
 
   // 3. delete + reorder pages, in place to keep the outline intact
   const wanted = S.pageList.map((p) => p.src);

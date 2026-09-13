@@ -19,7 +19,7 @@ Built with [Tauri 2](https://tauri.app) + [pdf.js](https://mozilla.github.io/pdf
 | Highlight text | select text (nothing pops up), then **right-click** the selection → pick a color. Highlighting over an existing highlight **replaces** it (no stacking) |
 | Copy text | select text → right-click → *Copy text* (or Ctrl+C) |
 | Delete a highlight | right-click on the highlight → *Delete highlight* |
-| Text pins | right-click anywhere on a page → *Add pin here* → type → Ctrl+Enter. A small red dot stays on the page; **hovering shows the text**, clicking the dot re-opens the editor, right-click offers Edit/Delete |
+| Text pins | right-click anywhere on a page → *Add pin here* → type → Ctrl+Enter. A small red dot appears immediately; **hovering shows the text**, clicking the dot re-opens the editor, right-click offers Edit/Delete. On save, pins become real PDF sticky-note comments — **other people see them** in Acrobat, Edge, Chrome, Firefox (click the note icon) |
 | Undo / redo | Ctrl+Z / Ctrl+Y or right-click → *Undo* / *Redo* (covers highlights, pins, page ops) |
 | Find text | Ctrl+F (or `/`), Enter / F3 / Shift+F3 to jump matches |
 | Thumbnails | F9 or right-click → *Thumbnails* (click to jump, drag to reorder, right-click to rotate/delete) |
@@ -41,15 +41,15 @@ document** at its saved zoom/page.
 ## Where your edits live
 
 - **Highlights** are baked into the PDF when you save (permanently, like ink).
-- **Pins are not saved into the PDF at all** — their text is hover-only, so it
-  lives in a small JSON sidecar per document (app data folder) together with your
-  zoom level, page, and unsaved highlights. Pins survive closing, reopening, and
-  saving, but they exist only inside mnpdf and won't appear in other viewers.
-  **If you share the PDF, nobody sees your pin text — it isn't in the file.**
-
-Unsaved highlights are also kept in the sidecar, so closing accidentally loses
-nothing. On close with unsaved highlights you get one plain **"Save changes?" —
-Yes/No** prompt.
+  Highlighting over an existing highlight replaces it instead of stacking.
+- **Pins are saved as standard PDF sticky-note (Text) annotations** — so anyone
+  you share the file with can read them in a normal PDF viewer. Inside mnpdf
+  they render as hover dots; sticky notes from other tools show up here as pins
+  too. Deleting a pin in mnpdf removes its sticky note on the next save.
+- Zoom level, page, and in-progress edits are additionally mirrored in a small
+  JSON sidecar per document (app data folder), so closing accidentally loses
+  nothing. On close with unsaved highlights you get one plain **"Save changes?" —
+  Yes/No** prompt.
 
 ## Deliberate limitations
 

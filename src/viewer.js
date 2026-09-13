@@ -89,7 +89,10 @@ export function viewportFor(i) {
 }
 
 export function buildPages() {
-  wraps.forEach((w) => { try { w.task?.cancel(); } catch {} });
+  wraps.forEach((w) => {
+    try { w.task?.cancel(); } catch {}
+    try { w.tlObj?.cancel(); } catch {}
+  });
   pagesEl.replaceChildren();
   wraps = S.pageList.map((_, i) => {
     const wrapEl = document.createElement('div');
@@ -105,6 +108,7 @@ export function buildPages() {
       hl: wrapEl.querySelector('.hl-layer'),
       find: wrapEl.querySelector('.find-layer'),
       tl: wrapEl.querySelector('.textLayer'),
+      tlObj: null,
       notes: wrapEl.querySelector('.note-layer'),
       key: null,
       task: null,
@@ -237,7 +241,10 @@ async function renderPage(i) {
     return;
   }
   if (w.key !== key) return;
-  // text layer (selection)
+  // text layer (selection). Cancel any in-flight layer first — a stale layer
+  // would keep appending spans into the fresh one and corrupt selection.
+  try { w.tlObj?.cancel(); } catch {}
+  w.tlObj = null;
   w.tl.replaceChildren();
   try {
     const tl = new pdfjsLib.TextLayer({
@@ -245,17 +252,24 @@ async function renderPage(i) {
       container: w.tl,
       viewport: vp,
     });
+    w.tlObj = tl;
     await tl.render();
   } catch (e) {
     if (!isCancel(e)) console.warn('textlayer', e);
   }
-  if (w.key !== key) w.tl.replaceChildren();
+  if (w.key !== key) {
+    try { w.tlObj?.cancel(); } catch {}
+    w.tlObj = null;
+    w.tl.replaceChildren();
+  }
 }
 
 function maybeDestroy(i) {
   const w = wraps[i];
   if (!w || !w.key) return;
   try { w.task?.cancel(); } catch {}
+  try { w.tlObj?.cancel(); } catch {}
+  w.tlObj = null;
   w.canvas.width = 1;
   w.canvas.height = 1;
   w.tl.replaceChildren();

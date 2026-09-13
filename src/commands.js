@@ -99,6 +99,28 @@ async function openBytes(bytes, path, name) {
 
   await viewer.prefetchSizes();
 
+  // import existing sticky-note (Text) annotations as pins — so PDFs annotated
+  // elsewhere show their comments here; our own baked pins dedupe below
+  const importedPins = [];
+  for (let src = 0; src < Math.min(S.nPages, 250); src++) {
+    try {
+      const p = await viewer.ensurePage(src);
+      const annots = await p.getAnnotations({ intent: 'display' });
+      for (const an of annots) {
+        const text = an.contentsObj?.str || an.contents || '';
+        if (an.subtype !== 'Text' || !text || !Array.isArray(an.rect)) continue;
+        importedPins.push({
+          id: crypto.randomUUID?.() || 'pin-' + Math.random().toString(36).slice(2),
+          type: 'pin',
+          page: src,
+          x: (an.rect[0] + an.rect[2]) / 2,
+          y: (an.rect[1] + an.rect[3]) / 2,
+          text,
+        });
+      }
+    } catch {}
+  }
+
   let top = 0;
   const st = path ? await loadDocState(path) : null;
   if (st) {
@@ -113,6 +135,16 @@ async function openBytes(bytes, path, name) {
     if (bakedEdits || S.pageList.length !== S.nPages || S.pageList.some((p) => p.rot % 360 !== 0)) {
       markDirty(); // recovered unsaved highlight/page edits
     }
+  }
+  for (const ip of importedPins) {
+    // our own baked pins already live in the sidecar — skip duplicates
+    // (pdf.js normalizes annotation rects, so allow ~12pt of drift)
+    const dup = S.anns.some(
+      (a) =>
+        a.type === 'pin' && a.text === ip.text &&
+        Math.abs(a.x - ip.x) < 12 && Math.abs(a.y - ip.y) < 12,
+    );
+    if (!dup) S.anns.push(ip);
   }
   if (S.zoom === 0.5) S.zoom = viewer.fitZoom();
   if (S.zoom === 0.5) S.zoom = keepZoom > 0.25 && keepZoom < 6 ? keepZoom : 1;
