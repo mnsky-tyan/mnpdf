@@ -15,6 +15,9 @@ export async function bake() {
   }
   const pages = doc.getPages();
   const refOf = new Map(pages.map((p, i) => [i, p.ref]));
+  // NOTE: pdf.js coordinates (pins, highlight rects) are already in raw PDF
+  // user space — crop/rotation are view-level only — so they map 1:1 into
+  // pdf-lib's drawing/annotation coordinates. No translation needed.
 
   // 1. bake highlights only — pins are an app-layer sidecar feature (their text
   // is hover-only, so it must never be printed onto the page)
@@ -45,9 +48,9 @@ export async function bake() {
         Math.abs(a.x - x) < 12 && Math.abs(a.y - y) < 12,
     );
   const synced = new Set();
-  for (const page of pages) {
+  pages.forEach((page) => {
     const annots = page.node.lookupMaybe(PDFName.of('Annots'), PDFArray);
-    if (!annots) continue;
+    if (!annots) return;
     for (let i = annots.size() - 1; i >= 0; i--) {
       const dict = doc.context.lookup(annots.get(i));
       if (!dict || String(dict.get(PDFName.of('Subtype'))) !== '/Text') continue;
@@ -63,7 +66,7 @@ export async function bake() {
       if (pin) synced.add(pin.id);
       else annots.remove(i);
     }
-  }
+  });
   for (const a of S.anns) {
     if (a.type !== 'pin' || !a.text || synced.has(a.id)) continue;
     const page = pages[a.page];
