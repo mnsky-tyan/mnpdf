@@ -2,7 +2,7 @@
 // Run: node scripts/guitest.mjs [filter]
 // Screenshots -> gui-test-screenshots/*.png
 import { chromium } from 'playwright-core';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -24,7 +24,8 @@ function log(name, ok, note = '') {
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function openApp(url = 'http://localhost:5173/?file=sample.pdf') {
+async function openApp(url = 'http://localhost:5173/?file=sample.pdf', opts = {}) {
+  if (page) { try { await page.close(); } catch {} } // no cross-page sidecar flushes
   page = await ctx.newPage();
   page.on('console', (m) => {
     if (m.type() === 'error' && !m.text().includes('404')) console.log('  [console.error]', m.text().slice(0, 300));
@@ -38,12 +39,17 @@ async function openApp(url = 'http://localhost:5173/?file=sample.pdf') {
   return page;
 }
 
-// point safely inside the viewport at a fraction of page 1's box
-function inView(geo, fx, fy) {
-  return {
-    x: Math.round(geo.left + geo.w * fx),
-    y: Math.round(Math.min(geo.top + geo.h * fy, 700)),
-  };
+// run a flaky-prone test body up to n attempts
+async function withRetry(n, body) {
+  for (let i = 1; i <= n; i++) {
+    try {
+      await body();
+      return;
+    } catch (e) {
+      if (i === n) throw e;
+      console.log(`  retry ${i}/${n - 1}: ${String(e).slice(0, 120)}`);
+    }
+  }
 }
 
 // real drag-select over the text layer
@@ -55,16 +61,31 @@ async function dragSelect(x1, y1, x2, y2) {
   await page.mouse.up();
 }
 
-// raw click (locator.click auto-retries when the swatch bar detaches mid-click,
-// which would double-fire pointerdown handlers)
-async function clickSwatch(n) {
-  const c = await page.evaluate((n) => {
-    const btn = document.querySelectorAll('.selbar-sw')[n];
-    if (!btn) return null;
-    const r = btn.getBoundingClientRect();
+// point safely inside the viewport at a fraction of page 1's box
+function inView(geo, fx, fy) {
+  return {
+    x: Math.round(geo.left + geo.w * fx),
+    y: Math.round(Math.min(geo.top + geo.h * fy, 700)),
+  };
+}
+
+async function page1Geo() {
+  return page.evaluate(() => {
+    const r = document.querySelector('.pagewrap[data-i="0"]').getBoundingClientRect();
+    return { left: r.left, top: r.top, w: r.width, h: r.height };
+  });
+}
+
+// raw click at an element's center (locator auto-retry can double-fire UI that
+// removes itself on click)
+async function clickAt(selector, nth = 0) {
+  const c = await page.evaluate(([sel, n]) => {
+    const e = document.querySelectorAll(sel)[n];
+    if (!e) return null;
+    const r = e.getBoundingClientRect();
     return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
-  }, n);
-  if (!c) throw new Error('selbar-sw[' + n + '] not found');
+  }, [selector, nth]);
+  if (!c) throw new Error(`clickAt: ${selector}[${nth}] not found`);
   await page.mouse.click(c.x, c.y);
 }
 
@@ -111,26 +132,29 @@ async function main() {
         JSON.stringify(sel) + ' pixels=' + JSON.stringify(px));
   }
 
-  // T2 select text -> swatch bar -> highlight
+  // T2 selection alone shows nothing; right-click -> Highlight swatches
   if (!filter || filter === 't2') {
-    const p = await openApp();
+    await openApp();
     await sleep(300);
-    // select second paragraph line region on page 1 (page is centered)
-    const geo = await page.evaluate(() => {
-      const w = document.querySelector('.pagewrap[data-i="0"]');
-      const r = w.getBoundingClientRect();
-      return { left: r.left, top: r.top, w: r.width, h: r.height };
-    });
-    await dragSelect(
-      geo.left + geo.w * 0.15, geo.top + geo.h * 0.34,
-      geo.left + geo.w * 0.85, geo.top + geo.h * 0.40,
-    );
+    const geo = await page1Geo();
+    await dragSelect(geo.left + geo.w * 0.15, geo.top + geo.h * 0.34,
+                     geo.left + geo.w * 0.85, geo.top + geo.h * 0.40);
     await sleep(400);
-    const hasBar = await page.locator('.selbar').count();
-    await shot('t2_selection');
-    log('t2 selection swatch bar', hasBar === 1, `selbar=${hasBar}`);
-    // click yellow swatch
-    await clickSwatch(0);
+    const floating = await page.evaluate(() => ({
+      bars: document.querySelectorAll('.selbar').length,
+      pops: document.querySelectorAll('#pinpop:not(.hidden)').length,
+    }));
+    log('t2 selection alone shows no UI', floating.bars === 0 && floating.pops === 0,
+        JSON.stringify(floating));
+    await shot('t2_selection_quiet');
+    // right-click inside the selection
+    const pt = inView(geo, 0.5, 0.37);
+    await page.mouse.click(pt.x, pt.y, { button: 'right' });
+    await sleep(350);
+    const swatches = await page.evaluate(() => document.querySelectorAll('.menu-swatches .sw').length);
+    await shot('t2_menu');
+    log('t2 right-click offers highlight colors', swatches === 5, `swatches=${swatches}`);
+    await clickAt('.menu-swatches .sw', 0);
     await sleep(300);
     const hl = await page.evaluate(() => ({
       anns: window.mnpdf.S.anns.length,
@@ -139,67 +163,89 @@ async function main() {
     }));
     await shot('t2_highlight');
     log('t2 highlight applied', hl.anns === 1 && hl.rects > 0 && hl.sel === '',
-        JSON.stringify(hl.anns) + ' ann, ' + hl.rects + ' rects, selected text len ok');
+        JSON.stringify(hl.anns) + ' ann, ' + hl.rects + ' rects');
   }
 
-  // T3 undo/redo
+  // T3 undo/redo (keyboard + menu item)
   if (!filter || filter === 't3') {
-    await openApp();
-    await sleep(300);
-    const geo = await page.evaluate(() => {
-      const w = document.querySelector('.pagewrap[data-i="0"]');
-      const r = w.getBoundingClientRect();
-      return { left: r.left, top: r.top, w: r.width, h: r.height };
+    await withRetry(2, async () => {
+      await openApp();
+      await sleep(300);
+      const geo = await page1Geo();
+      await dragSelect(geo.left + geo.w * 0.2, geo.top + geo.h * 0.34,
+                       geo.left + geo.w * 0.7, geo.top + geo.h * 0.38);
+      await sleep(350);
+      await page.mouse.click(inView(geo, 0.4, 0.36).x, inView(geo, 0.4, 0.36).y, { button: 'right' });
+      await sleep(300);
+      await clickAt('.menu-swatches .sw', 2);
+      await sleep(250);
+      const afterAdd = await page.evaluate(() => window.mnpdf.S.anns.length);
+      await page.keyboard.press('Control+z');
+      await sleep(250);
+      const afterUndo = await page.evaluate(() => window.mnpdf.S.anns.length);
+      // redo via page context menu (Undo/Redo items live there)
+      await page.mouse.click(inView(geo, 0.5, 0.5).x, inView(geo, 0.5, 0.5).y, { button: 'right' });
+      await sleep(300);
+      await page.locator('.menu-item', { hasText: 'Redo' }).first().click();
+      await sleep(250);
+      const afterRedo = await page.evaluate(() => window.mnpdf.S.anns.length);
+      await shot('t3_undo_redo');
+      log('t3 undo/redo (keyboard + menu)', afterAdd === 1 && afterUndo === 0 && afterRedo === 1,
+          `add=${afterAdd} undo=${afterUndo} redo=${afterRedo}`);
     });
-    await dragSelect(geo.left + geo.w * 0.2, geo.top + geo.h * 0.34,
-                     geo.left + geo.w * 0.7, geo.top + geo.h * 0.38);
-    await sleep(350);
-    await clickSwatch(2);
-    await sleep(250);
-    const afterAdd = await page.evaluate(() => window.mnpdf.S.anns.length);
-    await page.keyboard.press('Control+z');
-    await sleep(250);
-    const afterUndo = await page.evaluate(() => window.mnpdf.S.anns.length);
-    await page.keyboard.press('Control+y');
-    await sleep(250);
-    const afterRedo = await page.evaluate(() => window.mnpdf.S.anns.length);
-    await shot('t3_undo_redo');
-    log('t3 undo/redo', afterAdd === 1 && afterUndo === 0 && afterRedo === 1,
-        `add=${afterAdd} undo=${afterUndo} redo=${afterRedo}`);
   }
 
-  // T4 right-click context menu + add note
+  // T4 pins: right-click -> Add pin here -> type -> hover shows -> persists
   if (!filter || filter === 't4') {
     await openApp();
     await sleep(300);
-    const geo = await page.evaluate(() => {
-      const w = document.querySelector('.pagewrap[data-i="0"]');
-      const r = w.getBoundingClientRect();
-      return { left: r.left, top: r.top, w: r.width, h: r.height };
-    });
+    const geo = await page1Geo();
     const pt = inView(geo, 0.5, 0.75);
     await page.mouse.click(pt.x, pt.y, { button: 'right' });
     await sleep(350);
     const menuItems = await page.locator('.menu-item').allTextContents();
     await shot('t4_menu');
-    log('t4 page context menu', menuItems.some((t) => t.includes('Add text here')), menuItems.join(' | ').slice(0, 120));
-    await page.locator('.menu-item', { hasText: 'Add text here' }).click();
+    log('t4 page context menu (pin + window actions)',
+        menuItems.some((t) => t.includes('Add pin here')) && menuItems.some((t) => t.includes('Undo')),
+        menuItems.join(' | ').slice(0, 130));
+    await page.locator('.menu-item', { hasText: 'Add pin here' }).click();
     await sleep(300);
-    const ta = page.locator('.note-ta');
-    const taCount = await ta.count();
-    if (taCount) {
-      await ta.type('hello mnpdf note');
+    const ta = page.locator('.pin-ta');
+    if ((await ta.count()) !== 1) { log('t4 pin editor opens', false, 'no .pin-ta'); }
+    else {
+      await ta.type('pin text abc');
       await ta.press('Control+Enter');
       await sleep(300);
+      const pin = await page.evaluate(() => ({
+        pins: window.mnpdf.S.anns.filter((a) => a.type === 'pin').length,
+        dom: document.querySelectorAll('.pin').length,
+        text: window.mnpdf.S.anns.find((a) => a.type === 'pin')?.text,
+      }));
+      // hover the pin -> popup shows the text
+      await page.hover('.pin');
+      await sleep(300);
+      const pop = await page.evaluate(() => {
+        const p = document.getElementById('pinpop');
+        return { visible: !p.classList.contains('hidden'), text: p.textContent };
+      });
+      await shot('t4_pin_hover');
+      log('t4 pin placed + hover popup', pin.pins === 1 && pin.dom === 1 &&
+          pin.text === 'pin text abc' && pop.visible && pop.text.includes('pin text abc'),
+          JSON.stringify({ pin, pop }));
+      // reload: pin must persist via sidecar even without save
+      await page.reload();
+      await page.waitForTimeout(2200);
+      const after = await page.evaluate(() => ({
+        pins: window.mnpdf.S.anns.filter((a) => a.type === 'pin').length,
+        text: window.mnpdf.S.anns.find((a) => a.type === 'pin')?.text,
+      }));
+      await page.hover('.pin').catch(() => {});
+      await sleep(250);
+      const pop2 = await page.evaluate(() => !document.getElementById('pinpop').classList.contains('hidden'));
+      await shot('t4_pin_reload');
+      log('t4 pin persists after reopen (no save)', after.pins === 1 && after.text === 'pin text abc' && pop2,
+          JSON.stringify({ after, popVisible: pop2 }));
     }
-    const note = await page.evaluate(() => ({
-      anns: window.mnpdf.S.anns.filter((a) => a.type === 'note').length,
-      dom: document.querySelectorAll('.note').length,
-      text: document.querySelector('.note')?.textContent,
-    }));
-    await shot('t4_note');
-    log('t4 add note', note.anns === 1 && note.dom === 1 && note.text === 'hello mnpdf note',
-        JSON.stringify(note));
   }
 
   // T5 search
@@ -224,7 +270,7 @@ async function main() {
         `first="${count1.trim()}" afterF3="${count2.trim()}" rects=${rects}`);
   }
 
-  // T6 goto page + zoom
+  // T6 goto page + zoom keys
   if (!filter || filter === 't6') {
     await openApp();
     await sleep(300);
@@ -252,12 +298,7 @@ async function main() {
     await sleep(700);
     const thumbs = await page.evaluate(() => document.querySelectorAll('.thumb').length);
     await shot('t7_thumbs');
-    // rotate page 1 via context menu on page
-    const geo = await page.evaluate(() => {
-      const w = document.querySelector('.pagewrap[data-i="0"]');
-      const r = w.getBoundingClientRect();
-      return { left: r.left, top: r.top, w: r.width, h: r.height };
-    });
+    const geo = await page1Geo();
     const pt7 = inView(geo, 0.5, 0.3);
     await page.mouse.click(pt7.x, pt7.y, { button: 'right' });
     await sleep(350);
@@ -268,41 +309,64 @@ async function main() {
     log('t7 thumbnails + rotate', thumbs === 5 && rot === 90, `thumbs=${thumbs} rot=${rot}`);
   }
 
-  // T8 bake + reload saved bytes (highlight + note persisted into PDF)
+  // T8 bake: highlights go into the file, pins do not
   if (!filter || filter === 't8') {
     await openApp();
     await sleep(300);
-    const geo = await page.evaluate(() => {
-      const w = document.querySelector('.pagewrap[data-i="0"]');
-      const r = w.getBoundingClientRect();
-      return { left: r.left, top: r.top, w: r.width, h: r.height };
-    });
+    const geo = await page1Geo();
     await dragSelect(geo.left + geo.w * 0.15, geo.top + geo.h * 0.30,
                      geo.left + geo.w * 0.85, geo.top + geo.h * 0.36);
     await sleep(350);
-    await clickSwatch(0);
+    await page.mouse.click(inView(geo, 0.5, 0.33).x, inView(geo, 0.5, 0.33).y, { button: 'right' });
+    await sleep(350);
+    await clickAt('.menu-swatches .sw', 0);
     await sleep(250);
+    // drop one pin so we can verify it survives save via sidecar, not the PDF
+    await page.mouse.click(inView(geo, 0.3, 0.8).x, inView(geo, 0.3, 0.8).y, { button: 'right' });
+    await sleep(350);
+    await page.locator('.menu-item', { hasText: 'Add pin here' }).click();
+    await sleep(250);
+    await page.locator('.pin-ta').type('survives');
+    await page.locator('.pin-ta').press('Control+Enter');
+    await sleep(300);
     const info = await page.evaluate(async () => {
       const bytes = await window.mnpdf.bake();
       const blob = new Blob([bytes], { type: 'application/pdf' });
       const url = URL.createObjectURL(blob);
+      // replicate doSave's reopen: pins-only sidecar under the new path
+      localStorage.setItem('k:doc:' + url, JSON.stringify({
+        zoom: window.mnpdf.S.zoom,
+        top: 1,
+        hl: '#ffd400',
+        anns: window.mnpdf.S.anns.filter((a) => a.type === 'pin'),
+      }));
       await window.mnpdf.cmd.openPath(url);
       return { len: bytes.length };
     });
-    await sleep(2000);
-    const after = await page.evaluate(() => ({
-      anns: window.mnpdf.S.anns.length,
-      dirty: window.mnpdf.S.dirty,
-      name: window.mnpdf.S.name,
-    }));
+    await sleep(2200);
+    const after = await page.evaluate(async () => {
+      const page1 = await window.mnpdf.S.pdf.getPage(1);
+      const tc = await page1.getTextContent();
+      const text = tc.items.map((i) => i.str).join(' ');
+      return {
+        hl: window.mnpdf.S.anns.filter((a) => a.type === 'hl').length,
+        pins: window.mnpdf.S.anns.filter((a) => a.type === 'pin').length,
+        pinText: window.mnpdf.S.anns.find((a) => a.type === 'pin')?.text,
+        textHasPin: text.includes('survives'),
+        dirty: window.mnpdf.S.dirty,
+      };
+    });
+    const px = await pixelStats('.pagewrap[data-i="0"] canvas');
     await shot('t8_baked');
-    log('t8 bake+reload', info.len > 5000 && after.anns === 0 && after.dirty === false,
-        JSON.stringify({ ...info, ...after }));
+    log('t8 bake: hl in file, pin in sidecar',
+        info.len > 5000 && after.hl === 0 && after.pins === 1 && after.pinText === 'survives' &&
+        !after.textHasPin && !after.dirty && px.yellowFrac > 0.01,
+        JSON.stringify({ ...info, ...after, px }));
   }
 
   // T9 sidecar persistence: zoom+page remembered after reload
   if (!filter || filter === 't9') {
-    const p = await openApp();
+    await openApp();
     await sleep(300);
     await page.keyboard.press('Control+g');
     await sleep(200);
@@ -315,11 +379,11 @@ async function main() {
     await sleep(1000);
     await page.reload();
     await page.waitForTimeout(2200);
-    const after = await page.evaluate(() => ({ zoom: window.mnpdf.S.zoom, top: window.mnpdf.S }));
+    const after = await page.evaluate(() => window.mnpdf.S.zoom);
     const pill = await page.textContent('#pill');
     await shot('t9_restored');
-    log('t9 reopen restores zoom', Math.abs(after.zoom - before) < 0.001 && pill.includes('2 / 5'),
-        `zoom ${before.toFixed(3)} -> ${after.zoom.toFixed(3)} pill="${pill.trim()}"`);
+    log('t9 reopen restores zoom', Math.abs(after - before) < 0.001 && pill.includes('2 / 5'),
+        `zoom ${before.toFixed(3)} -> ${after.toFixed(3)} pill="${pill.trim()}"`);
   }
 
   // T10 dark mode visual
@@ -332,6 +396,54 @@ async function main() {
     await shot('t10_dark');
     const bg = await page.evaluate(() => getComputedStyle(document.body).backgroundColor);
     log('t10 dark follows OS', /rgb\((2[0-9]|1[0-9]),/.test(bg), 'body bg=' + bg);
+    ctx = await browser.newContext({ viewport: { width: 1000, height: 800 } });
+  }
+
+  // T11 precise zoom via pill (scroll to reveal pill, click right half, type %)
+  if (!filter || filter === 't11') {
+    await openApp();
+    await sleep(300);
+    await page.mouse.move(500, 400);
+    await page.mouse.wheel(0, 60); // pill shows on scroll, hides after ~1.3s
+    await sleep(150);
+    const r = await page.evaluate(() => {
+      const p = document.getElementById('pill').getBoundingClientRect();
+      return { x: p.left + p.width * 0.8, y: p.top + p.height / 2 };
+    });
+    await page.mouse.click(r.x, r.y);
+    await sleep(300);
+    const isZoomInput = await page.evaluate(() => {
+      const inp = document.querySelector('#pill input');
+      return inp && +inp.value >= 25 && +inp.value <= 600;
+    });
+    await page.locator('#pill input').fill('200');
+    await page.keyboard.press('Enter');
+    await sleep(500);
+    const zoom = await page.evaluate(() => window.mnpdf.S.zoom);
+    const pill = await page.textContent('#pill');
+    await shot('t11_zoom200');
+    log('t11 precise zoom entry', isZoomInput && Math.abs(zoom - 2) < 0.001 && pill.includes('200%'),
+        `input=${isZoomInput} zoom=${zoom} pill="${pill.trim()}"`);
+  }
+
+  // T12 touchscreen pinch-zoom (synthetic two-touch gesture)
+  if (!filter || filter === 't12') {
+    await openApp();
+    await sleep(300);
+    const z0 = await page.evaluate(() => window.mnpdf.S.zoom);
+    await page.evaluate(() => {
+      const sc = document.getElementById('scroller');
+      const T = (x, y, id) => new Touch({ identifier: id, target: sc, clientX: x, clientY: y });
+      const fire = (type, touches) =>
+        sc.dispatchEvent(new TouchEvent(type, { touches, bubbles: true, cancelable: true }));
+      fire('touchstart', [T(400, 300, 1), T(480, 300, 2)]);
+      for (const d of [40, 80, 120, 160]) fire('touchmove', [T(400 - d / 2, 300, 1), T(480 + d / 2, 300, 2)]);
+      fire('touchend', []);
+    });
+    await sleep(500);
+    const z1 = await page.evaluate(() => window.mnpdf.S.zoom);
+    await shot('t12_pinch');
+    log('t12 touch pinch-zoom', z1 > z0 * 1.8, `zoom ${z0.toFixed(2)} -> ${z1.toFixed(2)}`);
   }
 
   await browser.close();

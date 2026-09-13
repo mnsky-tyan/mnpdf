@@ -1,19 +1,9 @@
-// Saving: bakes highlights + notes + page ops into the PDF with pdf-lib.
+// Saving: bakes highlights + page ops into the PDF with pdf-lib.
 // Edits are applied in place on the original document (preserves bookmarks);
 // if low-level page-tree surgery fails, falls back to copyPages rebuild.
-import { PDFDocument, StandardFonts, degrees, rgb, PDFName } from 'pdf-lib';
+import { PDFDocument, degrees, rgb, PDFName } from 'pdf-lib';
 import { S } from './state.js';
 import { hexRgb } from './util.js';
-
-// pdf-lib standard fonts encode WinAnsi; replace anything else with '?'.
-function sanitize(t) {
-  let out = '';
-  for (const ch of t) {
-    const c = ch.codePointAt(0);
-    out += c === 10 || (c >= 32 && c <= 126) || (c >= 160 && c <= 255) ? ch : '?';
-  }
-  return out;
-}
 
 export async function bake() {
   let doc;
@@ -22,38 +12,24 @@ export async function bake() {
   } catch (e) {
     throw new Error('cannot parse PDF for saving: ' + (e?.message || e));
   }
-  const font = await doc.embedFont(StandardFonts.Helvetica);
   const pages = doc.getPages();
   const refOf = new Map(pages.map((p, i) => [i, p.ref]));
-  const rotOf = (srcIdx) => S.pageList.find((p) => p.src === srcIdx)?.rot ?? 0;
 
-  // 1. bake annotations (coordinates are stored in unrotated user space)
+  // 1. bake highlights only — pins are an app-layer sidecar feature (their text
+  // is hover-only, so it must never be printed onto the page)
   for (const a of S.anns) {
+    if (a.type !== 'hl') continue;
     const page = pages[a.page];
     if (!page) continue;
-    const rot = ((rotOf(a.page) % 360) + 360) % 360;
-    if (a.type === 'hl') {
-      const [r, g, b] = hexRgb(a.color);
-      for (const [x1, y1, x2, y2] of a.rects) {
-        page.drawRectangle({
-          x: Math.min(x1, x2),
-          y: Math.min(y1, y2),
-          width: Math.abs(x2 - x1) || 1,
-          height: Math.abs(y2 - y1) || 1,
-          color: rgb(r / 255, g / 255, b / 255),
-          opacity: 0.4,
-        });
-      }
-    } else if (a.type === 'note' && a.text) {
-      const [r, g, b] = hexRgb(a.color);
-      page.drawText(sanitize(a.text), {
-        x: a.x,
-        y: a.y - a.size * 0.8,
-        size: a.size,
-        font,
+    const [r, g, b] = hexRgb(a.color);
+    for (const [x1, y1, x2, y2] of a.rects) {
+      page.drawRectangle({
+        x: Math.min(x1, x2),
+        y: Math.min(y1, y2),
+        width: Math.abs(x2 - x1) || 1,
+        height: Math.abs(y2 - y1) || 1,
         color: rgb(r / 255, g / 255, b / 255),
-        lineHeight: a.size * 1.25,
-        rotate: degrees(-rot),
+        opacity: 0.4,
       });
     }
   }
@@ -65,6 +41,7 @@ export async function bake() {
     const total = (((page.getRotation().angle ?? 0) + p.rot) % 360 + 360) % 360;
     page.setRotation(degrees(total));
   }
+
 
   // 3. delete + reorder pages, in place to keep the outline intact
   const wanted = S.pageList.map((p) => p.src);

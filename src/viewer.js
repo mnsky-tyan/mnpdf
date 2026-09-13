@@ -343,22 +343,33 @@ export function updatePill(sticky = false) {
   }
 }
 
-export function pillGotoMode(onEnter, onExit) {
+// mode 'page': type a page number. mode 'zoom': type a percentage.
+export function pillGotoMode(mode = 'page') {
   if (gotoEdit) return;
   const saved = pill.textContent;
   pill.classList.remove('hidden');
   pill.innerHTML = '';
   const inp = document.createElement('input');
-  inp.value = pill.dataset.cur || '1';
+  if (mode === 'zoom') {
+    inp.value = String(Math.round(S.zoom * 100));
+    inp.title = 'Zoom percent (25–600)';
+  } else {
+    inp.value = pill.dataset.cur || '1';
+    inp.title = 'Page number';
+  }
   pill.appendChild(inp);
   inp.focus();
   inp.select();
   const done = (ok) => {
-    const v = parseInt(inp.value, 10);
+    const v = parseFloat(inp.value);
     pill.textContent = saved;
     gotoEdit = null;
-    if (ok && Number.isFinite(v)) goToDisplayPage(v - 1);
-    onExit?.();
+    if (!ok || !Number.isFinite(v)) return;
+    if (mode === 'zoom') {
+      if (v >= 25 && v <= 600) setZoom(v / 100, zoomAnchorCenter());
+    } else {
+      goToDisplayPage(v - 1);
+    }
   };
   gotoEdit = { done };
   inp.addEventListener('keydown', (e) => {
@@ -405,7 +416,43 @@ export function init() {
     positionOverlays();
   }, 120));
 
-  pill.addEventListener('click', () => pillGotoMode());
+  // left half of the pill = go to page, right half = zoom percent
+  pill.addEventListener('click', (e) => {
+    const r = pill.getBoundingClientRect();
+    pillGotoMode(e.clientX - r.left > r.width * 0.55 ? 'zoom' : 'page');
+  });
+
+  // touchscreen pinch-zoom (trackpad pinch arrives as ctrl+wheel, above)
+  let pinch = null;
+  scroller.addEventListener(
+    'touchstart',
+    (e) => {
+      if (e.touches.length !== 2) return;
+      e.preventDefault();
+      const [a, b] = e.touches;
+      pinch = {
+        d: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY),
+        z: S.zoom,
+        x: (a.clientX + b.clientX) / 2,
+        y: (a.clientY + b.clientY) / 2,
+      };
+    },
+    { passive: false },
+  );
+  scroller.addEventListener(
+    'touchmove',
+    (e) => {
+      if (!pinch || e.touches.length !== 2) return;
+      e.preventDefault();
+      const [a, b] = e.touches;
+      const d = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+      if (d > 10) setZoom(pinch.z * (d / pinch.d), { x: pinch.x, y: pinch.y });
+    },
+    { passive: false },
+  );
+  scroller.addEventListener('touchend', (e) => {
+    if (e.touches.length < 2) pinch = null;
+  });
 }
 
 export function wrapCount() {

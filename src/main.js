@@ -12,6 +12,16 @@ import { toast } from './util.js';
 
 // ---------- context menus ----------
 
+function windowItems() {
+  if (platform.kind !== 'tauri') return [];
+  return [
+    'sep',
+    { label: 'Minimize', fn: () => platform.minimize() },
+    { label: 'Maximize / Restore', fn: () => platform.toggleMaximize() },
+    { label: 'Quit', danger: true, fn: () => platform.closeWindow() },
+  ];
+}
+
 function menuGeneral(e) {
   showMenu(e.clientX, e.clientY, [
     { label: 'Open…', hint: 'Ctrl+O', fn: cmd.openCmd },
@@ -19,6 +29,9 @@ function menuGeneral(e) {
       ? [
           { label: 'Save', hint: 'Ctrl+S', fn: cmd.doSave },
           { label: 'Save As…', hint: 'Ctrl+Shift+S', fn: cmd.doSaveAs },
+          'sep',
+          { label: 'Undo', hint: 'Ctrl+Z', fn: cmd.undoCmd },
+          { label: 'Redo', hint: 'Ctrl+Y', fn: cmd.redoCmd },
           'sep',
           { label: 'Go to page…', hint: 'Ctrl+G', fn: cmd.gotoPrompt },
           { label: 'Find…', hint: 'Ctrl+F', fn: () => search.open() },
@@ -29,6 +42,7 @@ function menuGeneral(e) {
           { label: 'Fit width', hint: 'Ctrl+0', fn: cmd.zoomFit },
         ]
       : []),
+    ...windowItems(),
   ]);
 }
 
@@ -48,7 +62,10 @@ function menuForPage(e, wrapEl) {
   const items = [];
   if (hl) items.push({ label: 'Delete highlight', danger: true, fn: () => annos.deleteAnn(hl.id) });
   items.push(
-    { label: 'Add text here', fn: () => annos.startNewNote(i, vx, vy) },
+    { label: 'Add pin here', fn: () => annos.startNewPin(i, vx, vy) },
+    'sep',
+    { label: 'Undo', hint: 'Ctrl+Z', fn: cmd.undoCmd },
+    { label: 'Redo', hint: 'Ctrl+Y', fn: cmd.redoCmd },
     'sep',
     { label: 'Rotate clockwise', fn: () => cmd.rotatePage(i, 90) },
     { label: 'Rotate counter-clockwise', fn: () => cmd.rotatePage(i, -90) },
@@ -60,25 +77,25 @@ function menuForPage(e, wrapEl) {
     'sep',
     { label: 'Find…', hint: 'Ctrl+F', fn: () => search.open() },
     { label: 'Thumbnails', hint: 'F9', fn: () => thumbs.toggle() },
+    ...windowItems(),
   );
   showMenu(e.clientX, e.clientY, items);
 }
 
-function menuForNote(e, noteEl) {
-  const id = noteEl.dataset.id;
-  const a = S.anns.find((x) => x.id === id);
+function menuForPin(e, pinEl) {
+  const a = S.anns.find((x) => x.id === pinEl.dataset.id);
   if (!a) return;
   showMenu(e.clientX, e.clientY, [
-    { label: 'Edit text', fn: () => annos.startEdit(a) },
-    { label: 'Delete note', danger: true, fn: () => annos.deleteAnn(id) },
+    { label: 'Edit text', fn: () => annos.startPinEdit(a) },
+    { label: 'Delete pin', danger: true, fn: () => annos.deleteAnn(a.id) },
   ]);
 }
 
 function initContextMenu() {
   window.addEventListener('contextmenu', (e) => {
     e.preventDefault();
-    const noteEl = e.target.closest?.('.note');
-    if (noteEl) return menuForNote(e, noteEl);
+    const pinEl = e.target.closest?.('.pin');
+    if (pinEl) return menuForPin(e, pinEl);
     const thumbEl = e.target.closest?.('.thumb');
     if (thumbEl) {
       return showMenu(e.clientX, e.clientY, thumbs.menuItems(thumbEl, {
@@ -86,7 +103,7 @@ function initContextMenu() {
         del: cmd.deletePage,
       }));
     }
-    const sel = annos.selectionInfo();
+    const sel = annos.selectionInfo() || annos.lastSelection();
     if (sel) return menuForSelection(e, sel);
     const wrapEl = e.target.closest?.('.pagewrap');
     if (wrapEl && S.pdf) return menuForPage(e, wrapEl);
@@ -120,12 +137,9 @@ function initKeyboard() {
     else if (k === '+' || k === '=') { e.preventDefault(); cmd.zoomIn(); }
     else if (k === '-') { e.preventDefault(); cmd.zoomOut(); }
     else if (k === '0') { e.preventDefault(); cmd.zoomReset(); }
-    else if (k === 'Delete' || k === 'Backspace') {
-      if (S.selAnnId) { e.preventDefault(); annos.deleteAnn(S.selAnnId); }
-    } else if (k === 'Escape') {
+    else if (k === 'Escape') {
       if (search.isOpen()) search.close();
       else if (thumbs.visible()) thumbs.toggle(false);
-      else if (S.selAnnId) { S.selAnnId = null; viewer.positionOverlays(true); }
       else window.getSelection()?.removeAllRanges();
     }
   });
@@ -155,20 +169,22 @@ async function initCloseGuard() {
       return; // allow close
     }
     e.preventDefault();
-    const ok = await platform.ask('Discard unsaved highlights & notes?');
+    const ok = await platform.ask('Save changes?');
     if (ok) {
-      if (S.path) {
-        // user chose discard: drop the unsaved sidecar edits, keep zoom memory
-        await platform.kvSet('doc:' + S.path, JSON.stringify({
-          zoom: S.zoom,
-          top: viewer.currentPageIdx() + 1,
-          hl: S.hlColor,
-        })).catch(() => {});
-      }
-      if (platform.kind === 'tauri') {
-        const { getCurrentWindow } = await import('@tauri-apps/api/window');
-        await getCurrentWindow().destroy();
-      }
+      const saved = await cmd.doSave();
+      if (!saved) return; // save failed; stay open (toast explains)
+    } else if (S.path) {
+      // No = discard unsaved highlights/page edits; pins stay (sidecar-only)
+      await platform.kvSet('doc:' + S.path, JSON.stringify({
+        zoom: S.zoom,
+        top: viewer.currentPageIdx() + 1,
+        hl: S.hlColor,
+        anns: S.anns.filter((a) => a.type === 'pin'),
+      })).catch(() => {});
+    }
+    if (platform.kind === 'tauri') {
+      const { getCurrentWindow } = await import('@tauri-apps/api/window');
+      await getCurrentWindow().destroy();
     }
   });
   if (platform.kind === 'web') {

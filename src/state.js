@@ -93,9 +93,6 @@ export function newHighlight(srcIdx, rects, color) {
   return { id: uid(), type: 'hl', page: srcIdx, rects, color };
 }
 
-export function newNote(srcIdx, x, y) {
-  return {
-    id: uid(), type: 'note', page: srcIdx, x, y,
-    text: '', size: 14, color: '#1b1b1f',
-  };
+export function newPin(srcIdx, x, y) {
+  return { id: uid(), type: 'pin', page: srcIdx, x, y, text: '' };
 }

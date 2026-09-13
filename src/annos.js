@@ -1,6 +1,9 @@
-// Highlights + text notes: capture from selection, overlay rendering,
-// note editing/dragging, and the minimal floating swatch bar.
-import { S, pushOp, onDocChange, newHighlight, newNote } from './state.js';
+// Highlights + hover-only text pins.
+// Selecting text shows nothing by itself; right-clicking a selection offers
+// highlight colors + copy. Pins are tiny dots placed via right-click; their
+// text shows on hover and is stored in the per-document sidecar (never baked
+// into the PDF), so nothing is printed on the page.
+import { S, pushOp, onDocChange, newHighlight, newPin } from './state.js';
 import { viewportFor, positionOverlays, setOverlayRenderer } from './viewer.js';
 import { el } from './util.js';
 
@@ -8,7 +11,8 @@ export const HL_COLORS = ['#ffd400', '#7ded72', '#6ec1ff', '#ff9db1', '#ffb257']
 
 // ---- overlay rendering (registered into viewer) ----
 
-let editingId = null; // note ann.id currently being edited
+let editingId = null; // pin ann.id currently being edited
+const popEl = document.getElementById('pinpop');
 
 function renderWrapOverlays(i, w, vp) {
   const src = S.pageList[i].src;
@@ -27,16 +31,13 @@ function renderWrapOverlays(i, w, vp) {
         d.style.height = Math.abs(v[3] - v[1]) + 'px';
         hlFrag.appendChild(d);
       }
-    } else if (a.type === 'note' && a.text && a.id !== editingId) {
-      const d = el('div', 'note');
+    } else if (a.type === 'pin' && a.id !== editingId) {
+      const d = el('div', 'pin');
       d.dataset.id = a.id;
-      if (S.selAnnId === a.id) d.classList.add('sel');
       const [x, y] = vp.convertToViewportPoint(a.x, a.y);
       d.style.left = x + 'px';
       d.style.top = y + 'px';
-      d.style.fontSize = a.size * vp.scale + 'px';
-      d.style.color = a.color;
-      d.textContent = a.text;
+      if (!a.text) d.classList.add('empty');
       nFrag.appendChild(d);
     }
   }
@@ -108,7 +109,16 @@ export function addHighlight(info, color) {
   S.hlColor = color;
   pushOp({ kind: 'add', ann: newHighlight(info.srcIdx, info.rects, color) });
   window.getSelection()?.removeAllRanges();
-  hideSwatchBar();
+}
+
+// Windows Chromium clears the text selection on right mousedown, before the
+// contextmenu event — remember the last live selection so the context menu can
+// still offer Highlight.
+let lastSel = null;
+let selTimer = null;
+
+export function lastSelection() {
+  return lastSel;
 }
 
 // Highlight under a viewport point (for right-click delete), topmost first.
@@ -124,50 +134,14 @@ export function highlightAt(displayIdx, vx, vy) {
   return null;
 }
 
-// ---- floating swatch bar over fresh selections ----
-
-let bar = null;
-let barVisible = false;
-
-export function hideSwatchBar() {
-  bar?.remove();
-  bar = null;
-  barVisible = false;
+export function deleteAnn(id) {
+  const ann = S.anns.find((a) => a.id === id);
+  if (!ann) return;
+  pushOp({ kind: 'del', ann });
+  if (S.selAnnId === id) S.selAnnId = null;
 }
 
-function showSwatchBar(info) {
-  hideSwatchBar();
-  bar = el('div', 'selbar');
-  for (const c of HL_COLORS) {
-    const b = el('button', 'selbar-sw');
-    b.style.background = c;
-    b.title = 'Highlight';
-    b.addEventListener('pointerdown', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      addHighlight(info, c);
-    });
-    bar.appendChild(b);
-  }
-  const cp = el('button', 'selbar-cp', bar);
-  cp.textContent = '⧉';
-  cp.title = 'Copy text';
-  cp.addEventListener('pointerdown', (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    copyText(info.text);
-    hideSwatchBar();
-  });
-  document.body.appendChild(bar);
-  const r = bar.getBoundingClientRect();
-  let x = info.at ? info.at.x : window.innerWidth / 2;
-  let y = info.at ? info.at.y - r.height - 10 : 80;
-  x = Math.max(8, Math.min(x - r.width / 2, window.innerWidth - r.width - 8));
-  y = Math.max(8, Math.min(y, window.innerHeight - r.height - 8));
-  bar.style.left = x + 'px';
-  bar.style.top = y + 'px';
-  barVisible = true;
-}
+// ---- copy helper (context menu) ----
 
 export function copyText(t) {
   if (!t) return;
@@ -181,47 +155,52 @@ export function copyText(t) {
   ta.remove();
 }
 
-// ---- notes ----
+// ---- pins: tiny dots, hover popup, click to edit ----
 
-function displayIndexOfSrc(src) {
-  return S.pageList.findIndex((p) => p.src === src);
+function hidePop() {
+  popEl.classList.add('hidden');
 }
 
-export function startNewNote(displayIdx, vx, vy) {
+function showPop(pinEl) {
+  const ann = S.anns.find((a) => a.id === pinEl.dataset.id);
+  if (!ann || ann.id === editingId) return;
+  popEl.textContent = ann.text || 'Empty pin — click to add text';
+  popEl.classList.toggle('empty', !ann.text);
+  popEl.classList.remove('hidden');
+  const r = pinEl.getBoundingClientRect();
+  const pr = popEl.getBoundingClientRect();
+  let x = r.left + r.width / 2 - pr.width / 2;
+  let y = r.top - pr.height - 10;
+  x = Math.max(8, Math.min(x, window.innerWidth - pr.width - 8));
+  if (y < 8) y = r.bottom + 10;
+  popEl.style.left = x + 'px';
+  popEl.style.top = y + 'px';
+}
+
+export function startNewPin(displayIdx, vx, vy) {
   const vp = viewportFor(displayIdx);
   if (!vp) return;
   const [x, y] = vp.convertToPdfPoint(vx, vy);
-  const ann = newNote(S.pageList[displayIdx].src, x, y);
-  startEdit(ann, true);
+  startPinEdit(newPin(S.pageList[displayIdx].src, x, y), true);
 }
 
-export function startEdit(ann, isNew = false) {
-  const i = displayIndexOfSrc(ann.page);
+export function startPinEdit(ann, isNew = false) {
+  const i = S.pageList.findIndex((p) => p.src === ann.page);
   if (i < 0) return;
   const vp = viewportFor(i);
   const w = document.querySelector(`.pagewrap[data-i="${i}"]`);
   if (!vp || !w) return;
   editingId = ann.id;
+  hidePop();
   const [x, y] = vp.convertToViewportPoint(ann.x, ann.y);
-  const ta = el('textarea', 'note-ta');
+  const ta = el('textarea', 'pin-ta');
   ta.style.left = x + 'px';
   ta.style.top = y + 'px';
-  ta.style.fontSize = ann.size * vp.scale + 'px';
-  ta.style.color = ann.color;
   ta.value = ann.text || '';
+  ta.placeholder = 'Type, then Ctrl+Enter';
   ta.spellcheck = false;
   w.querySelector('.note-layer').appendChild(ta);
-  const size = () => {
-    ta.style.height = 'auto';
-    ta.style.height = ta.scrollHeight + 'px';
-    ta.style.width = 'auto';
-    const cols = Math.max(6, ...ta.value.split('\n').map((l) => l.length + 1));
-    ta.style.width = Math.min(46, cols) + 'ch';
-    if (!ta.value) ta.style.width = '10ch';
-  };
-  ta.addEventListener('input', size);
-  size();
-  requestAnimationFrame(() => { size(); ta.focus(); });
+  requestAnimationFrame(() => ta.focus());
 
   let closed = false;
   const close = (commit) => {
@@ -247,93 +226,36 @@ export function startEdit(ann, isNew = false) {
   });
 }
 
-export function deleteAnn(id) {
-  const ann = S.anns.find((a) => a.id === id);
-  if (!ann) return;
-  pushOp({ kind: 'del', ann });
-  if (S.selAnnId === id) S.selAnnId = null;
-}
-
-function initNoteInteractions() {
-  document.addEventListener('pointerdown', (e) => {
-    const noteEl = e.target.closest?.('.note');
-    if (!noteEl) return;
-    const id = noteEl.dataset.id;
-    const ann = S.anns.find((a) => a.id === id);
-    if (!ann) return;
-    const wrapEl = noteEl.closest('.pagewrap');
-    const i = +wrapEl.dataset.i;
-    const vp = viewportFor(i);
-    if (!vp) return;
-    if (e.button !== 0) { S.selAnnId = id; positionOverlays(true); return; }
-    e.preventDefault();
-    const start = { px: e.clientX, py: e.clientY, ax: ann.x, ay: ann.y };
-    const p0 = vp.convertToPdfPoint(0, 0);
-    let moved = false;
-    noteEl.setPointerCapture(e.pointerId);
-    const move = (ev) => {
-      if (Math.abs(ev.clientX - start.px) + Math.abs(ev.clientY - start.py) > 3) moved = true;
-      if (!moved) return;
-      const p1 = vp.convertToPdfPoint(ev.clientX - start.px, ev.clientY - start.py);
-      ann.x = start.ax + (p1[0] - p0[0]);
-      ann.y = start.ay + (p1[1] - p0[1]);
-      const [x, y] = vp.convertToViewportPoint(ann.x, ann.y);
-      noteEl.style.left = x + 'px';
-      noteEl.style.top = y + 'px';
-    };
-    const up = () => {
-      noteEl.removeEventListener('pointermove', move);
-      noteEl.removeEventListener('pointerup', up);
-      if (moved) {
-        pushOp({
-          kind: 'move', id,
-          from: { x: start.ax, y: start.ay },
-          to: { x: ann.x, y: ann.y },
-        });
-      } else {
-        S.selAnnId = S.selAnnId === id ? null : id;
-        positionOverlays(true);
-      }
-    };
-    noteEl.addEventListener('pointermove', move);
-    noteEl.addEventListener('pointerup', up);
-  });
-
-  document.addEventListener('dblclick', (e) => {
-    const noteEl = e.target.closest?.('.note');
-    if (!noteEl) return;
-    const ann = S.anns.find((a) => a.id === noteEl.dataset.id);
-    if (ann) startEdit(ann);
-  });
-}
-
-// ---- selection watcher ----
-
-let selTimer = null;
-function watchSelection() {
-  document.addEventListener('selectionchange', () => {
-    clearTimeout(selTimer);
-    selTimer = setTimeout(() => {
-      const sel = window.getSelection();
-      if (!sel || sel.isCollapsed) { hideSwatchBar(); return; }
-      const info = selectionInfo();
-      if (info) showSwatchBar(info);
-      else hideSwatchBar();
-    }, 220);
-  });
-  document.addEventListener('pointerdown', (e) => {
-    if (bar && !bar.contains(e.target)) hideSwatchBar();
-  }, true);
-}
+// ---- events ----
 
 export function init() {
   setOverlayRenderer(renderWrapOverlays);
+  document.addEventListener('selectionchange', () => {
+    clearTimeout(selTimer);
+    selTimer = setTimeout(() => { lastSel = selectionInfo(); }, 120);
+  });
+  document.addEventListener('mnpdf:scroll', () => { lastSel = null; });
+  document.addEventListener('mnpdf:zoom', () => { lastSel = null; });
   onDocChange((what) => {
     positionOverlays(true);
-    if (what?.kind === 'pages') hideSwatchBar();
+    hidePop();
+    if (what?.kind === 'pages') window.getSelection()?.removeAllRanges();
   });
-  document.addEventListener('mnpdf:zoom', hideSwatchBar);
-  document.addEventListener('mnpdf:scroll', hideSwatchBar);
-  initNoteInteractions();
-  watchSelection();
+
+  // pin hover popup
+  document.addEventListener('mouseover', (e) => {
+    const pin = e.target.closest?.('.pin');
+    if (pin) showPop(pin);
+    else if (!e.target.closest?.('#pinpop')) hidePop();
+  });
+  document.addEventListener('mnpdf:zoom', hidePop);
+  document.addEventListener('mnpdf:scroll', hidePop);
+
+  // click a pin to edit it
+  document.addEventListener('click', (e) => {
+    const pin = e.target.closest?.('.pin');
+    if (!pin || e.button !== 0) return;
+    const ann = S.anns.find((a) => a.id === pin.dataset.id);
+    if (ann) startPinEdit(ann);
+  });
 }

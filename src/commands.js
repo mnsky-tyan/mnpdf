@@ -23,9 +23,15 @@ export async function lastDir() {
   return v || null;
 }
 
-// ---- per-document sidecar (zoom, page, unsaved annotations) ----
+// ---- per-document sidecar (zoom, page, unsaved annotations, pins) ----
 
 export const persistDocSoon = debounce(persistDocNow, 700);
+
+// Pins are always persisted (they never bake into the PDF); highlights/pages
+// only while unsaved.
+export function sidecarAnns() {
+  return S.anns.filter((a) => a.type === 'pin' || S.dirty);
+}
 
 export async function persistDocNow() {
   if (!S.path || !S.pdf) return;
@@ -33,7 +39,7 @@ export async function persistDocNow() {
     zoom: S.zoom,
     top: viewer.currentPageIdx() + 1,
     hl: S.hlColor,
-    anns: S.dirty ? S.anns : [],
+    anns: sidecarAnns(),
     pages: S.dirty ? S.pageList : undefined,
   };
   try {
@@ -53,7 +59,9 @@ function validAnns(a) {
   return Array.isArray(a) && a.every(
     (x) =>
       x && typeof x.page === 'number' && x.page >= 0 && x.page < S.nPages &&
-      (x.type === 'hl' ? Array.isArray(x.rects) : typeof x.x === 'number' && typeof x.y === 'number'),
+      ((x.type === 'hl' && Array.isArray(x.rects)) ||
+        (typeof x.x === 'number' && typeof x.y === 'number' &&
+          (x.type === 'pin' || x.type === 'note'))),
   );
 }
 
@@ -97,10 +105,13 @@ async function openBytes(bytes, path, name) {
     if (typeof st.zoom === 'number') S.zoom = clamp(st.zoom, 0.25, 6);
     if (typeof st.top === 'number') top = st.top - 1;
     if (st.hl) S.hlColor = st.hl;
-    if (validAnns(st.anns)) S.anns = st.anns;
+    if (validAnns(st.anns)) {
+      S.anns = st.anns.map((a) => (a.type === 'note' ? { ...a, type: 'pin' } : a));
+    }
     if (validPages(st.pages)) S.pageList = st.pages;
-    if (S.anns.length || S.pageList.length !== S.nPages || S.pageList.some((p) => p.rot % 360 !== 0)) {
-      markDirty(); // recovered unsaved edits
+    const bakedEdits = S.anns.filter((a) => a.type !== 'pin').length;
+    if (bakedEdits || S.pageList.length !== S.nPages || S.pageList.some((p) => p.rot % 360 !== 0)) {
+      markDirty(); // recovered unsaved highlight/page edits
     }
   }
   if (S.zoom === 0.5) S.zoom = viewer.fitZoom();
@@ -144,20 +155,22 @@ export async function openCmd() {
 // ---- save ----
 
 async function reopenAfterSave(bytes) {
-  // Write a clean sidecar first so openBytes doesn't restore the annotations
-  // we just baked into the file.
-  const keepIdx = viewer.currentPageIdx();
+  // Write a clean sidecar first so openBytes doesn't restore the highlights we
+  // just baked into the file. Pins stay: they never bake, so the sidecar is
+  // their only home.
   await platform.kvSet('doc:' + S.path, JSON.stringify({
     zoom: S.zoom,
-    top: keepIdx + 1,
+    top: viewer.currentPageIdx() + 1,
     hl: S.hlColor,
+    anns: S.anns.filter((a) => a.type === 'pin'),
   }));
   await openBytes(bytes, S.path, S.name);
 }
 
+// returns true when the document ended up saved (or had nothing to save)
 export async function doSave() {
-  if (!S.pdf) return;
-  if (!S.dirty) { toast('No changes'); return; }
+  if (!S.pdf) return false;
+  if (!S.dirty) { toast('No changes'); return true; }
   if (!S.path || platform.kind === 'web') return doSaveAs();
   try {
     toast('Saving…', 8000);
@@ -165,17 +178,19 @@ export async function doSave() {
     await platform.write(S.path, bytes);
     await reopenAfterSave(bytes);
     toast('Saved');
+    return true;
   } catch (e) {
     console.error(e);
     toast('Save failed: ' + (e?.message || e), 3500);
+    return false;
   }
 }
 
 export async function doSaveAs() {
-  if (!S.pdf) return;
+  if (!S.pdf) return false;
   try {
     const target = await platform.saveDialog(S.name || 'document.pdf');
-    if (!target) return;
+    if (!target) return false;
     toast('Saving…', 8000);
     const bytes = await bake();
     if (platform.kind === 'tauri') {
@@ -191,9 +206,11 @@ export async function doSaveAs() {
       viewer.updatePill(true);
     }
     toast('Saved');
+    return true;
   } catch (e) {
     console.error(e);
     toast('Save As failed: ' + (e?.message || e), 3500);
+    return false;
   }
 }
 

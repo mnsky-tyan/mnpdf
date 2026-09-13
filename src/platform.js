@@ -50,6 +50,9 @@ if (isTauri) {
     onCloseGuard(fn) {
       win.onCloseRequested(fn);
     },
+    minimize: () => win.minimize(),
+    toggleMaximize: () => win.toggleMaximize(),
+    closeWindow: () => win.close(),
     setTitle(t) {
       document.title = t;
       win.setTitle(t).catch(() => {});
@@ -113,6 +116,11 @@ if (isTauri) {
       });
     },
     onCloseGuard() {},
+    minimize() {},
+    toggleMaximize() {},
+    closeWindow() {
+      window.close();
+    },
     setTitle(t) {
       document.title = t;
     },
