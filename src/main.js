@@ -39,6 +39,7 @@ function menuGeneral(e) {
           'sep',
           { label: 'Zoom in', hint: '+', fn: cmd.zoomIn },
           { label: 'Zoom out', hint: '−', fn: cmd.zoomOut },
+          { label: 'Zoom to…', fn: () => viewer.pillGotoMode('zoom') },
           { label: 'Fit width', hint: 'Ctrl+0', fn: cmd.zoomFit },
         ]
       : []),
@@ -73,6 +74,7 @@ function menuForPage(e, wrapEl) {
     'sep',
     { label: 'Zoom in', fn: cmd.zoomIn },
     { label: 'Zoom out', fn: cmd.zoomOut },
+    { label: 'Zoom to…', fn: () => viewer.pillGotoMode('zoom') },
     { label: 'Fit width', fn: cmd.zoomFit },
     'sep',
     { label: 'Find…', hint: 'Ctrl+F', fn: () => search.open() },
@@ -218,6 +220,12 @@ async function boot() {
   const initial = await platform.initialPath();
   if (initial) {
     try { await cmd.openPath(initial); } catch {}
+  } else {
+    // plain launch: reopen the last document
+    const last = await platform.kvGet('lastPath');
+    if (last) {
+      try { await cmd.openPath(last); } catch {}
+    }
   }
 }
 

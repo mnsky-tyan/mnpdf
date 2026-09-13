@@ -322,12 +322,14 @@ export function fitZoom() {
   const h = v ? v[3] - v[1] : 792;
   const swap = ((S.baseRot[S.pageList[i]?.src] || 0) % 180) !== 0;
   const pageW = (swap ? h : w) * CSS_PER_PT;
-  return clamp((scroller.clientWidth - 48) / pageW, 0.25, 6);
+  // exact: the white paper touches the window borders side-to-side
+  return clamp(scroller.clientWidth / pageW, 0.25, 6);
 }
 
 // ---- pill / goto ----
 
 export function updatePill(sticky = false) {
+  if (gotoEdit) return; // never touch content/timers while the editor is open
   if (!wraps.length) { pill.classList.add('hidden'); return; }
   const i = currentPageIdx();
   const cur = i + 1;
@@ -346,24 +348,28 @@ export function updatePill(sticky = false) {
 // mode 'page': type a page number. mode 'zoom': type a percentage.
 export function pillGotoMode(mode = 'page') {
   if (gotoEdit) return;
+  clearTimeout(pillTimer); // the auto-hide must not kill the editor mid-typing
   const saved = pill.textContent;
-  pill.classList.remove('hidden');
+  pill.classList.remove('hidden', 'fading');
   pill.innerHTML = '';
   const inp = document.createElement('input');
   if (mode === 'zoom') {
     inp.value = String(Math.round(S.zoom * 100));
-    inp.title = 'Zoom percent (25–600)';
+    inp.title = 'Zoom percent (25–600) — Enter to apply, Esc to cancel';
   } else {
     inp.value = pill.dataset.cur || '1';
-    inp.title = 'Page number';
+    inp.title = 'Page number — Enter to go, Esc to cancel';
   }
   pill.appendChild(inp);
   inp.focus();
   inp.select();
+  gotoEdit = { mode };
   const done = (ok) => {
+    if (!gotoEdit) return;
+    gotoEdit = null;
     const v = parseFloat(inp.value);
     pill.textContent = saved;
-    gotoEdit = null;
+    updatePill(true); // restore the label and restart the fade cleanly
     if (!ok || !Number.isFinite(v)) return;
     if (mode === 'zoom') {
       if (v >= 25 && v <= 600) setZoom(v / 100, zoomAnchorCenter());
@@ -371,7 +377,6 @@ export function pillGotoMode(mode = 'page') {
       goToDisplayPage(v - 1);
     }
   };
-  gotoEdit = { done };
   inp.addEventListener('keydown', (e) => {
     e.stopPropagation();
     if (e.key === 'Enter') done(true);
@@ -421,6 +426,9 @@ export function init() {
     const r = pill.getBoundingClientRect();
     pillGotoMode(e.clientX - r.left > r.width * 0.55 ? 'zoom' : 'page');
   });
+  // don't fade out while the user is aiming at / hovering the pill
+  pill.addEventListener('mouseenter', () => { if (!gotoEdit) clearTimeout(pillTimer); });
+  pill.addEventListener('mouseleave', () => { if (!gotoEdit) updatePill(true); });
 
   // touchscreen pinch-zoom (trackpad pinch arrives as ctrl+wheel, above)
   let pinch = null;

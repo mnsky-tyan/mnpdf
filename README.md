@@ -14,9 +14,9 @@ Built with [Tauri 2](https://tauri.app) + [pdf.js](https://mozilla.github.io/pdf
 | Open a PDF | Ctrl+O, right-click → *Open…*, drop a file on the window, or `mnpdf.exe path\to.pdf` |
 | Scroll | wheel / two-finger touchpad scroll |
 | Zoom | pinch (touch screen or touchpad), Ctrl+wheel, `+` / `-`, `Ctrl+0` fit width, `0` = 100% |
-| Exact zoom | scroll a little, click the **right half** of the page pill, type a percent (25–600) |
+| Exact zoom | right-click → *Zoom to…*, or click the **right half** of the page pill; type a percent (25–600) |
 | Go to page | Ctrl+G, or click the **left half** of the page pill |
-| Highlight text | select text (nothing pops up), then **right-click** the selection → pick a color |
+| Highlight text | select text (nothing pops up), then **right-click** the selection → pick a color. Highlighting over an existing highlight **replaces** it (no stacking) |
 | Copy text | select text → right-click → *Copy text* (or Ctrl+C) |
 | Delete a highlight | right-click on the highlight → *Delete highlight* |
 | Text pins | right-click anywhere on a page → *Add pin here* → type → Ctrl+Enter. A small red dot stays on the page; **hovering shows the text**, clicking the dot re-opens the editor, right-click offers Edit/Delete |
@@ -34,6 +34,10 @@ There is no title bar. The window chrome lives entirely in the right-click menu.
 The interface follows the OS light/dark theme automatically. Pages stay as printed;
 only the chrome changes.
 
+Documents open at **fit width — the paper touches the window borders side-to-side**
+(Ctrl+0 re-applies it anytime). Launching mnpdf without arguments **reopens the last
+document** at its saved zoom/page.
+
 ## Where your edits live
 
 - **Highlights** are baked into the PDF when you save (permanently, like ink).
@@ -41,6 +45,7 @@ only the chrome changes.
   lives in a small JSON sidecar per document (app data folder) together with your
   zoom level, page, and unsaved highlights. Pins survive closing, reopening, and
   saving, but they exist only inside mnpdf and won't appear in other viewers.
+  **If you share the PDF, nobody sees your pin text — it isn't in the file.**
 
 Unsaved highlights are also kept in the sidecar, so closing accidentally loses
 nothing. On close with unsaved highlights you get one plain **"Save changes?" —

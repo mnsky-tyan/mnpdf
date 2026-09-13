@@ -123,6 +123,9 @@ async function openBytes(bytes, path, name) {
   viewer.updatePill(true);
   viewer.setTopChangeFn(() => persistDocSoon());
   updateTitle();
+  if (path && !String(path).startsWith('blob:')) {
+    platform.kvSet('lastPath', path).catch(() => {}); // for plain-launch reopen
+  }
   toast(`${name} · ${pdf.numPages} page${pdf.numPages > 1 ? 's' : ''}`, 1200);
 }
 

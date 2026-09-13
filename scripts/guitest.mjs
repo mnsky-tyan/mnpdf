@@ -213,6 +213,19 @@ async function main() {
     const ta = page.locator('.pin-ta');
     if ((await ta.count()) !== 1) { log('t4 pin editor opens', false, 'no .pin-ta'); }
     else {
+      // the dot must be visible NOW (before typing) + typed text must be readable
+      const live = await page.evaluate(() => {
+        const taEl = document.querySelector('.pin-ta');
+        const dot = document.querySelector('.pin.preview');
+        const dotR = dot?.getBoundingClientRect();
+        return {
+          previewDot: !!dot,
+          dotPos: dotR ? { x: Math.round(dotR.x), y: Math.round(dotR.y) } : null,
+          textColor: taEl ? getComputedStyle(taEl).color : '',
+        };
+      });
+      const dotVisibleNow = live.previewDot && live.textColor.startsWith('rgb(2');
+      await shot('t4_pin_editor_live');
       await ta.type('pin text abc');
       await ta.press('Control+Enter');
       await sleep(300);
@@ -399,31 +412,52 @@ async function main() {
     ctx = await browser.newContext({ viewport: { width: 1000, height: 800 } });
   }
 
-  // T11 precise zoom via pill (scroll to reveal pill, click right half, type %)
+  // T11 precise zoom: menu entry (no scroll), pill entry, editor survives scroll
   if (!filter || filter === 't11') {
     await openApp();
     await sleep(300);
+    // A: right-click -> "Zoom to…" — no scroll/time pressure needed
+    await page.mouse.click(500, 400, { button: 'right' });
+    await sleep(350);
+    await page.locator('.menu-item', { hasText: 'Zoom to…' }).first().click();
+    await sleep(300);
+    let okA = await page.evaluate(() => {
+      const inp = document.querySelector('#pill input');
+      return !!inp && +inp.value >= 25 && +inp.value <= 600;
+    });
+    if (okA) {
+      // scroll while editing: the editor must survive
+      await page.mouse.move(500, 300);
+      await page.mouse.wheel(0, 80);
+      await sleep(400);
+      okA = await page.evaluate(() => !!document.querySelector('#pill input'));
+      await page.keyboard.press('Escape');
+    }
+    await sleep(300);
+    // B: hover-keep + pill right-half click, scroll mid-edit, then apply 200
     await page.mouse.move(500, 400);
-    await page.mouse.wheel(0, 60); // pill shows on scroll, hides after ~1.3s
+    await page.mouse.wheel(0, 60); // reveal pill
     await sleep(150);
     const r = await page.evaluate(() => {
       const p = document.getElementById('pill').getBoundingClientRect();
       return { x: p.left + p.width * 0.8, y: p.top + p.height / 2 };
     });
     await page.mouse.click(r.x, r.y);
-    await sleep(300);
-    const isZoomInput = await page.evaluate(() => {
-      const inp = document.querySelector('#pill input');
-      return inp && +inp.value >= 25 && +inp.value <= 600;
-    });
-    await page.locator('#pill input').fill('200');
-    await page.keyboard.press('Enter');
-    await sleep(500);
+    await sleep(200);
+    let inputStill = await page.evaluate(() => !!document.querySelector('#pill input'));
+    // wait past the old 1.3s auto-hide window — input must still be alive
+    await sleep(1600);
+    inputStill = inputStill && (await page.evaluate(() => !!document.querySelector('#pill input')));
+    if (inputStill) {
+      await page.locator('#pill input').fill('200');
+      await page.keyboard.press('Enter');
+      await sleep(500);
+    }
     const zoom = await page.evaluate(() => window.mnpdf.S.zoom);
     const pill = await page.textContent('#pill');
     await shot('t11_zoom200');
-    log('t11 precise zoom entry', isZoomInput && Math.abs(zoom - 2) < 0.001 && pill.includes('200%'),
-        `input=${isZoomInput} zoom=${zoom} pill="${pill.trim()}"`);
+    log('t11 precise zoom entry (stable editor)', okA && inputStill && Math.abs(zoom - 2) < 0.001 && pill.includes('200%'),
+        `menuEntry=${okA} inputSurvived=${inputStill} zoom=${zoom} pill="${pill.trim()}"`);
   }
 
   // T12 touchscreen pinch-zoom (synthetic two-touch gesture)
@@ -444,6 +478,26 @@ async function main() {
     const z1 = await page.evaluate(() => window.mnpdf.S.zoom);
     await shot('t12_pinch');
     log('t12 touch pinch-zoom', z1 > z0 * 1.8, `zoom ${z0.toFixed(2)} -> ${z1.toFixed(2)}`);
+  }
+
+  // T14 default open: paper touches window borders; plain launch reopens last file
+  if (!filter || filter === 't14') {
+    await openApp();
+    await sleep(300);
+    const m = await page.evaluate(() => {
+      const w = document.querySelector('.pagewrap[data-i="0"]').getBoundingClientRect();
+      const s = document.getElementById('scroller');
+      return { pageW: Math.round(w.width), clientW: s.clientWidth };
+    });
+    const touching = Math.abs(m.pageW - m.clientW) <= 1;
+    // plain launch (no ?file=) must reopen the last document
+    await page.goto('http://localhost:5173/');
+    await page.waitForTimeout(2500);
+    const reopened = await page.evaluate(() => ({ name: window.mnpdf.S.name, n: window.mnpdf.S.nPages }));
+    await shot('t14_fit_touch');
+    log('t14 fit-width touching + reopen last file',
+        touching && reopened.name === 'sample.pdf' && reopened.n === 5,
+        JSON.stringify({ ...m, touching, reopened }));
   }
 
   await browser.close();

@@ -69,6 +69,17 @@ function applyOp(op, fwd) {
       if (fwd) S.anns.push(op.ann);
       else S.anns = S.anns.filter((a) => a.id !== op.ann.id);
       break;
+    case 'hlreplace':
+      // new highlight replaces every highlight it overlaps (one undo step)
+      if (fwd) {
+        const gone = new Set(op.replaced.map((a) => a.id));
+        S.anns = S.anns.filter((a) => !gone.has(a.id));
+        S.anns.push(op.ann);
+      } else {
+        S.anns = S.anns.filter((a) => a.id !== op.ann.id);
+        S.anns.push(...op.replaced);
+      }
+      break;
     case 'del':
       if (fwd) S.anns = S.anns.filter((a) => a.id !== op.ann.id);
       else S.anns.push(op.ann);

@@ -31,7 +31,8 @@ function renderWrapOverlays(i, w, vp) {
         d.style.height = Math.abs(v[3] - v[1]) + 'px';
         hlFrag.appendChild(d);
       }
-    } else if (a.type === 'pin' && a.id !== editingId) {
+    } else if (a.type === 'pin') {
+      // dot stays visible even while its text is being edited
       const d = el('div', 'pin');
       d.dataset.id = a.id;
       const [x, y] = vp.convertToViewportPoint(a.x, a.y);
@@ -105,9 +106,21 @@ export function selectionInfo() {
   };
 }
 
+// two pdf-space rects intersect (0.5pt tolerance so line-adjacent rects don't count)
+function rectsOverlap(a, b) {
+  return a[0] < b[2] - 0.5 && a[2] > b[0] + 0.5 && a[1] < b[3] - 0.5 && a[3] > b[1] + 0.5;
+}
+
 export function addHighlight(info, color) {
   S.hlColor = color;
-  pushOp({ kind: 'add', ann: newHighlight(info.srcIdx, info.rects, color) });
+  const ann = newHighlight(info.srcIdx, info.rects, color);
+  const replaced = S.anns.filter(
+    (a) =>
+      a.type === 'hl' && a.page === info.srcIdx &&
+      a.rects.some((r) => info.rects.some((n) => rectsOverlap(n, r))),
+  );
+  if (replaced.length) pushOp({ kind: 'hlreplace', ann, replaced });
+  else pushOp({ kind: 'add', ann });
   window.getSelection()?.removeAllRanges();
 }
 
@@ -193,13 +206,22 @@ export function startPinEdit(ann, isNew = false) {
   editingId = ann.id;
   hidePop();
   const [x, y] = vp.convertToViewportPoint(ann.x, ann.y);
+  const layer = w.querySelector('.note-layer');
+  // show the dot immediately so you can see where the pin landed
+  let preview = null;
+  if (isNew) {
+    preview = el('div', 'pin preview');
+    preview.style.left = x + 'px';
+    preview.style.top = y + 'px';
+    layer.appendChild(preview);
+  }
   const ta = el('textarea', 'pin-ta');
-  ta.style.left = x + 'px';
-  ta.style.top = y + 'px';
+  ta.style.left = x + 9 + 'px';
+  ta.style.top = y + 9 + 'px';
   ta.value = ann.text || '';
   ta.placeholder = 'Type, then Ctrl+Enter';
   ta.spellcheck = false;
-  w.querySelector('.note-layer').appendChild(ta);
+  layer.appendChild(ta);
   requestAnimationFrame(() => ta.focus());
 
   let closed = false;
@@ -208,6 +230,8 @@ export function startPinEdit(ann, isNew = false) {
     closed = true;
     const v = ta.value.replace(/\s+$/, '');
     ta.remove();
+    preview?.remove();
+    preview = null;
     editingId = null;
     if (commit) {
       if (isNew) {
