@@ -525,13 +525,21 @@ async function main() {
     const boxes = await page.evaluate(() =>
       [...document.querySelectorAll('.hl')].map((d) => {
         const r = d.getBoundingClientRect();
-        return { t: r.top, b: r.bottom };
+        return { t: r.top, b: r.bottom, l: r.left, rt: r.right };
       }),
     );
     const inBand = boxes.length > 0 && boxes.every((b) => b.t >= band.top - 30 && b.b <= band.bot + 60);
+    // no two rects may overlap (stacked translucency = darker "clogged" patches)
+    let clogged = false;
+    for (let i = 0; i < boxes.length; i++) {
+      for (let j = i + 1; j < boxes.length; j++) {
+        const a = boxes[i], c = boxes[j];
+        if (a.l < c.rt - 1 && a.rt > c.l + 1 && a.t < c.b - 1 && a.b > c.t + 1) clogged = true;
+      }
+    }
     await shot('t15_band');
-    log('t15 highlight stays in selection band', inBand,
-        `rects=${boxes.length} band=${Math.round(band.top)}-${Math.round(band.bot)} ` +
+    log('t15 highlight in band + no clogged overlap', inBand && !clogged,
+        `rects=${boxes.length} clogged=${clogged} band=${Math.round(band.top)}-${Math.round(band.bot)} ` +
         boxes.map((b) => `${Math.round(b.t)}-${Math.round(b.b)}`).join(','));
   }
 

@@ -236,13 +236,37 @@ function rectsOverlap(a, b) {
   return a[0] < b[2] - 0.5 && a[2] > b[0] + 0.5 && a[1] < b[3] - 0.5 && a[3] > b[1] + 0.5;
 }
 
+// union overlapping/touching line rects into bigger ones — stacked translucent
+// rects render as darker "clogged" patches on screen and in the saved PDF
+function mergeRects(rects) {
+  const rs = rects.map((r) => [...r]);
+  let merged = true;
+  while (merged) {
+    merged = false;
+    outer: for (let i = 0; i < rs.length; i++) {
+      for (let j = i + 1; j < rs.length; j++) {
+        if (rectsOverlap(rs[i], rs[j])) {
+          rs[i] = [
+            Math.min(rs[i][0], rs[j][0]), Math.min(rs[i][1], rs[j][1]),
+            Math.max(rs[i][2], rs[j][2]), Math.max(rs[i][3], rs[j][3]),
+          ];
+          rs.splice(j, 1);
+          merged = true;
+          break outer;
+        }
+      }
+    }
+  }
+  return rs;
+}
+
 export function addHighlight(info, color) {
   S.hlColor = color;
-  const ann = newHighlight(info.srcIdx, info.rects, color);
+  const ann = newHighlight(info.srcIdx, mergeRects(info.rects), color);
   const replaced = S.anns.filter(
     (a) =>
       a.type === 'hl' && a.page === info.srcIdx &&
-      a.rects.some((r) => info.rects.some((n) => rectsOverlap(n, r))),
+      a.rects.some((r) => ann.rects.some((n) => rectsOverlap(n, r))),
   );
   if (replaced.length) pushOp({ kind: 'hlreplace', ann, replaced });
   else pushOp({ kind: 'add', ann });
