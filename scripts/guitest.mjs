@@ -573,6 +573,96 @@ async function main() {
         JSON.stringify({ nPins: after.pins.length, noteInFile: after.noteInFile, noteText: after.noteText }));
   }
 
+  // T17 selection overshoot guards: drag-from-blank selects nothing,
+  // drag-to-blank clamps at the last text line (no run to end of page)
+  if (!filter || filter === 't17') {
+    await withRetry(2, async () => {
+      await openApp();
+      await sleep(300);
+      const geo = await page1Geo();
+      const lines = await page.evaluate(() => {
+        const spans = [...document.querySelectorAll('.pagewrap[data-i="0"] .textLayer span')]
+          .map((s) => ({ text: s.textContent, r: s.getBoundingClientRect() }))
+          .filter((o) => o.r.height >= 2 && o.r.width >= 1)
+          .sort((a, b) => a.r.top - b.r.top || a.r.left - b.r.left);
+        return spans.map((o) => ({
+          text: o.text, top: o.r.top, bottom: o.r.bottom, left: o.r.left, right: o.r.right,
+        }));
+      });
+      if (lines.length < 8) throw new Error('too few text lines: ' + lines.length);
+      const norm = (t) => t.replace(/\s+/g, '');
+      const clearSel = () => page.evaluate(() => window.getSelection()?.removeAllRanges());
+
+      // A: drag-from-blank — press in the page's left margin, drag into text
+      await dragSelect(geo.left + 6, lines[1].top + 5, geo.left + geo.w * 0.5, lines[1].top + 5);
+      await sleep(250);
+      const selA = await page.evaluate(() => String(window.getSelection()));
+      const stuckClass = await page.evaluate(() =>
+        document.querySelectorAll('.textLayer.selecting').length);
+      log('t17 drag-from-blank selects nothing', selA === '' && stuckClass === 0,
+          `sel=${JSON.stringify(selA.slice(0, 40))} selecting-class=${stuckClass}`);
+
+      // B: drag-to-blank — start on line 1, drag into the gap a few lines down.
+      // Pre-fix this overshoots to the end of the page; it must include the
+      // crossed lines and never reach line 6+.
+      await clearSel();
+      await dragSelect(
+        Math.max(lines[0].left + 2, geo.left + 20), lines[0].top + 5,
+        Math.max(lines[0].left + 2, geo.left + 20), lines[2].bottom + 7,
+      );
+      await sleep(300);
+      const selB = await page.evaluate(() => String(window.getSelection()));
+      const nB = norm(selB);
+      // line 6 ("non proident…") lies past the drag gap; an overshooting
+      // selection runs to the page end and must include it (paragraph text
+      // repeats later on the page, so only this unique far line is checked)
+      const hasFarText = nB.includes(norm(lines[6].text).slice(0, 25));
+      const startedAtTop = nB.includes(norm(lines[0].text).slice(0, 15));
+      const crossedLine2 = nB.includes(norm(lines[2].text).slice(0, 40));
+      log('t17 drag-to-blank clamps (no run to page end)',
+          startedAtTop && crossedLine2 && !hasFarText,
+          `start=${startedAtTop} line2=${crossedLine2} farText=${hasFarText} len=${nB.length}`);
+
+      // B2: drag-to-blank into the left margin — pre-fix the selection
+      // overshoots through the blank region to the end of the page
+      await clearSel();
+      await dragSelect(
+        Math.max(lines[0].left + 2, geo.left + 20), lines[0].top + 5,
+        geo.left + 6, lines[4].top + 5,
+      );
+      await sleep(300);
+      const nB2 = norm(await page.evaluate(() => String(window.getSelection())));
+      const b2Far = nB2.includes(norm(lines[6].text).slice(0, 25));
+      log('t17 drag-to-blank (left margin) does not overshoot', !b2Far,
+          `farText=${b2Far} len=${nB2.length}`);
+
+      // C: in-text regression — a partial horizontal drag still selects that piece
+      await clearSel();
+      await dragSelect(lines[1].left + 5, lines[1].top + 5, lines[1].left + 120, lines[1].top + 5);
+      await sleep(250);
+      const selC = await page.evaluate(() => String(window.getSelection()));
+      const nC = norm(selC);
+      const expectedC = norm(lines[1].text);
+      log('t17 in-text drag unchanged', nC.length > 0 && expectedC.startsWith(nC) &&
+          nC.length <= expectedC.length,
+          `sel=${JSON.stringify(selC.slice(0, 40))}`);
+
+      // D: right-click on the clamped selection still offers highlight colors
+      await clearSel();
+      await dragSelect(
+        Math.max(lines[0].left + 2, geo.left + 20), lines[0].top + 5,
+        Math.max(lines[0].left + 2, geo.left + 20), lines[2].bottom + 7,
+      );
+      await sleep(300);
+      const pt = { x: Math.max(lines[0].left + 40, geo.left + 40), y: Math.min((lines[0].top + lines[2].bottom) / 2, 700) };
+      await page.mouse.click(pt.x, pt.y, { button: 'right' });
+      await sleep(350);
+      const swatches = await page.evaluate(() => document.querySelectorAll('.menu-swatches .sw').length);
+      await shot('t17_selection');
+      log('t17 highlight menu on clamped selection', swatches === 5, `swatches=${swatches}`);
+    });
+  }
+
   await browser.close();
   const failed = results.filter((r) => !r.ok);
   console.log(`\n${results.length - failed.length}/${results.length} passed`);

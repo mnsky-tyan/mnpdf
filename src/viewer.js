@@ -254,6 +254,12 @@ async function renderPage(i) {
     });
     w.tlObj = tl;
     await tl.render();
+    // pdf.js-style end-of-content marker (see .endOfContent in style.css):
+    // while .selecting it covers the layer so the browser clamps drag
+    // endpoints to real text instead of overshooting into blank space.
+    const eoc = document.createElement('div');
+    eoc.className = 'endOfContent';
+    w.tl.appendChild(eoc);
   } catch (e) {
     if (!isCancel(e)) console.warn('textlayer', e);
   }

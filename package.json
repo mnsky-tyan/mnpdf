@@ -8,6 +8,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
+    "test": "node --test",
     "tauri": "tauri",
     "icon": "node scripts/gen-icon.mjs && tauri icon dev-assets/icon-src.png",
     "samples": "node scripts/make-samples.mjs",

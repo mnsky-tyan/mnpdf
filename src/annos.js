@@ -5,6 +5,7 @@
 // into the PDF), so nothing is printed on the page.
 import { S, pushOp, onDocChange, newHighlight, newPin } from './state.js';
 import { viewportFor, positionOverlays, setOverlayRenderer } from './viewer.js';
+import { pointNearRect, bandClipRect } from './selection.js';
 import { el } from './util.js';
 
 export const HL_COLORS = ['#ffd400', '#7ded72', '#6ec1ff', '#ff9db1', '#ffb257'];
@@ -57,12 +58,35 @@ let dragBand = null;    // {wrapEl, x0, y0, x1, y1} viewport coords
 let bandSel = null;     // last band-derived selection info
 let bandSelAt = 0;
 
+function releaseSelecting() {
+  document.querySelectorAll('.textLayer.selecting').forEach((l) => l.classList.remove('selecting'));
+}
+
 function initDragBandTracking() {
   document.addEventListener(
-    'pointerdown',
+    'mousedown',
     (e) => {
       if (e.button !== 0) return;
-      const wrapEl = e.target.closest?.('.textLayer')?.closest('.pagewrap');
+      const tlEl = e.target.closest?.('.textLayer');
+      if (!tlEl) return;
+      // drag-from-blank: a press that misses every glyph box must not start a
+      // selection at all (preventing mousedown's default blocks selection).
+      let onText = false;
+      for (const span of tlEl.querySelectorAll('span')) {
+        if (pointNearRect(e.clientX, e.clientY, span.getBoundingClientRect())) {
+          onText = true;
+          break;
+        }
+      }
+      if (!onText) {
+        e.preventDefault();
+        window.getSelection()?.removeAllRanges();
+        return;
+      }
+      // drag-to-blank clamp: endOfContent covers the layer while selecting so
+      // the browser keeps the endpoint on real text (see .textLayer.selecting)
+      tlEl.classList.add('selecting');
+      const wrapEl = tlEl.closest('.pagewrap');
       if (wrapEl) dragBand = { wrapEl, x0: e.clientX, y0: e.clientY, x1: e.clientX, y1: e.clientY };
     },
     true,
@@ -80,6 +104,7 @@ function initDragBandTracking() {
   document.addEventListener(
     'pointerup',
     () => {
+      releaseSelecting();
       if (dragBand) {
         const derived = deriveBandSelection(dragBand);
         if (derived) {
@@ -92,6 +117,11 @@ function initDragBandTracking() {
     },
     true,
   );
+  document.addEventListener('pointercancel', () => {
+    releaseSelecting();
+    dragBand = null;
+  });
+  window.addEventListener('blur', releaseSelecting);
 }
 
 // rects covered by the pointer band: every text span the band crosses,
@@ -107,13 +137,10 @@ function deriveBandSelection(band) {
   const rects = [];
   for (const span of band.wrapEl.querySelectorAll('.textLayer span')) {
     const r = span.getBoundingClientRect();
-    if (r.height < 2 || r.width < 1) continue;
-    if (r.bottom < by0 - 6 || r.top > by1 + 6) continue;
-    const sx = Math.max(bx0, r.left);
-    const ex = Math.min(bx1, r.right);
-    if (ex - sx < 1) continue;
-    const p1 = vp.convertToPdfPoint(sx - wr.left, r.top - wr.top);
-    const p2 = vp.convertToPdfPoint(ex - wr.left, r.bottom - wr.top);
+    const clip = bandClipRect(r, by0, by1, bx0, bx1);
+    if (!clip) continue;
+    const p1 = vp.convertToPdfPoint(clip.sx - wr.left, r.top - wr.top);
+    const p2 = vp.convertToPdfPoint(clip.ex - wr.left, r.bottom - wr.top);
     rects.push([
       Math.min(p1[0], p2[0]), Math.min(p1[1], p2[1]),
       Math.max(p1[0], p2[0]), Math.max(p1[1], p2[1]),
