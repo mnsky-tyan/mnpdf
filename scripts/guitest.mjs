@@ -608,7 +608,8 @@ async function main() {
       const selA = await page.evaluate(() => {
         const cs = window.mnpdf.annos.currentSelection();
         return { n: document.querySelectorAll('.selrect').length,
-                 rects: cs?.rects.length || 0, text: (cs?.text || '').slice(0, 40) };
+                 rects: cs ? cs.segments.reduce((s, x) => s + x.rects.length, 0) : 0,
+                 text: (cs?.text || '').slice(0, 40) };
       });
       const expA = norm(lines[1].text);
       log('t17 drag-from-blank: drawn selection covers the line',
@@ -626,7 +627,8 @@ async function main() {
       await sleep(300);
       const selB = await page.evaluate(() => {
         const cs = window.mnpdf.annos.currentSelection();
-        return { rects: cs?.rects.length || 0, text: cs?.text || '' };
+        return { rects: cs ? cs.segments.reduce((n, s) => n + s.rects.length, 0) : 0,
+                 text: cs?.text || '' };
       });
       const nB = norm(selB.text);
       const hasLine = (o, frac) => nB.includes(norm(o.text).slice(0, Math.max(8, Math.floor(norm(o.text).length * frac))));

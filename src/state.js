@@ -94,6 +94,25 @@ function applyOp(op, fwd) {
       if (a) a.text = fwd ? op.to : op.from;
       break;
     }
+    case 'addmany':
+      if (fwd) S.anns.push(...op.anns);
+      else S.anns = S.anns.filter((a) => !op.anns.some((x) => x.id === a.id));
+      break;
+    case 'hlreplacemany': {
+      // multi-page drag highlight: new highlights replace everything they
+      // overlap, as one undo step
+      if (fwd) {
+        const gone = new Set();
+        op.replaced.forEach((group) => group.forEach((a) => gone.add(a.id)));
+        S.anns = S.anns.filter((a) => !gone.has(a.id));
+        S.anns.push(...op.anns);
+      } else {
+        const ids = new Set(op.anns.map((a) => a.id));
+        S.anns = S.anns.filter((a) => !ids.has(a.id));
+        op.replaced.forEach((group) => S.anns.push(...group));
+      }
+      break;
+    }
     case 'recolor': {
       const a = S.anns.find((x) => x.id === op.id);
       if (a) a.color = fwd ? op.to : op.from;

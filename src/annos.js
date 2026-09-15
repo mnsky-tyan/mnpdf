@@ -46,17 +46,21 @@ function renderWrapOverlays(i, w, vp) {
   w.notes.replaceChildren(nFrag);
 }
 
-// ---- text selection (mnpdf-drawn, glyph-accurate, original blue) ----
+// ---- text selection (mnpdf-drawn, glyph-accurate, multi-page, original blue) ----
+//
+// Chromium's native selection paints stretched/trailing whitespace and
+// overshoots on blank-space drags — unusable on a PDF. So mnpdf prevents it
+// and draws its own selection rectangles from trimmed glyph boxes across ALL
+// pages (the document is one line list in reading order). What is painted
+// blue is exactly what Highlight/Copy act on. The selection persists after
+// release, follows edge auto-scroll across page boundaries, and clears on
+// click/Esc.
 
-// Chromium's native selection paints line boxes including stretched/trailing
-// space and overshoots on blank-space drags — it can never look right on a
-// PDF. So mnpdf prevents native selection entirely and draws its own
-// selection rectangles from the trimmed glyph boxes, in the classic blue.
-// What you see selected is byte-for-byte what Highlight/Copy act on.
-
-let selAnchor = null;   // {node, off, layer, boxes} while dragging
-let selState = null;    // {pageIdx, pdfRects, text} — persists after release
+let selAnchor = null;   // {node, off, line} — line = entry in the global line list
+let selState = null;    // {segments: [{srcIdx, rects}], text}
 let selLastApplied = null;
+let selPointer = null;
+let selRaf = 0;
 
 function spanVisibleBox(span) {
   const text = span.textContent || '';
@@ -91,6 +95,12 @@ function offsetAtX(vis, x) {
   return Math.max(vis.start, Math.min(vis.end, vis.start + Math.round(frac * (vis.end - vis.start))));
 }
 
+function xOfOffset(vis, off) {
+  if (!vis.node || vis.end <= vis.start) return vis.left;
+  const frac = (off - vis.start) / (vis.end - vis.start);
+  return vis.left + frac * (vis.right - vis.left);
+}
+
 function layerSpans(layer) {
   const out = [];
   for (const span of layer.querySelectorAll('span')) {
@@ -100,115 +110,138 @@ function layerSpans(layer) {
   return out;
 }
 
-function lineAt(boxes, x, y) {
-  if (!boxes.length) return null;
-  let best = null, bestD = Infinity;
-  for (const b of boxes) {
-    if (y >= b.top - 3 && y <= b.bottom + 3) return b;
-    const d = y < b.top ? b.top - y : y - b.bottom;
-    if (d < bestD) { bestD = d; best = b; }
-  }
-  const lh = best ? best.bottom - best.top : 0;
-  return best && bestD <= lh * 0.75 ? best : null;
+// every rendered text line of the document, in reading order
+function allLines() {
+  const out = [];
+  document.querySelectorAll('.pagewrap').forEach((wrap) => {
+    const layer = wrap.querySelector('.textLayer');
+    if (!layer) return;
+    const pageIdx = +wrap.dataset.i;
+    for (const vis of layerSpans(layer)) out.push({ wrapEl: wrap, pageIdx, vis });
+  });
+  return out;
 }
 
-// anchor/focus on a line: blank space beside the text means that line's
-// first/last glyph; inside the text it means the character under the pointer
-function anchorAt(boxes, x, y) {
-  const vis = lineAt(boxes, x, y);
-  if (!vis) return null;
+function lineAt(lines, x, y) {
+  if (!lines.length) return null;
+  // the line whose CENTER is nearest the pointer — stable in the gaps between
+  // lines and clamps naturally at the first/last line during auto-scroll
+  let best = null, bestD = Infinity;
+  for (const l of lines) {
+    const c = (l.vis.top + l.vis.bottom) / 2;
+    const d = Math.abs(y - c);
+    if (d < bestD) { bestD = d; best = l; }
+  }
+  return best;
+}
+
+function anchorAt(lines, x, y) {
+  const line = lineAt(lines, x, y);
+  if (!line) return null;
+  const vis = line.vis;
   let off;
   if (x <= vis.left + 2) off = vis.start;
   else if (x >= vis.right - 2) off = vis.end;
   else off = offsetAtX(vis, x);
-  return { node: vis.node, off, vis, boxes };
+  return { node: vis.node, off, line };
 }
 
-// the line segments between two anchors (ordered), each trimmed to glyphs and
-// clipped to the pointer on the anchor lines
-function segmentsBetween(a, b) {
-  const bBoxes = b.boxes || a.boxes;
-  const iA = a.boxes.indexOf(a.vis);
-  const iB = bBoxes.indexOf(b.vis);
-  if (iA === -1 || iB === -1) return []; // anchor/focus spans re-rendered away
-  const [first, last] = iA <= iB ? [a, b] : [b, a];
-  const fi = Math.min(iA, iB), li = Math.max(iA, iB);
+// per-line segments between two anchors (ordered): boundary lines are trimmed
+// to the pointer character, middle lines are full glyphs, and each selected
+// line extends down to the next one so the block is continuous
+function buildSegments(lines, iA, offA, iF, offF) {
+  const fi = Math.min(iA, iF), li = Math.max(iA, iF);
   const segs = [];
   for (let i = fi; i <= li; i++) {
-    const vis = a.boxes[i];
+    const vis = lines[i].vis;
     let sx = vis.left, sOff = vis.start, ex = vis.right, eOff = vis.end;
-    if (i === fi && first.vis === vis && first.off > vis.start + 2) {
-      sx = Math.min(first.off === vis.start ? vis.left : xOfOffset(vis, first.off), vis.right);
-      sOff = first.off;
-    }
-    if (i === li && last.vis === vis && last.off < vis.end - 2) {
-      ex = Math.max(last.off === vis.end ? vis.right : xOfOffset(vis, last.off), vis.left);
-      eOff = last.off;
-    }
-    if (ex - sx < 0.5) continue;
-    segs.push({ vis, sx, ex, sOff, eOff });
+    if (i === fi) { sx = xOfOffset(vis, offA); sOff = offA; }
+    if (i === li) { ex = xOfOffset(vis, offF); eOff = offF; }
+    if (ex - sx < 0.5) continue; // drop empty boundary slivers
+    segs.push({ vis, sx: Math.min(sx, ex), ex: Math.max(sx, ex), sOff, eOff });
   }
-  // continuous block: each line extends down to where the next one starts,
-  // so no unpainted leading stripes between selected lines
+  // no vertical gaps: extend each line down to the next selected line's top
   for (let i = 1; i < segs.length; i++) {
-    const prevBottom = segs[i - 1].vis.bottom;
-    if (segs[i].vis.top > prevBottom) segs[i].topPx = prevBottom;
+    if (segs[i].vis.top > segs[i - 1].vis.bottom && lines[fi + i - 1].wrapEl === lines[fi + i].wrapEl) {
+      segs[i].topPx = segs[i - 1].vis.bottom;
+    }
   }
   return segs;
 }
 
-function xOfOffset(vis, off) {
-  if (!vis.node || vis.end <= vis.start) return vis.left;
-  const frac = (off - vis.start) / (vis.end - vis.start);
-  return vis.left + frac * (vis.right - vis.left);
-}
-
-function drawSelection(segs, wrapEl, vp, wr) {
-  const rects = [];
+function drawSelection(segs, lines, fi) {
+  const byPage = new Map();
   const parts = [];
-  for (const seg of segs) {
+  segs.forEach((seg, k) => {
+    const line = lines[fi + k];
     const topPx = seg.topPx ?? seg.vis.top;
+    const vp = viewportFor(line.pageIdx);
+    if (!vp) return;
+    const wr = line.wrapEl.getBoundingClientRect();
     const p1 = vp.convertToPdfPoint(seg.sx - wr.left, topPx - wr.top);
     const p2 = vp.convertToPdfPoint(seg.ex - wr.left, seg.vis.bottom - wr.top);
-    rects.push([
+    const rect = [
       Math.min(p1[0], p2[0]), Math.min(p1[1], p2[1]),
       Math.max(p1[0], p2[0]), Math.max(p1[1], p2[1]),
-    ]);
+    ];
+    if (!byPage.has(line.pageIdx)) byPage.set(line.pageIdx, { srcIdx: line.pageIdx, rects: [] });
+    byPage.get(line.pageIdx).rects.push(rect);
     parts.push(seg.vis.text.slice(seg.sOff - seg.vis.start, seg.eOff - seg.vis.start));
-  }
-  return { pageIdx: +wrapEl.dataset.i, pdfRects: rects, text: parts.join(' ').replace(/\s+/g, ' ').trim() };
+  });
+  return { segments: [...byPage.values()], text: parts.join(' ').replace(/\s+/g, ' ').trim() };
 }
 
 function renderSelection() {
   document.querySelectorAll('.sel-layer').forEach((l) => l.replaceChildren());
   if (!selState) return;
-  const i = S.pageList.findIndex((p) => p.src === selState.pageIdx);
-  if (i < 0) return;
-  const vp = viewportFor(i);
-  if (!vp) return;
-  const wrap = document.querySelector(`.pagewrap[data-i="${i}"] .sel-layer`);
-  if (!wrap) return;
-  for (const r of selState.pdfRects) {
-    const d = el('div', 'selrect');
-    const v = vp.convertToViewportRectangle(r);
-    d.style.left = Math.min(v[0], v[2]) + 'px';
-    d.style.top = Math.min(v[1], v[3]) + 'px';
-    d.style.width = Math.abs(v[2] - v[0]) + 'px';
-    d.style.height = Math.abs(v[3] - v[1]) + 'px';
-    wrap.appendChild(d);
+  for (const seg of selState.segments) {
+    const i = S.pageList.findIndex((p) => p.src === seg.srcIdx);
+    if (i < 0) continue;
+    const vp = viewportFor(i);
+    if (!vp) continue;
+    const layer = document.querySelector(`.pagewrap[data-i="${i}"] .sel-layer`);
+    if (!layer) continue;
+    for (const r of seg.rects) {
+      const d = el('div', 'selrect');
+      const v = vp.convertToViewportRectangle(r);
+      d.style.left = Math.min(v[0], v[2]) + 'px';
+      d.style.top = Math.min(v[1], v[3]) + 'px';
+      d.style.width = Math.abs(v[2] - v[0]) + 'px';
+      d.style.height = Math.abs(v[3] - v[1]) + 'px';
+      layer.appendChild(d);
+    }
   }
 }
 
+export function renderSelectionDebug() { renderSelection(); }
 function clearSelection() {
   selState = null;
   renderSelection();
 }
 
-// what context menus act on
+// what context menus act on: one segment per crossed page
 export function currentSelection() {
-  if (!selState || !selState.pdfRects.length) return null;
-  return { srcIdx: selState.pageIdx, rects: selState.pdfRects, text: selState.text };
+  if (!selState || !selState.segments.length) return null;
+  return { segments: selState.segments, text: selState.text };
 }
+
+function applySelectionAt(x, y) {
+  const lines = allLines();
+  const iA = lines.findIndex((l) => l.vis.node === selAnchor.node);
+  if (iA === -1) return; // anchor page re-rendered; keep last state
+  const dir = y >= (selLastY ?? y) ? 1 : -1;
+  selLastY = y;
+  const focus = anchorAt(lines, x, y, dir);
+  if (!focus) return;
+  const last = selLastApplied;
+  if (last && last.node === focus.line.vis.node && last.off === focus.off) return;
+  selLastApplied = focus;
+  const iF = lines.indexOf(focus.line);
+  selState = drawSelection(buildSegments(lines, iA, selAnchor.off, iF, focus.off), lines, fi2(iA, iF));
+  renderSelection();
+}
+let selLastY = null;
+function fi2(iA, iF) { return Math.min(iA, iF); }
 
 function initManualSelection() {
   document.addEventListener(
@@ -219,31 +252,27 @@ function initManualSelection() {
       if (!tlEl) return;
       e.preventDefault(); // Chromium's selection paint is what goes wrong
       clearSelection();
-      const boxes = layerSpans(tlEl);
-      const a = anchorAt(boxes, e.clientX, e.clientY);
+      const lines = allLines();
+      const a = anchorAt(lines, e.clientX, e.clientY, 1);
       if (!a) return;
       if (e.detail >= 2) {
-        // double/triple click: word / whole line
-        const vis = a.vis;
+        // double click: word; triple click: whole line
+        const vis = a.line.vis;
         let sOff = vis.start, eOff = vis.end;
         if (e.detail === 2) {
-          let off = offsetAtX(vis, e.clientX);
+          const off = offsetAtX(vis, e.clientX);
           const t = vis.text;
           while (sOff < off && /\s/.test(t[sOff - vis.start] || '')) sOff++;
           while (eOff > off && /\s/.test(t[eOff - 1 - vis.start] || '')) eOff--;
           while (sOff > vis.start && !/\s/.test(t[sOff - 1 - vis.start] || '')) sOff--;
           while (eOff < vis.end && !/\s/.test(t[eOff - vis.start] || '')) eOff++;
         }
-        selAnchor = { node: vis.node, off: sOff, layer: tlEl, boxes };
-        const anchor = { node: vis.node, off: sOff, vis, boxes };
-        const focus = { node: vis.node, off: eOff, vis, boxes };
-        const segs = segmentsBetween(anchor, focus);
-        selState = drawSelection(segs, tlEl.closest('.pagewrap'), viewportFor(+tlEl.closest('.pagewrap').dataset.i), tlEl.closest('.pagewrap').getBoundingClientRect());
+        const i = lines.indexOf(a.line);
+        selState = drawSelection(buildSegments(lines, i, sOff, i, eOff), lines, i);
         renderSelection();
-        selAnchor = null;
         return;
       }
-      selAnchor = { node: a.node, off: a.off, vis: a.vis, layer: tlEl, boxes };
+      selAnchor = { node: a.line.vis.node, off: a.off, line: a.line };
       selPointer = { x: e.clientX, y: e.clientY };
       startSelAutoScroll();
     },
@@ -254,7 +283,6 @@ function initManualSelection() {
     (e) => {
       if (!selAnchor || !(e.buttons & 1)) return;
       selPointer = { x: e.clientX, y: e.clientY };
-      // fresh boxes: the page may have auto-scrolled since the press
       applySelectionAt(e.clientX, e.clientY);
     },
     true,
@@ -269,28 +297,9 @@ function initManualSelection() {
   document.addEventListener('mnpdf:zoom', renderSelection);
 }
 
-let selPointer = null;
-let selRaf = 0;
-
-function applySelectionAt(x, y) {
-  const boxes = layerSpans(selAnchor.layer);
-  // re-resolve the anchor's box in the CURRENT viewport (scroll may have moved it)
-  const aVis = boxes.find((b) => b.node === selAnchor.node);
-  if (!aVis) return;
-  const focus = anchorAt(boxes, x, y);
-  if (!focus) return;
-  const last = selLastApplied;
-  if (last && last.node === focus.node && last.off === focus.off) return;
-  const anchor = { node: selAnchor.node, off: selAnchor.off, vis: aVis, boxes };
-  const segs = segmentsBetween(anchor, focus);
-  if (!segs.length) return; // mid-re-render: keep the previous selection
-  selLastApplied = focus;
-  selState = drawSelection(segs, selAnchor.layer.closest('.pagewrap'), viewportFor(+selAnchor.layer.closest('.pagewrap').dataset.i), selAnchor.layer.closest('.pagewrap').getBoundingClientRect());
-  renderSelection();
-}
-
-// edge auto-scroll while selecting: hold near the top/bottom and the page
-// keeps scrolling, extending the selection as new lines come under the pointer
+// edge auto-scroll while selecting: hold near the top/bottom and the document
+// keeps scrolling; the selection extends over the newly revealed lines —
+// across page boundaries.
 function startSelAutoScroll() {
   if (selRaf) return;
   const scroller = document.getElementById('scroller');
@@ -353,6 +362,27 @@ export function addHighlight(info, color) {
   if (replaced.length) pushOp({ kind: 'hlreplace', ann, replaced });
   else pushOp({ kind: 'add', ann });
   clearSelection(); // the drawn selection has become the highlight
+}
+
+// highlight a (possibly multi-page) selection: one highlight per page, one
+// undo step; overlapping old highlights are replaced
+export function addHighlightMulti(sel, color) {
+  S.hlColor = color;
+  const anns = [];
+  const replaced = [];
+  sel.segments.forEach((seg) => {
+    const rects = mergeRects(seg.rects);
+    if (!rects.length) return;
+    anns.push(newHighlight(seg.srcIdx, rects, color, seg === sel.segments[0] ? sel.text : ''));
+    replaced.push(S.anns.filter(
+      (a) => a.type === 'hl' && a.page === seg.srcIdx &&
+        a.rects.some((r) => rects.some((n) => rectsOverlap(n, r))),
+    ));
+  });
+  if (!anns.length) return;
+  if (replaced.some((r) => r.length)) pushOp({ kind: 'hlreplacemany', anns, replaced });
+  else pushOp({ kind: 'addmany', anns });
+  clearSelection();
 }
 
 export function recolorHighlight(id, color) {

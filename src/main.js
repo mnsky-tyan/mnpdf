@@ -51,7 +51,7 @@ function menuForSelection(e, info) {
   // only reachable for double-click/keyboard selections — plain drags turn into
   // highlights instantly on release
   showMenu(e.clientX, e.clientY, [
-    { label: 'Highlight', swatches: annos.HL_COLORS, fn: (c) => annos.addHighlight(info, c) },
+    { label: 'Highlight', swatches: annos.HL_COLORS, fn: (c) => annos.addHighlightMulti(info, c) },
     { label: 'Copy text', hint: 'Ctrl+C', fn: () => { annos.copyText(info.text); toast('Copied'); } },
   ]);
 }
