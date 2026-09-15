@@ -147,23 +147,28 @@ async function main() {
     log('t2 selection alone shows no UI', floating.bars === 0 && floating.pops === 0,
         JSON.stringify(floating));
     await shot('t2_selection_quiet');
-    // right-click inside the selection
+    // release already converted the drag into a highlight
+    const inst = await page.evaluate(() => ({
+      anns: window.mnpdf.S.anns.length,
+      hl: document.querySelectorAll('.hl').length,
+      sel: String(window.getSelection()),
+      color: window.mnpdf.S.anns[0]?.color,
+    }));
+    await shot('t2_instant');
+    log('t2 drag release = instant highlight', inst.anns === 1 && inst.hl > 0 &&
+        inst.sel === '' && inst.color === '#ffd400',
+        JSON.stringify(inst));
+    // right-click ON the highlight -> recolor menu; pick another color
     const pt = inView(geo, 0.5, 0.37);
     await page.mouse.click(pt.x, pt.y, { button: 'right' });
     await sleep(350);
     const swatches = await page.evaluate(() => document.querySelectorAll('.menu-swatches .sw').length);
     await shot('t2_menu');
-    log('t2 right-click offers highlight colors', swatches === 5, `swatches=${swatches}`);
-    await clickAt('.menu-swatches .sw', 0);
+    log('t2 right-click highlight offers recolor', swatches === 5, `swatches=${swatches}`);
+    await clickAt('.menu-swatches .sw', 2);
     await sleep(300);
-    const hl = await page.evaluate(() => ({
-      anns: window.mnpdf.S.anns.length,
-      rects: document.querySelectorAll('.hl').length,
-      sel: String(window.getSelection()),
-    }));
-    await shot('t2_highlight');
-    log('t2 highlight applied', hl.anns === 1 && hl.rects > 0 && hl.sel === '',
-        JSON.stringify(hl.anns) + ' ann, ' + hl.rects + ' rects');
+    const rec = await page.evaluate(() => window.mnpdf.S.anns[0]?.color);
+    log('t2 recolor applies', rec === '#6ec1ff', `color=${rec}`);
   }
 
   // T3 undo/redo (keyboard + menu item)
@@ -174,11 +179,7 @@ async function main() {
       const geo = await page1Geo();
       await dragSelect(geo.left + geo.w * 0.2, geo.top + geo.h * 0.34,
                        geo.left + geo.w * 0.7, geo.top + geo.h * 0.38);
-      await sleep(350);
-      await page.mouse.click(inView(geo, 0.4, 0.36).x, inView(geo, 0.4, 0.36).y, { button: 'right' });
-      await sleep(300);
-      await clickAt('.menu-swatches .sw', 2);
-      await sleep(250);
+      await sleep(400);
       const afterAdd = await page.evaluate(() => window.mnpdf.S.anns.length);
       await page.keyboard.press('Control+z');
       await sleep(250);
@@ -329,11 +330,7 @@ async function main() {
     const geo = await page1Geo();
     await dragSelect(geo.left + geo.w * 0.15, geo.top + geo.h * 0.30,
                      geo.left + geo.w * 0.85, geo.top + geo.h * 0.36);
-    await sleep(350);
-    await page.mouse.click(inView(geo, 0.5, 0.33).x, inView(geo, 0.5, 0.33).y, { button: 'right' });
-    await sleep(350);
-    await clickAt('.menu-swatches .sw', 0);
-    await sleep(250);
+    await sleep(400); // release = instant highlight
     // drop one pin so we can verify it survives save via sidecar, not the PDF
     await page.mouse.click(inView(geo, 0.3, 0.8).x, inView(geo, 0.3, 0.8).y, { button: 'right' });
     await sleep(350);
@@ -517,11 +514,7 @@ async function main() {
     const band = { top: geo.top + geo.h * 0.30, bot: geo.top + geo.h * 0.36 };
     await dragSelect(geo.left + geo.w * 0.15, band.top, geo.left + geo.w * 0.85, band.bot);
     await sleep(400);
-    await page.mouse.click((band.top + band.bot) / 2 && geo.left + geo.w * 0.5,
-                           Math.min((band.top + band.bot) / 2, 700), { button: 'right' });
-    await sleep(350);
-    await clickAt('.menu-swatches .sw', 0);
-    await sleep(400);
+    await sleep(400); // release = instant highlight
     const boxes = await page.evaluate(() =>
       [...document.querySelectorAll('.hl')].map((d) => {
         const r = d.getBoundingClientRect();
@@ -606,12 +599,14 @@ async function main() {
       // and PERSISTS after release (it's real text selection)
       await dragSelect(geo.left + 6, lines[1].top + 5, geo.left + geo.w * 0.5, lines[1].top + 5);
       await sleep(300);
-      const selA = await page.evaluate(() => String(window.getSelection()));
-      const nA = norm(selA);
-      const expA = norm(lines[1].text);
-      log('t17 drag-from-blank: persistent glyph selection',
-          nA.length > 0 && expA.startsWith(nA) && nA.length >= expA.length * 0.3,
-          `sel=${nA.length}/${expA.length} chars, "${nA.slice(0, 30)}"`);
+      const hlA = await page.evaluate(() => ({
+        n: document.querySelectorAll('.hl').length,
+        left: document.querySelector('.hl')?.getBoundingClientRect().left,
+        sel: String(window.getSelection()),
+      }));
+      log('t17 drag-from-blank: instant line highlight',
+          hlA.n === 1 && hlA.sel === '' && hlA.left >= lines[1].left - 8 && hlA.left <= lines[1].left + 30,
+          `hl=${hlA.n} left=${Math.round(hlA.left || -1)} lineLeft=${Math.round(lines[1].left)} leftoverSel=${JSON.stringify(hlA.sel.slice(0, 20))}`);
 
       // B: drag-to-blank — start on line 1, drag into the gap a few lines down:
       // exactly the 3 crossed lines, never the far text
@@ -621,12 +616,11 @@ async function main() {
         Math.max(lines[0].left + 2, geo.left + 20), lines[2].bottom + 7,
       );
       await sleep(300);
-      const selB = await page.evaluate(() => String(window.getSelection()));
-      const nB = norm(selB);
-      const hasLine = (o, frac) => nB.includes(norm(o.text).slice(0, Math.max(8, Math.floor(norm(o.text).length * frac))));
+      const hlB = await page.evaluate(() => [...document.querySelectorAll('.hl')].map((d) => d.getBoundingClientRect()));
+      const covers = (o) => hlB.some((h) => h.top < o.top + 4 && h.bottom > o.bottom - 4);
       log('t17 drag-to-blank: 3 crossed lines, no page-end run',
-          hasLine(lines[0], 0.5) && hasLine(lines[2], 0.5) && !hasLine(lines[6], 0.9),
-          `len=${nB.length} l0=${hasLine(lines[0], 0.5)} l2=${hasLine(lines[2], 0.5)} far=${hasLine(lines[6], 0.9)}`);
+          hlB.length === 3 && covers(lines[0]) && covers(lines[2]) && !covers(lines[6]),
+          `hl=${hlB.length} l0=${covers(lines[0])} l2=${covers(lines[2])} far=${covers(lines[6])}`);
 
       // B2: drag down the LEFT margin — every selected rect sits inside some
       // line's glyph box (never the page fringe)
@@ -636,30 +630,24 @@ async function main() {
         geo.left + 6, lines[4].top + 5,
       );
       await sleep(300);
-      const b2Rects = await page.evaluate(() => {
-        const s = window.getSelection();
-        if (!s || !s.rangeCount) return [];
-        return [...s.getRangeAt(0).getClientRects()].filter((r) => r.width > 1 && r.height > 1)
-          .map((r) => ({ l: r.left, r: r.right, t: r.top, b: r.bottom }));
-      });
-      const b2Ok = b2Rects.length > 0 && b2Rects.every((h) =>
-        lines.some((l) => h.l >= l.left - 8 && h.r <= l.right + 8 && h.t >= l.top - 8 && h.b <= l.bottom + 8));
+      const hlB2 = await page.evaluate(() => [...document.querySelectorAll('.hl')].map((d) => d.getBoundingClientRect()));
+      const b2Ok = hlB2.length >= 4 && hlB2.every((h) =>
+        lines.some((l) => h.left >= l.left - 8 && h.right <= l.right + 8 && h.top >= l.top - 8 && h.bottom <= l.bottom + 8));
       log('t17 left-margin drag: glyphs only, no fringe', b2Ok,
-          `rects=${b2Rects.length} ` +
-          `lefts=[${b2Rects.slice(0, 6).map((h) => Math.round(h.l)).join(',')}] rights=[${b2Rects.slice(0, 6).map((h) => Math.round(h.r)).join(',')}]`);
+          `hl=${hlB2.length} lefts=[${hlB2.slice(0, 6).map((h) => Math.round(h.left)).join(',')}] rights=[${hlB2.slice(0, 6).map((h) => Math.round(h.right)).join(',')}]`);
 
       // C: in-text regression — a partial horizontal drag selects that piece
       await clearSel();
       await dragSelect(lines[1].left + 5, lines[1].top + 5, lines[1].left + 120, lines[1].top + 5);
       await sleep(300);
-      const selC = await page.evaluate(() => String(window.getSelection()));
-      const nC = norm(selC);
-      const expC = norm(lines[1].text);
-      log('t17 in-text partial drag selects that piece',
-          nC.length > 0 && expC.startsWith(nC) && nC.length <= expC.length * 0.6,
-          `sel=${nC.length}/${expC.length} chars`);
+      const hlC = await page.evaluate(() => [...document.querySelectorAll('.hl')].map((d) => d.getBoundingClientRect()));
+      const cOk = hlC.length === 1 &&
+        hlC[0].left >= lines[1].left && hlC[0].left <= lines[1].left + 30 &&
+        hlC[0].right >= lines[1].left + 100 && hlC[0].right <= lines[1].left + 160;
+      log('t17 in-text partial drag highlights that piece', cOk,
+          `hl=${hlC.length} x=${hlC[0] ? `${Math.round(hlC[0].left)}-${Math.round(hlC[0].right)}` : '-'} want=${Math.round(lines[1].left)}+5..120`);
 
-      // D: right-click on the selection still offers highlight colors
+      // D: right-click on a highlight offers recolor/delete/copy
       await dragSelect(
         Math.max(lines[0].left + 2, geo.left + 20), lines[0].top + 5,
         Math.max(lines[0].left + 2, geo.left + 20), lines[2].bottom + 7,
@@ -670,8 +658,30 @@ async function main() {
       await sleep(350);
       const swatches = await page.evaluate(() => document.querySelectorAll('.menu-swatches .sw').length);
       await shot('t17_selection');
-      log('t17 highlight menu on clamped selection', swatches === 5, `swatches=${swatches}`);
+      log('t17 highlight menu offers recolor', swatches === 5, `swatches=${swatches}`);
     });
+  }
+
+  // T18: right-click near the window bottom — menu (with Quit) must fit
+  if (!filter || filter === 't18') {
+    await openApp();
+    await sleep(300);
+    await page.mouse.click(500, 780, { button: 'right' }); // near the bottom edge
+    await sleep(350);
+    const m = await page.evaluate(() => {
+      const menu = document.querySelector('.menu');
+      if (!menu) return null;
+      const r = menu.getBoundingClientRect();
+      const items = [...menu.querySelectorAll('.menu-item')];
+      const last = items[items.length - 1]?.getBoundingClientRect();
+      return { top: r.top, bottom: r.bottom, vh: window.innerHeight,
+               last: last ? Math.round(last.bottom) : -1,
+               lastText: items[items.length - 1]?.textContent };
+    });
+    const fits = m && m.bottom <= m.vh && m.top >= 0 && m.last > 0 && m.last <= m.vh;
+    await shot('t18_bottom_menu');
+    log('t18 bottom right-click: menu fits, last item reachable', !!fits,
+        JSON.stringify(m));
   }
 
   await browser.close();

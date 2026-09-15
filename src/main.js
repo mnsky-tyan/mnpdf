@@ -48,17 +48,26 @@ function menuGeneral(e) {
 }
 
 function menuForSelection(e, info) {
+  // only reachable for double-click/keyboard selections — plain drags turn into
+  // highlights instantly on release
   showMenu(e.clientX, e.clientY, [
     { label: 'Highlight', swatches: annos.HL_COLORS, fn: (c) => annos.addHighlight(info, c) },
     { label: 'Copy text', hint: 'Ctrl+C', fn: () => { annos.copyText(info.text); toast('Copied'); } },
   ]);
 }
 
-function menuForPage(e, wrapEl) {
-  const i = +wrapEl.dataset.i;
-  const wr = wrapEl.getBoundingClientRect();
-  const vx = e.clientX - wr.left;
-  const vy = e.clientY - wr.top;
+function menuForHighlight(e, hl) {
+  showMenu(e.clientX, e.clientY, [
+    { label: 'Recolor', swatches: annos.HL_COLORS, fn: (c) => annos.recolorHighlight(hl.id, c) },
+    ...(hl.text ? [{ label: 'Copy text', fn: () => { annos.copyText(hl.text); toast('Copied'); } }] : []),
+    { label: 'Delete highlight', danger: true, fn: () => annos.deleteAnn(hl.id) },
+    'sep',
+    { label: 'Undo', hint: 'Ctrl+Z', fn: cmd.undoCmd },
+    { label: 'Redo', hint: 'Ctrl+Y', fn: cmd.redoCmd },
+  ]);
+}
+
+function menuForPage(e, i, vx, vy) {
   const hl = annos.highlightAt(i, vx, vy);
   const items = [];
   if (hl) items.push({ label: 'Delete highlight', danger: true, fn: () => annos.deleteAnn(hl.id) });
@@ -105,10 +114,16 @@ function initContextMenu() {
         del: cmd.deletePage,
       }));
     }
-    const sel = annos.preferredSelection();
-    if (sel) return menuForSelection(e, sel);
     const wrapEl = e.target.closest?.('.pagewrap');
-    if (wrapEl && S.pdf) return menuForPage(e, wrapEl);
+    if (wrapEl && S.pdf) {
+      const i = +wrapEl.dataset.i;
+      const box = wrapEl.getBoundingClientRect();
+      const hl = annos.highlightAt(i, e.clientX - box.left, e.clientY - box.top);
+      if (hl) return menuForHighlight(e, hl);
+      const sel = annos.selectionInfo() || annos.lastSelection();
+      if (sel) return menuForSelection(e, sel);
+      return menuForPage(e, i, e.clientX - box.left, e.clientY - box.top);
+    }
     menuGeneral(e);
   });
 }

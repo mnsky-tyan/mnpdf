@@ -94,14 +94,19 @@ function applyOp(op, fwd) {
       if (a) a.text = fwd ? op.to : op.from;
       break;
     }
+    case 'recolor': {
+      const a = S.anns.find((x) => x.id === op.id);
+      if (a) a.color = fwd ? op.to : op.from;
+      break;
+    }
     case 'pages':
       S.pageList = (fwd ? op.after : op.before).map((p) => ({ ...p }));
       break;
   }
 }
 
-export function newHighlight(srcIdx, rects, color) {
-  return { id: uid(), type: 'hl', page: srcIdx, rects, color };
+export function newHighlight(srcIdx, rects, color, text = '') {
+  return { id: uid(), type: 'hl', page: srcIdx, rects, color, text };
 }
 
 export function newPin(srcIdx, x, y) {

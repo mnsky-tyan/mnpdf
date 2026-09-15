@@ -169,7 +169,20 @@ function initManualSelection() {
     },
     true,
   );
-  document.addEventListener('mouseup', () => { selAnchor = null; }, true);
+  document.addEventListener(
+    'mouseup',
+    () => {
+      const dragging = !!selAnchor;
+      selAnchor = null;
+      // release = instant highlight in the current color (the selection itself
+      // converts; no second step). Double-click word selections (which never
+      // set the manual anchor) stay as selections for native copy.
+      if (!dragging) return;
+      const info = selectionInfo();
+      if (info) addHighlight(info, S.hlColor);
+    },
+    true,
+  );
   window.addEventListener('blur', () => { selAnchor = null; });
 }
 
@@ -273,7 +286,7 @@ function mergeRects(rects) {
 
 export function addHighlight(info, color) {
   S.hlColor = color;
-  const ann = newHighlight(info.srcIdx, mergeRects(info.rects), color);
+  const ann = newHighlight(info.srcIdx, mergeRects(info.rects), color, info.text || '');
   const replaced = S.anns.filter(
     (a) =>
       a.type === 'hl' && a.page === info.srcIdx &&
@@ -282,6 +295,13 @@ export function addHighlight(info, color) {
   if (replaced.length) pushOp({ kind: 'hlreplace', ann, replaced });
   else pushOp({ kind: 'add', ann });
   window.getSelection()?.removeAllRanges();
+}
+
+export function recolorHighlight(id, color) {
+  const a = S.anns.find((x) => x.id === id);
+  if (!a || a.type !== 'hl' || a.color === color) return;
+  S.hlColor = color;
+  pushOp({ kind: 'recolor', id, from: a.color, to: color });
 }
 
 // Windows Chromium clears the text selection on right mousedown, before the
