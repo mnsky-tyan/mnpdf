@@ -156,6 +156,13 @@ function anchorAt(lines, x, docY) {
   return { node: vis.node, off, line };
 }
 
+function offAtLine(l, x) {
+  const vis = l.vis;
+  if (x <= vis.left + 2) return vis.start;
+  if (x >= vis.right - 2) return vis.end;
+  return offsetAtX(vis, x);
+}
+
 function snapWord(vis, off) {
   let i = Math.max(vis.start, Math.min(vis.end, off)) - vis.start;
   const t = vis.text;
@@ -251,14 +258,17 @@ export function currentSelection() {
 let selLastLine = null;
 
 function applySelectionAt(x, docY) {
-  const focus = lineAt(selAnchor.lines, docY);
-  if (!focus) return;
-  const key = `${lines_key(focus)}:${focusOffAt(focus, x)}`;
-  if (key === selLastKey) return;
-  selLastKey = key;
-  const iA = selAnchor.lines.indexOf(selAnchor.line);
-  const iF = lines_key(focus);
-  selState = drawSelection(buildSegments(selAnchor.lines, iA, selAnchor.off, iF, focusOffAt(focus, x)));
+  const lines = selAnchor.lines;
+  // re-derive the anchor line from its stored doc position — stable across
+  // scrolling and text-layer re-renders
+  const anchorLine = lineAt(lines, selAnchor.docY);
+  const focus = lineAt(lines, docY);
+  if (!anchorLine || !focus) return;
+  let focusOff = offAtLine(focus, x);
+  if (selAnchor.wordMode) focusOff = snapWord(focus.vis, focusOff);
+  const iA = lines.indexOf(anchorLine);
+  const iF = lines.indexOf(focus);
+  selState = drawSelection(buildSegments(lines, iA, selAnchor.off, iF, focusOff));
   renderSelection();
 }
 
@@ -300,7 +310,7 @@ function initManualSelection() {
         renderSelection();
         off = sOff;
       }
-      selAnchor = { node: vis.node, off, line, lines, wordMode };
+      selAnchor = { node: vis.node, off, line, lines, wordMode, x: e.clientX, docY };
       selPointer = { x: e.clientX, y: e.clientY };
       selLastKey = '';
       startSelAutoScroll();
@@ -347,8 +357,8 @@ function startSelAutoScroll() {
     const sr = scroller.getBoundingClientRect();
     const M = 64;
     let v = 0;
-    if (selPointer.y < sr.top + M) v = -Math.min(28, Math.ceil((sr.top + M - selPointer.y) * 0.35) + 3);
-    else if (selPointer.y > sr.bottom - M) v = Math.min(28, Math.ceil((selPointer.y - (sr.bottom - M)) * 0.35) + 3);
+    if (selPointer.y < sr.top + M) v = -Math.min(12, Math.ceil((sr.top + M - selPointer.y) * 0.18) + 2);
+    else if (selPointer.y > sr.bottom - M) v = Math.min(12, Math.ceil((selPointer.y - (sr.bottom - M)) * 0.18) + 2);
     if (v) {
       scroller.scrollTop += v;
       scheduleApply();

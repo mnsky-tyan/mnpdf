@@ -147,14 +147,14 @@ function measure() {
   offsets = wraps.map((w) => ({ top: w.el.offsetTop, h: w.el.offsetHeight }));
 }
 
-export function visibleRange() {
+export function visibleRange(margin = 400) {
   const st = scroller.scrollTop;
   const vh = scroller.clientHeight;
   let lo = wraps.length, hi = -1;
   for (let i = 0; i < wraps.length; i++) {
     const o = offsets[i];
     if (!o) continue;
-    if (o.top < st + vh + 400 && o.top + o.h > st - 400) {
+    if (o.top < st + vh + margin && o.top + o.h > st - margin) {
       lo = Math.min(lo, i);
       hi = Math.max(hi, i);
     }
@@ -195,13 +195,23 @@ export function scheduleRender() {
   });
 }
 
+let selDragActive = false;
+
+// while a selection drag is active, keep text layers alive and render a wider
+// band so the selection can extend across many pages (edge auto-scroll)
+export function setSelectionDrag(v) {
+  if (selDragActive === v) return;
+  selDragActive = v;
+  scheduleRender();
+}
+
 function renderVisible() {
   if (!S.pdf || !wraps.length) return;
   dpr = window.devicePixelRatio;
-  const [lo, hi] = visibleRange();
+  const [lo, hi] = visibleRange(selDragActive ? 1600 : 400);
   for (let i = lo; i <= hi; i++) renderPage(i);
   for (let i = 0; i < wraps.length; i++) {
-    if (i < lo - 2 || i > hi + 2) maybeDestroy(i);
+    if (i < lo - 3 || i > hi + 3) maybeDestroy(i, selDragActive);
   }
 }
 
@@ -270,15 +280,17 @@ async function renderPage(i) {
   }
 }
 
-function maybeDestroy(i) {
+function maybeDestroy(i, keepText = false) {
   const w = wraps[i];
   if (!w || !w.key) return;
   try { w.task?.cancel(); } catch {}
-  try { w.tlObj?.cancel(); } catch {}
-  w.tlObj = null;
+  if (!keepText) {
+    try { w.tlObj?.cancel(); } catch {}
+    w.tlObj = null;
+    w.tl.replaceChildren();
+  }
   w.canvas.width = 1;
   w.canvas.height = 1;
-  w.tl.replaceChildren();
   w.key = null;
 }
 
