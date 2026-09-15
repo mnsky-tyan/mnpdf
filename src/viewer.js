@@ -99,7 +99,7 @@ export function buildPages() {
     wrapEl.className = 'pagewrap';
     wrapEl.dataset.i = i;
     wrapEl.innerHTML =
-      '<canvas></canvas><div class="hl-layer"></div><div class="find-layer"></div>' +
+      '<canvas></canvas><div class="sel-layer"></div><div class="hl-layer"></div><div class="find-layer"></div>' +
       '<div class="textLayer"></div><div class="note-layer"></div>';
     pagesEl.appendChild(wrapEl);
     return {

@@ -61,14 +61,22 @@ html, body {
   z-index: 0;
 }
 
-.hl-layer, .find-layer {
+.sel-layer, .hl-layer, .find-layer {
   position: absolute;
   inset: 0;
   pointer-events: none;
 }
 
-.hl-layer { z-index: 1; }
+.sel-layer { z-index: 1; }
+.hl-layer { z-index: 2; }
 .find-layer { z-index: 2; }
+
+/* mnpdf-drawn text selection — the original blue */
+.selrect {
+  position: absolute;
+  background: rgba(0, 120, 215, 0.28);
+  border-radius: 1px;
+}
 
 .hl {
   position: absolute;
@@ -87,7 +95,7 @@ html, body {
 .note-layer {
   position: absolute;
   inset: 0;
-  z-index: 4;
+  z-index: 5;
   pointer-events: none;
 }
 
@@ -107,7 +115,7 @@ html, body {
 
 .pin-ta {
   position: absolute;
-  z-index: 5;
+  z-index: 6;
   pointer-events: auto;
   line-height: 1.3;
   font-family: Helvetica, Arial, "Segoe UI", sans-serif;
@@ -171,7 +179,7 @@ html, body {
   forced-color-adjust: none;
   transform-origin: 0 0;
   caret-color: CanvasText;
-  z-index: 3;
+  z-index: 4;
   user-select: text;
   -webkit-user-select: text;
 }
@@ -195,9 +203,9 @@ html, body {
   cursor: default;
 }
 
-/* neutral gray: text selection must never look like a highlight */
+/* native selection is prevented; any that slips through keeps the original blue */
 .textLayer ::selection {
-  background: rgba(148, 152, 162, 0.45);
+  background: color-mix(in srgb, AccentColor, transparent 75%);
 }
 
 .textLayer br ::selection { background: transparent; }

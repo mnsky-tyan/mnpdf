@@ -46,17 +46,17 @@ function renderWrapOverlays(i, w, vp) {
   w.notes.replaceChildren(nFrag);
 }
 
-// ---- text selection (manual, glyph-accurate) ----
+// ---- text selection (mnpdf-drawn, glyph-accurate, original blue) ----
 
-// Chromium's native drag-selection overshoots badly on text layers: an
-// endpoint that lands in a gap or margin extends the selection to the end of
-// the page, and right-clicks collapse it. So mnpdf computes the selection
-// itself from the glyph boxes: drag endpoints map to line/character offsets,
-// blank space means "start/end of the line", and the resulting DOM selection
-// is a real one — it paints blue, persists after release, and Ctrl+C works.
+// Chromium's native selection paints line boxes including stretched/trailing
+// space and overshoots on blank-space drags — it can never look right on a
+// PDF. So mnpdf prevents native selection entirely and draws its own
+// selection rectangles from the trimmed glyph boxes, in the classic blue.
+// What you see selected is byte-for-byte what Highlight/Copy act on.
 
-let selAnchor = null; // {node, off, layer, boxes} while a drag is in progress
-let selLastApplied = '';
+let selAnchor = null;   // {node, off, layer, boxes} while dragging
+let selState = null;    // {pageIdx, pdfRects, text} — persists after release
+let selLastApplied = null;
 
 function spanVisibleBox(span) {
   const text = span.textContent || '';
@@ -100,9 +100,6 @@ function layerSpans(layer) {
   return out;
 }
 
-// the line the pointer is on: the row containing y, else the nearest row
-// within ~3/4 of a line height (blank space above/below lines belongs to that
-// line; deep blank space belongs to nothing)
 function lineAt(boxes, x, y) {
   let best = null, bestD = Infinity;
   for (const b of boxes) {
@@ -114,28 +111,94 @@ function lineAt(boxes, x, y) {
   return best && bestD <= lh * 0.75 ? best : null;
 }
 
+// anchor/focus on a line: blank space beside the text means that line's
+// first/last glyph; inside the text it means the character under the pointer
 function anchorAt(boxes, x, y) {
   const vis = lineAt(boxes, x, y);
   if (!vis) return null;
   let off;
-  if (x <= vis.left + 2) off = vis.start;        // blank/margin left of text
-  else if (x >= vis.right - 2) off = vis.end;    // blank right of text
+  if (x <= vis.left + 2) off = vis.start;
+  else if (x >= vis.right - 2) off = vis.end;
   else off = offsetAtX(vis, x);
-  return { node: vis.node, off, top: vis.top };
+  return { node: vis.node, off, vis, boxes };
 }
 
-function applySelection(a, b) {
-  let s = a, t = b;
-  if (a.node !== b.node) {
-    const pos = a.node.compareDocumentPosition(b.node);
-    if (!(pos & Node.DOCUMENT_POSITION_FOLLOWING)) { s = b; t = a; }
-  } else if (a.off > b.off) { s = b; t = a; }
-  const r = document.createRange();
-  r.setStart(s.node, s.off);
-  r.setEnd(t.node, t.off);
-  const sel = window.getSelection();
-  sel.removeAllRanges();
-  sel.addRange(r);
+// the line segments between two anchors (ordered), each trimmed to glyphs and
+// clipped to the pointer on the anchor lines
+function segmentsBetween(a, b) {
+  const bBoxes = b.boxes || a.boxes;
+  const iA = a.boxes.indexOf(a.vis);
+  const iB = bBoxes.indexOf(b.vis);
+  const [first, last] = iA <= iB ? [a, b] : [b, a];
+  const fi = Math.min(iA, iB), li = Math.max(iA, iB);
+  const segs = [];
+  for (let i = fi; i <= li; i++) {
+    const vis = a.boxes[i];
+    let sx = vis.left, sOff = vis.start, ex = vis.right, eOff = vis.end;
+    if (i === fi && first.vis === vis && first.off > vis.start + 2) {
+      sx = Math.min(first.off === vis.start ? vis.left : xOfOffset(vis, first.off), vis.right);
+      sOff = first.off;
+    }
+    if (i === li && last.vis === vis && last.off < vis.end - 2) {
+      ex = Math.max(last.off === vis.end ? vis.right : xOfOffset(vis, last.off), vis.left);
+      eOff = last.off;
+    }
+    if (ex - sx < 0.5) continue;
+    segs.push({ vis, sx, ex, sOff, eOff });
+  }
+  return segs;
+}
+
+function xOfOffset(vis, off) {
+  if (!vis.node || vis.end <= vis.start) return vis.left;
+  const frac = (off - vis.start) / (vis.end - vis.start);
+  return vis.left + frac * (vis.right - vis.left);
+}
+
+function drawSelection(segs, wrapEl, vp, wr) {
+  const rects = [];
+  const parts = [];
+  for (const seg of segs) {
+    const p1 = vp.convertToPdfPoint(seg.sx - wr.left, seg.vis.top - wr.top);
+    const p2 = vp.convertToPdfPoint(seg.ex - wr.left, seg.vis.bottom - wr.top);
+    rects.push([
+      Math.min(p1[0], p2[0]), Math.min(p1[1], p2[1]),
+      Math.max(p1[0], p2[0]), Math.max(p1[1], p2[1]),
+    ]);
+    parts.push(seg.vis.text.slice(seg.sOff - seg.vis.start, seg.eOff - seg.vis.start));
+  }
+  return { pageIdx: +wrapEl.dataset.i, pdfRects: rects, text: parts.join(' ').replace(/\s+/g, ' ').trim() };
+}
+
+function renderSelection() {
+  document.querySelectorAll('.sel-layer').forEach((l) => l.replaceChildren());
+  if (!selState) return;
+  const i = S.pageList.findIndex((p) => p.src === selState.pageIdx);
+  if (i < 0) return;
+  const vp = viewportFor(i);
+  if (!vp) return;
+  const wrap = document.querySelector(`.pagewrap[data-i="${i}"] .sel-layer`);
+  if (!wrap) return;
+  for (const r of selState.pdfRects) {
+    const d = el('div', 'selrect');
+    const v = vp.convertToViewportRectangle(r);
+    d.style.left = Math.min(v[0], v[2]) + 'px';
+    d.style.top = Math.min(v[1], v[3]) + 'px';
+    d.style.width = Math.abs(v[2] - v[0]) + 'px';
+    d.style.height = Math.abs(v[3] - v[1]) + 'px';
+    wrap.appendChild(d);
+  }
+}
+
+function clearSelection() {
+  selState = null;
+  renderSelection();
+}
+
+// what context menus act on
+export function currentSelection() {
+  if (!selState || !selState.pdfRects.length) return null;
+  return { srcIdx: selState.pageIdx, rects: selState.pdfRects, text: selState.text };
 }
 
 function initManualSelection() {
@@ -145,14 +208,33 @@ function initManualSelection() {
       if (e.button !== 0) return;
       const tlEl = e.target.closest?.('.textLayer');
       if (!tlEl) return;
-      if (e.detail >= 2) return; // double/triple click: native word/line select
-      e.preventDefault(); // Chromium's own selection is what overshoots
-      window.getSelection()?.removeAllRanges(); // a plain click clears, native-equivalent
+      e.preventDefault(); // Chromium's selection paint is what goes wrong
+      clearSelection();
       const boxes = layerSpans(tlEl);
       const a = anchorAt(boxes, e.clientX, e.clientY);
-      if (!a) return; // deep blank space: nothing to select
-      selAnchor = { ...a, layer: tlEl, boxes };
-      selLastApplied = null;
+      if (!a) return;
+      if (e.detail >= 2) {
+        // double/triple click: word / whole line
+        const vis = a.vis;
+        let sOff = vis.start, eOff = vis.end;
+        if (e.detail === 2) {
+          let off = offsetAtX(vis, e.clientX);
+          const t = vis.text;
+          while (sOff < off && /\s/.test(t[sOff - vis.start] || '')) sOff++;
+          while (eOff > off && /\s/.test(t[eOff - 1 - vis.start] || '')) eOff--;
+          while (sOff > vis.start && !/\s/.test(t[sOff - 1 - vis.start] || '')) sOff--;
+          while (eOff < vis.end && !/\s/.test(t[eOff - vis.start] || '')) eOff++;
+        }
+        selAnchor = { node: vis.node, off: sOff, layer: tlEl, boxes };
+        const anchor = { node: vis.node, off: sOff, vis, boxes };
+        const focus = { node: vis.node, off: eOff, vis, boxes };
+        const segs = segmentsBetween(anchor, focus);
+        selState = drawSelection(segs, tlEl.closest('.pagewrap'), viewportFor(+tlEl.closest('.pagewrap').dataset.i), tlEl.closest('.pagewrap').getBoundingClientRect());
+        renderSelection();
+        selAnchor = null;
+        return;
+      }
+      selAnchor = { node: a.node, off: a.off, vis: a.vis, layer: tlEl, boxes };
     },
     true,
   );
@@ -165,84 +247,23 @@ function initManualSelection() {
       const last = selLastApplied;
       if (last && last.node === focus.node && last.off === focus.off) return;
       selLastApplied = focus;
-      applySelection(selAnchor, focus);
+      const anchor = { node: selAnchor.node, off: selAnchor.off, vis: selAnchor.vis, boxes: selAnchor.boxes };
+      const segs = segmentsBetween(anchor, focus);
+      selState = drawSelection(segs, selAnchor.layer.closest('.pagewrap'), viewportFor(+selAnchor.layer.closest('.pagewrap').dataset.i), selAnchor.layer.closest('.pagewrap').getBoundingClientRect());
+      renderSelection();
     },
     true,
   );
   document.addEventListener('mouseup', () => { selAnchor = null; }, true);
+  document.addEventListener('pointercancel', () => { selAnchor = null; });
   window.addEventListener('blur', () => { selAnchor = null; });
-}
-
-// what context menus should treat as "the selection": the live selection if
-// present, else the last one remembered before a right-click collapsed it
-export function preferredSelection() {
-  return selectionInfo() || lastSel;
-}
-
-// Clean line rects for the selected characters: walk text nodes of the page's
-// text layer and take a sub-range per node (raw range.getClientRects() mixes in
-// container-element junk when the range ends between spans).
-function clientRectsFor(range, textLayerEl, wr) {
-  const out = [];
-  const walker = document.createTreeWalker(textLayerEl, NodeFilter.SHOW_TEXT);
-  while (walker.nextNode()) {
-    const node = walker.currentNode;
-    if (!range.intersectsNode(node)) continue;
-    const r = document.createRange();
-    r.selectNodeContents(node);
-    if (node === range.startContainer) r.setStart(node, range.startOffset);
-    if (node === range.endContainer) r.setEnd(node, range.endOffset);
-    if (r.collapsed) continue;
-    for (const cr of r.getClientRects()) {
-      if (cr.width < 1 || cr.height < 1) continue;
-      if (cr.right < wr.left || cr.left > wr.right || cr.bottom < wr.top || cr.top > wr.bottom) continue;
-      out.push(cr);
-    }
-  }
-  return out;
-}
-
-// Returns {srcIdx, rects(pdf pts), at} if the current selection lives inside a
-// rendered text layer, else null.
-export function selectionInfo() {
-  const sel = window.getSelection();
-  if (!sel || sel.isCollapsed || sel.rangeCount === 0) return null;
-  const range = sel.getRangeAt(0);
-  const startEl = range.startContainer.nodeType === 1
-    ? range.startContainer
-    : range.startContainer.parentElement;
-  const wrapEl = startEl?.closest?.('.pagewrap');
-  if (!wrapEl) return null;
-  const i = +wrapEl.dataset.i;
-  if (!S.pageList[i]) return null;
-  const vp = viewportFor(i);
-  if (!vp) return null;
-  const wr = wrapEl.getBoundingClientRect();
-  let clientRects = clientRectsFor(range, wrapEl.querySelector('.textLayer'), wr);
-  if (!clientRects.length) return null;
-  // sanity: drop any rect far taller than the typical selected line — a stale
-  // text layer can leave overlapping spans that produce runaway rects
-  const hs = clientRects.map((r) => r.height).sort((a, b) => a - b);
-  const med = hs[Math.floor(hs.length / 2)] || 0;
-  clientRects = clientRects.filter((r) => r.height <= med * 3 + 1);
-  const rects = clientRects.map((cr) => {
-    const p1 = vp.convertToPdfPoint(cr.left - wr.left, cr.top - wr.top);
-    const p2 = vp.convertToPdfPoint(cr.right - wr.left, cr.bottom - wr.top);
-    return [
-      Math.min(p1[0], p2[0]), Math.min(p1[1], p2[1]),
-      Math.max(p1[0], p2[0]), Math.max(p1[1], p2[1]),
-    ];
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && selState) clearSelection();
   });
-  const last = clientRects.slice().sort((a, b) => a.top - b.top || a.right - b.right).pop();
-  return {
-    srcIdx: S.pageList[i].src,
-    rects,
-    at: last ? { x: last.right, y: last.top } : null,
-    text: String(sel),
-  };
+  document.addEventListener('mnpdf:scroll', renderSelection);
+  document.addEventListener('mnpdf:zoom', renderSelection);
 }
 
-// two pdf-space rects intersect (0.5pt tolerance so line-adjacent rects don't count)
 function rectsOverlap(a, b) {
   return a[0] < b[2] - 0.5 && a[2] > b[0] + 0.5 && a[1] < b[3] - 0.5 && a[3] > b[1] + 0.5;
 }
@@ -281,7 +302,7 @@ export function addHighlight(info, color) {
   );
   if (replaced.length) pushOp({ kind: 'hlreplace', ann, replaced });
   else pushOp({ kind: 'add', ann });
-  window.getSelection()?.removeAllRanges();
+  clearSelection(); // the drawn selection has become the highlight
 }
 
 export function recolorHighlight(id, color) {
@@ -294,13 +315,6 @@ export function recolorHighlight(id, color) {
 // Windows Chromium clears the text selection on right mousedown, before the
 // contextmenu event — remember the last live selection so the context menu can
 // still offer Highlight.
-let lastSel = null;
-let selTimer = null;
-
-export function lastSelection() {
-  return lastSel;
-}
-
 // Highlight under a viewport point (for right-click delete), topmost first.
 export function highlightAt(displayIdx, vx, vy) {
   const vp = viewportFor(displayIdx);
@@ -422,12 +436,6 @@ export function startPinEdit(ann, isNew = false) {
 export function init() {
   setOverlayRenderer(renderWrapOverlays);
   initManualSelection();
-  document.addEventListener('selectionchange', () => {
-    clearTimeout(selTimer);
-    selTimer = setTimeout(() => { lastSel = selectionInfo(); }, 120);
-  });
-  document.addEventListener('mnpdf:scroll', () => { lastSel = null; });
-  document.addEventListener('mnpdf:zoom', () => { lastSel = null; });
   onDocChange((what) => {
     positionOverlays(true);
     hidePop();

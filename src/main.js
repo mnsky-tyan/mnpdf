@@ -120,7 +120,7 @@ function initContextMenu() {
       const box = wrapEl.getBoundingClientRect();
       const hl = annos.highlightAt(i, e.clientX - box.left, e.clientY - box.top);
       if (hl) return menuForHighlight(e, hl);
-      const sel = annos.selectionInfo() || annos.lastSelection();
+      const sel = annos.currentSelection();
       if (sel) return menuForSelection(e, sel);
       return menuForPage(e, i, e.clientX - box.left, e.clientY - box.top);
     }

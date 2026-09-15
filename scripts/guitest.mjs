@@ -605,12 +605,16 @@ async function main() {
       // and PERSISTS after release (it's real text selection)
       await dragSelect(geo.left + 6, lines[1].top + 5, geo.left + geo.w * 0.5, lines[1].top + 5);
       await sleep(300);
-      const selA = await page.evaluate(() => String(window.getSelection()));
-      const nA = norm(selA);
+      const selA = await page.evaluate(() => {
+        const cs = window.mnpdf.annos.currentSelection();
+        return { n: document.querySelectorAll('.selrect').length,
+                 rects: cs?.rects.length || 0, text: (cs?.text || '').slice(0, 40) };
+      });
       const expA = norm(lines[1].text);
-      log('t17 drag-from-blank: persistent glyph selection',
-          nA.length > 0 && expA.startsWith(nA) && nA.length >= expA.length * 0.3,
-          `sel=${nA.length}/${expA.length} chars, "${nA.slice(0, 30)}"`);
+      log('t17 drag-from-blank: drawn selection covers the line',
+          selA.n >= 1 && selA.rects === 1 && norm(selA.text).length >= expA.length * 0.3 &&
+          norm(selA.text).length <= expA.length,
+          `selrects=${selA.n} rects=${selA.rects} text=${selA.text.length}/${expA.length} chars`);
 
       // B: drag-to-blank — start on line 1, drag into the gap a few lines down:
       // exactly the 3 crossed lines, never the far text
@@ -620,12 +624,15 @@ async function main() {
         Math.max(lines[0].left + 2, geo.left + 20), lines[2].bottom + 7,
       );
       await sleep(300);
-      const selB = await page.evaluate(() => String(window.getSelection()));
-      const nB = norm(selB);
+      const selB = await page.evaluate(() => {
+        const cs = window.mnpdf.annos.currentSelection();
+        return { rects: cs?.rects.length || 0, text: cs?.text || '' };
+      });
+      const nB = norm(selB.text);
       const hasLine = (o, frac) => nB.includes(norm(o.text).slice(0, Math.max(8, Math.floor(norm(o.text).length * frac))));
       log('t17 drag-to-blank: 3 crossed lines, no page-end run',
-          hasLine(lines[0], 0.5) && hasLine(lines[2], 0.5) && !hasLine(lines[6], 0.9),
-          `len=${nB.length} l0=${hasLine(lines[0], 0.5)} l2=${hasLine(lines[2], 0.5)} far=${hasLine(lines[6], 0.9)}`);
+          selB.rects === 3 && hasLine(lines[0], 0.5) && hasLine(lines[2], 0.5) && !hasLine(lines[6], 0.9),
+          `rects=${selB.rects} len=${nB.length} l0=${hasLine(lines[0], 0.5)} l2=${hasLine(lines[2], 0.5)} far=${hasLine(lines[6], 0.9)}`);
 
       // B2: drag down the LEFT margin — every selected rect sits inside some
       // line's glyph box (never the page fringe)
@@ -635,13 +642,11 @@ async function main() {
         geo.left + 6, lines[4].top + 5,
       );
       await sleep(300);
-      const b2Rects = await page.evaluate(() => {
-        const s = window.getSelection();
-        if (!s || !s.rangeCount) return [];
-        return [...s.getRangeAt(0).getClientRects()].filter((r) => r.width > 1 && r.height > 1)
-          .map((r) => ({ l: r.left, r: r.right, t: r.top, b: r.bottom }));
-      });
-      const b2Ok = b2Rects.length > 0 && b2Rects.every((h) =>
+      const b2Rects = await page.evaluate(() => [...document.querySelectorAll('.selrect')].map((d) => {
+        const r = d.getBoundingClientRect();
+        return { l: r.left, r: r.right, t: r.top, b: r.bottom };
+      }));
+      const b2Ok = b2Rects.length >= 4 && b2Rects.every((h) =>
         lines.some((l) => h.l >= l.left - 8 && h.r <= l.right + 8 && h.t >= l.top - 8 && h.b <= l.bottom + 8));
       log('t17 left-margin drag: glyphs only, no fringe', b2Ok,
           `rects=${b2Rects.length} ` +
@@ -651,12 +656,15 @@ async function main() {
       await clearSel();
       await dragSelect(lines[1].left + 5, lines[1].top + 5, lines[1].left + 120, lines[1].top + 5);
       await sleep(300);
-      const selC = await page.evaluate(() => String(window.getSelection()));
-      const nC = norm(selC);
+      const selC = await page.evaluate(() => {
+        const cs = window.mnpdf.annos.currentSelection();
+        return { n: document.querySelectorAll('.selrect').length, text: cs?.text || '' };
+      });
       const expC = norm(lines[1].text);
+      const nC = norm(selC.text);
       log('t17 in-text partial drag selects that piece',
-          nC.length > 0 && expC.startsWith(nC) && nC.length <= expC.length * 0.6,
-          `sel=${nC.length}/${expC.length} chars`);
+          selC.n === 1 && nC.length > 0 && expC.startsWith(nC) && nC.length <= expC.length * 0.6,
+          `selrects=${selC.n} sel=${nC.length}/${expC.length} chars`);
 
       // D: right-click on a highlight offers recolor/delete/copy
       await dragSelect(
@@ -668,8 +676,16 @@ async function main() {
       await page.mouse.click(pt.x, pt.y, { button: 'right' });
       await sleep(350);
       const swatches = await page.evaluate(() => document.querySelectorAll('.menu-swatches .sw').length);
+      await clickAt('.menu-swatches .sw', 0);
+      await sleep(300);
+      const conv = await page.evaluate(() => ({
+        hl: document.querySelectorAll('.hl').length,
+        selrects: document.querySelectorAll('.selrect').length,
+      }));
       await shot('t17_selection');
-      log('t17 highlight menu on clamped selection', swatches === 5, `swatches=${swatches}`);
+      log('t17 highlight menu + selection converts to highlight',
+          swatches === 5 && conv.hl >= 1 && conv.selrects === 0,
+          `swatches=${swatches} hl=${conv.hl} selrectsAfter=${conv.selrects}`);
     });
   }
 
