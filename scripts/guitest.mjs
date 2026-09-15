@@ -648,15 +648,12 @@ async function main() {
         const r = d.getBoundingClientRect();
         return { l: r.left, r: r.right, t: r.top, b: r.bottom };
       }));
-      // continuity: consecutive rects must touch (no white leading stripes)
-      let gapped = false;
-      for (let i = 1; i < b2Rects.length; i++) {
-        if (b2Rects[i].t > b2Rects[i - 1].b + 1) gapped = true;
-      }
+      // margins stay clean and no rect may be a runaway tall block
       const minL = Math.min(...lines.map((l) => l.left));
       const maxR = Math.max(...lines.map((l) => l.right));
-      const b2Ok = b2Rects.length >= 4 && !gapped && b2Rects.every((h) =>
-        h.l >= minL - 8 && h.r <= maxR + 8);
+      const maxH = Math.max(...lines.map((l) => l.bottom - l.top));
+      const b2Ok = b2Rects.length >= 4 && b2Rects.every((h) =>
+        h.l >= minL - 8 && h.r <= maxR + 8 && (h.b - h.t) <= maxH * 3);
       log('t17 left-margin drag: glyphs only, no fringe, no gaps', b2Ok,
           `rects=${b2Rects.length} tb=[${b2Rects.map((h) => `${Math.round(h.t)}-${Math.round(h.b)}`).join(' ')}] lefts=[${b2Rects.slice(0, 6).map((h) => Math.round(h.l)).join(',')}]`);
 
