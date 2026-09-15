@@ -42,7 +42,10 @@ html, body {
 
 #pages {
   position: relative;
-  width: max-content;
+  display: flex;
+  flex-direction: column;
+  align-items: safe center;
+  width: fit-content;
   margin: 0 auto;
   padding: 8px 0 30px;
   min-width: 100%;
@@ -50,7 +53,8 @@ html, body {
 
 .pagewrap {
   position: relative;
-  margin: 0 auto 8px;
+  flex: none;
+  margin: 0 0 8px;
   background: #fff;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.22), 0 6px 18px rgba(0, 0, 0, 0.10);
 }

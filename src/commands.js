@@ -84,7 +84,6 @@ async function openBytes(bytes, path, name) {
     toast(msg, 3200);
     throw new Error(msg);
   }
-  const keepZoom = S.zoom;
   Object.assign(S, {
     path, name, bytes, pdf,
     nPages: pdf.numPages,
@@ -124,7 +123,6 @@ async function openBytes(bytes, path, name) {
   let top = 0;
   const st = path ? await loadDocState(path) : null;
   if (st) {
-    if (typeof st.zoom === 'number') S.zoom = clamp(st.zoom, 0.25, 6);
     if (typeof st.top === 'number') top = st.top - 1;
     if (st.hl) S.hlColor = st.hl;
     if (validAnns(st.anns)) {
@@ -146,9 +144,13 @@ async function openBytes(bytes, path, name) {
     );
     if (!dup) S.anns.push(ip);
   }
-  if (S.zoom === 0.5) S.zoom = viewer.fitZoom();
-  if (S.zoom === 0.5) S.zoom = keepZoom > 0.25 && keepZoom < 6 ? keepZoom : 1;
+  // zoom: sidecar value if present, else fit-width (paper touches the borders)
+  const savedZoom = st && typeof st.zoom === 'number' ? clamp(st.zoom, 0.25, 6) : null;
+  let fit = false;
+  if (savedZoom != null) S.zoom = savedZoom;
+  else { S.zoom = viewer.fitZoom(); fit = true; }
 
+  if (fit) viewer.markFit();
   viewer.buildPages();
   thumbs.refresh(true);
   viewer.goToDisplayPage(top);
@@ -254,7 +256,7 @@ export async function doSaveAs() {
 export function zoomIn() { viewer.setZoom(S.zoom * 1.2, viewer.zoomAnchorCenter()); }
 export function zoomOut() { viewer.setZoom(S.zoom / 1.2, viewer.zoomAnchorCenter()); }
 export function zoomReset() { viewer.setZoom(1, viewer.zoomAnchorCenter()); }
-export function zoomFit() { viewer.setZoom(viewer.fitZoom(), viewer.zoomAnchorCenter()); }
+export function zoomFit() { viewer.setZoom(viewer.fitZoom(), viewer.zoomAnchorCenter()); viewer.markFit(); }
 
 export function rotatePage(i, dir) {
   const before = S.pageList.map((p) => ({ ...p }));

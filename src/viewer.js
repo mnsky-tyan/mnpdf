@@ -305,6 +305,7 @@ export function positionOverlays(force = false) {
 export function setZoom(nz, anchor) {
   nz = clamp(nz, 0.25, 6);
   if (Math.abs(nz - S.zoom) < 1e-4) return;
+  atFit = false;
   const sr = scroller.getBoundingClientRect();
   let ax = 0, ay = 0, hasA = false, boxL = 0, boxT = 0;
   if (anchor) {
@@ -332,6 +333,12 @@ export function setZoom(nz, anchor) {
 export function zoomAnchorCenter() {
   const sr = scroller.getBoundingClientRect();
   return { x: sr.left + scroller.clientWidth / 2, y: sr.top + scroller.clientHeight / 2 };
+}
+
+let atFit = false;
+
+export function markFit() {
+  atFit = true;
 }
 
 export function fitZoom() {
@@ -436,7 +443,9 @@ export function init() {
 
   window.addEventListener('resize', debounce(() => {
     if (!wraps.length) return;
+    if (atFit) S.zoom = fitZoom(); // keep touching the borders while at fit width
     measure();
+    layoutAll();
     scheduleRender();
     positionOverlays();
   }, 120));

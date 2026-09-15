@@ -646,11 +646,17 @@ async function main() {
         const r = d.getBoundingClientRect();
         return { l: r.left, r: r.right, t: r.top, b: r.bottom };
       }));
-      const b2Ok = b2Rects.length >= 4 && b2Rects.every((h) =>
-        lines.some((l) => h.l >= l.left - 8 && h.r <= l.right + 8 && h.t >= l.top - 8 && h.b <= l.bottom + 8));
-      log('t17 left-margin drag: glyphs only, no fringe', b2Ok,
-          `rects=${b2Rects.length} ` +
-          `lefts=[${b2Rects.slice(0, 6).map((h) => Math.round(h.l)).join(',')}] rights=[${b2Rects.slice(0, 6).map((h) => Math.round(h.r)).join(',')}]`);
+      // continuity: consecutive rects must touch (no white leading stripes)
+      let gapped = false;
+      for (let i = 1; i < b2Rects.length; i++) {
+        if (b2Rects[i].t > b2Rects[i - 1].b + 1) gapped = true;
+      }
+      const minL = Math.min(...lines.map((l) => l.left));
+      const maxR = Math.max(...lines.map((l) => l.right));
+      const b2Ok = b2Rects.length >= 4 && !gapped && b2Rects.every((h) =>
+        h.l >= minL - 8 && h.r <= maxR + 8);
+      log('t17 left-margin drag: glyphs only, no fringe, no gaps', b2Ok,
+          `rects=${b2Rects.length} tb=[${b2Rects.map((h) => `${Math.round(h.t)}-${Math.round(h.b)}`).join(' ')}] lefts=[${b2Rects.slice(0, 6).map((h) => Math.round(h.l)).join(',')}]`);
 
       // C: in-text regression — a partial horizontal drag selects that piece
       await clearSel();

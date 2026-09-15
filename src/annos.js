@@ -101,6 +101,7 @@ function layerSpans(layer) {
 }
 
 function lineAt(boxes, x, y) {
+  if (!boxes.length) return null;
   let best = null, bestD = Infinity;
   for (const b of boxes) {
     if (y >= b.top - 3 && y <= b.bottom + 3) return b;
@@ -129,6 +130,7 @@ function segmentsBetween(a, b) {
   const bBoxes = b.boxes || a.boxes;
   const iA = a.boxes.indexOf(a.vis);
   const iB = bBoxes.indexOf(b.vis);
+  if (iA === -1 || iB === -1) return []; // anchor/focus spans re-rendered away
   const [first, last] = iA <= iB ? [a, b] : [b, a];
   const fi = Math.min(iA, iB), li = Math.max(iA, iB);
   const segs = [];
@@ -146,6 +148,12 @@ function segmentsBetween(a, b) {
     if (ex - sx < 0.5) continue;
     segs.push({ vis, sx, ex, sOff, eOff });
   }
+  // continuous block: each line extends down to where the next one starts,
+  // so no unpainted leading stripes between selected lines
+  for (let i = 1; i < segs.length; i++) {
+    const prevBottom = segs[i - 1].vis.bottom;
+    if (segs[i].vis.top > prevBottom) segs[i].topPx = prevBottom;
+  }
   return segs;
 }
 
@@ -159,7 +167,8 @@ function drawSelection(segs, wrapEl, vp, wr) {
   const rects = [];
   const parts = [];
   for (const seg of segs) {
-    const p1 = vp.convertToPdfPoint(seg.sx - wr.left, seg.vis.top - wr.top);
+    const topPx = seg.topPx ?? seg.vis.top;
+    const p1 = vp.convertToPdfPoint(seg.sx - wr.left, topPx - wr.top);
     const p2 = vp.convertToPdfPoint(seg.ex - wr.left, seg.vis.bottom - wr.top);
     rects.push([
       Math.min(p1[0], p2[0]), Math.min(p1[1], p2[1]),
@@ -235,6 +244,8 @@ function initManualSelection() {
         return;
       }
       selAnchor = { node: a.node, off: a.off, vis: a.vis, layer: tlEl, boxes };
+      selPointer = { x: e.clientX, y: e.clientY };
+      startSelAutoScroll();
     },
     true,
   );
@@ -242,26 +253,65 @@ function initManualSelection() {
     'mousemove',
     (e) => {
       if (!selAnchor || !(e.buttons & 1)) return;
-      const focus = anchorAt(selAnchor.boxes, e.clientX, e.clientY);
-      if (!focus) return;
-      const last = selLastApplied;
-      if (last && last.node === focus.node && last.off === focus.off) return;
-      selLastApplied = focus;
-      const anchor = { node: selAnchor.node, off: selAnchor.off, vis: selAnchor.vis, boxes: selAnchor.boxes };
-      const segs = segmentsBetween(anchor, focus);
-      selState = drawSelection(segs, selAnchor.layer.closest('.pagewrap'), viewportFor(+selAnchor.layer.closest('.pagewrap').dataset.i), selAnchor.layer.closest('.pagewrap').getBoundingClientRect());
-      renderSelection();
+      selPointer = { x: e.clientX, y: e.clientY };
+      // fresh boxes: the page may have auto-scrolled since the press
+      applySelectionAt(e.clientX, e.clientY);
     },
     true,
   );
-  document.addEventListener('mouseup', () => { selAnchor = null; }, true);
-  document.addEventListener('pointercancel', () => { selAnchor = null; });
-  window.addEventListener('blur', () => { selAnchor = null; });
+  document.addEventListener('mouseup', () => { selAnchor = null; stopSelAutoScroll(); }, true);
+  document.addEventListener('pointercancel', () => { selAnchor = null; stopSelAutoScroll(); });
+  window.addEventListener('blur', () => { selAnchor = null; stopSelAutoScroll(); });
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && selState) clearSelection();
+    if (e.key === 'Escape' && selState) { clearSelection(); selAnchor = null; stopSelAutoScroll(); }
   });
   document.addEventListener('mnpdf:scroll', renderSelection);
   document.addEventListener('mnpdf:zoom', renderSelection);
+}
+
+let selPointer = null;
+let selRaf = 0;
+
+function applySelectionAt(x, y) {
+  const boxes = layerSpans(selAnchor.layer);
+  // re-resolve the anchor's box in the CURRENT viewport (scroll may have moved it)
+  const aVis = boxes.find((b) => b.node === selAnchor.node);
+  if (!aVis) return;
+  const focus = anchorAt(boxes, x, y);
+  if (!focus) return;
+  const last = selLastApplied;
+  if (last && last.node === focus.node && last.off === focus.off) return;
+  const anchor = { node: selAnchor.node, off: selAnchor.off, vis: aVis, boxes };
+  const segs = segmentsBetween(anchor, focus);
+  if (!segs.length) return; // mid-re-render: keep the previous selection
+  selLastApplied = focus;
+  selState = drawSelection(segs, selAnchor.layer.closest('.pagewrap'), viewportFor(+selAnchor.layer.closest('.pagewrap').dataset.i), selAnchor.layer.closest('.pagewrap').getBoundingClientRect());
+  renderSelection();
+}
+
+// edge auto-scroll while selecting: hold near the top/bottom and the page
+// keeps scrolling, extending the selection as new lines come under the pointer
+function startSelAutoScroll() {
+  if (selRaf) return;
+  const scroller = document.getElementById('scroller');
+  const tick = () => {
+    if (!selAnchor || !selPointer) { selRaf = 0; return; }
+    const sr = scroller.getBoundingClientRect();
+    const M = 64;
+    let v = 0;
+    if (selPointer.y < sr.top + M) v = -Math.min(28, Math.ceil((sr.top + M - selPointer.y) * 0.35) + 3);
+    else if (selPointer.y > sr.bottom - M) v = Math.min(28, Math.ceil((selPointer.y - (sr.bottom - M)) * 0.35) + 3);
+    if (v) {
+      scroller.scrollTop += v;
+      applySelectionAt(selPointer.x, selPointer.y);
+    }
+    selRaf = requestAnimationFrame(tick);
+  };
+  selRaf = requestAnimationFrame(tick);
+}
+
+function stopSelAutoScroll() {
+  if (selRaf) { cancelAnimationFrame(selRaf); selRaf = 0; }
 }
 
 function rectsOverlap(a, b) {
