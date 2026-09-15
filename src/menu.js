@@ -38,7 +38,11 @@ export function showMenu(x, y, items) {
   document.body.appendChild(root);
   const r = root.getBoundingClientRect();
   root.style.left = Math.max(6, Math.min(x, window.innerWidth - r.width - 8)) + 'px';
-  root.style.top = Math.max(6, Math.min(y, window.innerHeight - r.height - 8)) + 'px';
+  // not enough room below the click? open UPWARD, bottom edge at the click
+  let top;
+  if (y + r.height + 8 <= window.innerHeight) top = y;
+  else top = Math.max(6, y - r.height - 6);
+  root.style.top = top + 'px';
 }
 
 export function init() {

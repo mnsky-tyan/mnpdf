@@ -169,20 +169,7 @@ function initManualSelection() {
     },
     true,
   );
-  document.addEventListener(
-    'mouseup',
-    () => {
-      const dragging = !!selAnchor;
-      selAnchor = null;
-      // release = instant highlight in the current color (the selection itself
-      // converts; no second step). Double-click word selections (which never
-      // set the manual anchor) stay as selections for native copy.
-      if (!dragging) return;
-      const info = selectionInfo();
-      if (info) addHighlight(info, S.hlColor);
-    },
-    true,
-  );
+  document.addEventListener('mouseup', () => { selAnchor = null; }, true);
   window.addEventListener('blur', () => { selAnchor = null; });
 }
 
