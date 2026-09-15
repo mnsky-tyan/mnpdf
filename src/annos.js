@@ -178,13 +178,21 @@ function snapWord(vis, off) {
 // margins and page gaps stay unpainted.
 function buildSegments(lines, iA, offA, iF, offF) {
   const fi = Math.min(iA, iF), li = Math.max(iA, iF);
+  // which end of the selection the anchor/focus offsets belong to depends on
+  // the drag direction (upward drags reverse the anchor/focus roles)
+  const downward = iA <= iF;
   const segs = [];
   for (let i = fi; i <= li; i++) {
     const line = lines[i];
     const vis = line.vis;
     let sx = vis.left, sOff = vis.start, ex = vis.right, eOff = vis.end;
-    if (i === fi) { sx = xOfOffset(vis, offA); sOff = offA; }
-    if (i === li) { ex = xOfOffset(vis, offF); eOff = offF; }
+    if (i === fi) {
+      if (downward) { sx = xOfOffset(vis, offA); sOff = offA; }
+      else { ex = xOfOffset(vis, offF); eOff = offF; }
+    } else if (i === li) {
+      if (downward) { ex = xOfOffset(vis, offF); eOff = offF; }
+      else { sx = xOfOffset(vis, offA); sOff = offA; }
+    }
     if (ex - sx < 0.5) continue;
     segs.push({ line, sx: Math.min(sx, ex), ex: Math.max(sx, ex), sOff, eOff,
                 docTop: line.docTop, docBottom: line.docBottom });
@@ -193,7 +201,8 @@ function buildSegments(lines, iA, offA, iF, offF) {
     const prev = segs[i - 1], cur = segs[i];
     if (prev.line.wrapEl !== cur.line.wrapEl) continue;
     const gap = cur.docTop - prev.docBottom;
-    if (gap > 0 && gap < prev.lh * 1.5) cur.docTop = prev.docBottom;
+    const bridge = (prev.docBottom - prev.docTop) * 1.5;
+    if (gap > 0 && gap < bridge) cur.docTop = prev.docBottom;
   }
   return segs;
 }
