@@ -46,77 +46,18 @@ function renderWrapOverlays(i, w, vp) {
   w.notes.replaceChildren(nFrag);
 }
 
-// ---- selection -> highlight rects ----
+// ---- text selection (manual, glyph-accurate) ----
 
-// The browser's drag-selection overshoots badly on text layers (a 2-line drag
-// can select to the end of the page when an endpoint lands in a gap). So for
-// drags we derive highlight rects from the POINTER BAND ∩ text spans instead
-// of trusting the selection. Double-click/keyboard selections keep the
-// selection-based path.
-let dragBand = null;    // {wrapEl, x0, y0, x1, y1} viewport coords
-let bandSel = null;     // last band-derived selection info
-let bandSelAt = 0;
+// Chromium's native drag-selection overshoots badly on text layers: an
+// endpoint that lands in a gap or margin extends the selection to the end of
+// the page, and right-clicks collapse it. So mnpdf computes the selection
+// itself from the glyph boxes: drag endpoints map to line/character offsets,
+// blank space means "start/end of the line", and the resulting DOM selection
+// is a real one — it paints blue, persists after release, and Ctrl+C works.
 
-function releaseSelecting() {
-  document.querySelectorAll('.textLayer.selecting').forEach((l) => l.classList.remove('selecting'));
-}
+let selAnchor = null; // {node, off, layer, boxes} while a drag is in progress
+let selLastApplied = '';
 
-function initDragBandTracking() {
-  document.addEventListener(
-    'mousedown',
-    (e) => {
-      if (e.button !== 0) return;
-      const tlEl = e.target.closest?.('.textLayer');
-      if (!tlEl) return;
-      // blank-space starts are fine: the highlight comes from the pointer band
-      // (glyph-trimmed), and endOfContent keeps the native endpoint on text
-      tlEl.classList.add('selecting');
-      const wrapEl = tlEl.closest('.pagewrap');
-      if (wrapEl) dragBand = { wrapEl, x0: e.clientX, y0: e.clientY, x1: e.clientX, y1: e.clientY };
-    },
-    true,
-  );
-  document.addEventListener(
-    'pointermove',
-    (e) => {
-      if (dragBand && e.buttons & 1) {
-        dragBand.x1 = e.clientX;
-        dragBand.y1 = e.clientY;
-      }
-    },
-    true,
-  );
-  document.addEventListener(
-    'pointerup',
-    () => {
-      releaseSelecting();
-      if (dragBand) {
-        const moved =
-          Math.abs(dragBand.x1 - dragBand.x0) + Math.abs(dragBand.y1 - dragBand.y0) >= 6;
-        const derived = moved ? deriveBandSelection(dragBand) : null;
-        if (derived) {
-          bandSel = derived;
-          bandSelAt = Date.now();
-          lastSel = derived;
-          // the native selection overshoots on gap drags; our band result
-          // replaces it (Ctrl+C falls back to the captured band text)
-          window.getSelection()?.removeAllRanges();
-        }
-        dragBand = null;
-      }
-    },
-    true,
-  );
-  document.addEventListener('pointercancel', () => {
-    releaseSelecting();
-    dragBand = null;
-  });
-  window.addEventListener('blur', releaseSelecting);
-}
-
-// A span's box covers its laid-out text INCLUDING stretched/trailing spaces —
-// highlight boxes must use the trimmed visible glyphs only, or highlights
-// bleed into the page margins ("fringe" highlighting).
 function spanVisibleBox(span) {
   const text = span.textContent || '';
   const node = span.firstChild;
@@ -150,93 +91,92 @@ function offsetAtX(vis, x) {
   return Math.max(vis.start, Math.min(vis.end, vis.start + Math.round(frac * (vis.end - vis.start))));
 }
 
-// rects covered by the pointer band: the visible glyphs of every text line the
-// band crosses. The band's vertical extent decides WHICH lines; its horizontal
-// extent only trims the first/last line when the pointer cut inside the text —
-// starting or ending in blank space means "the whole line(s)", never the page
-// margins.
-function deriveBandSelection(band) {
-  const i = +band.wrapEl.dataset.i;
-  if (!S.pageList[i]) return null;
-  const vp = viewportFor(i);
-  if (!vp) return null;
-  const wr = band.wrapEl.getBoundingClientRect();
-  const bx0 = Math.min(band.x0, band.x1), bx1 = Math.max(band.x0, band.x1);
-  const by0 = Math.min(band.y0, band.y1), by1 = Math.max(band.y0, band.y1);
-  const boxes = [];
-  for (const span of band.wrapEl.querySelectorAll('.textLayer span')) {
+function layerSpans(layer) {
+  const out = [];
+  for (const span of layer.querySelectorAll('span')) {
     const vis = spanVisibleBox(span);
-    if (!vis || vis.bottom - vis.top < 2 || vis.right - vis.left < 1) continue;
-    // a line counts only when the band genuinely crosses it: grazing the edge
-    // of the next line (drag ending in the gap) must not pull it in — unless
-    // the drag itself is a thin same-line sweep
-    const overlap = Math.min(vis.bottom, by1) - Math.max(vis.top, by0);
-    const bandH = by1 - by0;
-    if (bandH <= 8) {
-      // thin (same-line) sweep: the sweep line must sit inside the line box
-      const midY = (by0 + by1) / 2;
-      if (midY < vis.top - 2 || midY > vis.bottom + 2) continue;
-    } else if (overlap < 4 || overlap < (vis.bottom - vis.top) * 0.35) {
-      // the band must genuinely cross the line — grazing the next line's edge
-      // (drag ending in the gap) must not pull it in
-      continue;
-    }
-    boxes.push(vis);
+    if (vis && vis.bottom - vis.top >= 2 && vis.right - vis.left >= 1) out.push(vis);
   }
-  if (!boxes.length) return null;
-  const topMost = Math.min(...boxes.map((b) => b.top));
-  const botMost = Math.max(...boxes.map((b) => b.bottom));
-  const rects = [];
-  const parts = [];
-  for (const vis of boxes) {
-    const isFirst = vis.top <= topMost + 2;
-    const isLast = vis.bottom >= botMost - 2;
-    let sx = vis.left, sOff = vis.start;
-    if (isFirst && bx0 > vis.left + 2) {
-      if (bx0 >= vis.right - 2) continue; // drag started right of this line's text
-      sx = bx0;
-      sOff = offsetAtX(vis, bx0);
-    }
-    let ex = vis.right, eOff = vis.end;
-    if (isLast && bx1 > vis.left + 2 && bx1 < vis.right - 2) {
-      ex = bx1; // drag ended inside this line's text
-      eOff = offsetAtX(vis, bx1);
-    }
-    if (ex - sx < 1) continue;
-    const p1 = vp.convertToPdfPoint(sx - wr.left, vis.top - wr.top);
-    const p2 = vp.convertToPdfPoint(ex - wr.left, vis.bottom - wr.top);
-    rects.push([
-      Math.min(p1[0], p2[0]), Math.min(p1[1], p2[1]),
-      Math.max(p1[0], p2[0]), Math.max(p1[1], p2[1]),
-    ]);
-    parts.push(vis.text.slice(sOff - vis.start, eOff - vis.start));
-  }
-  if (!rects.length) return null;
-  return {
-    srcIdx: S.pageList[i].src, rects,
-    text: parts.join(' ').replace(/\s+/g, ' ').trim(),
-    band: { x0: bx0, y0: by0, x1: bx1, y1: by1 },
-  };
+  return out;
 }
 
-// what context menus should treat as "the selection": a recent pointer-band
-// drag wins over the (overshooting) browser selection — but only when the
-// right-click happened vertically inside the dragged rows (margin drags are
-// thin vertical bands, so the x position is irrelevant; "these lines" is the
-// selection)
-export function preferredSelection(y) {
-  if (
-    bandSel && Date.now() - bandSelAt < 2500 &&
-    y >= bandSel.band.y0 - 40 && y <= bandSel.band.y1 + 40
-  ) {
-    return bandSel;
+// the line the pointer is on: the row containing y, else the nearest row
+// within ~3/4 of a line height (blank space above/below lines belongs to that
+// line; deep blank space belongs to nothing)
+function lineAt(boxes, x, y) {
+  let best = null, bestD = Infinity;
+  for (const b of boxes) {
+    if (y >= b.top - 3 && y <= b.bottom + 3) return b;
+    const d = y < b.top ? b.top - y : y - b.bottom;
+    if (d < bestD) { bestD = d; best = b; }
   }
+  const lh = best ? best.bottom - best.top : 0;
+  return best && bestD <= lh * 0.75 ? best : null;
+}
+
+function anchorAt(boxes, x, y) {
+  const vis = lineAt(boxes, x, y);
+  if (!vis) return null;
+  let off;
+  if (x <= vis.left + 2) off = vis.start;        // blank/margin left of text
+  else if (x >= vis.right - 2) off = vis.end;    // blank right of text
+  else off = offsetAtX(vis, x);
+  return { node: vis.node, off, top: vis.top };
+}
+
+function applySelection(a, b) {
+  let s = a, t = b;
+  if (a.node !== b.node) {
+    const pos = a.node.compareDocumentPosition(b.node);
+    if (!(pos & Node.DOCUMENT_POSITION_FOLLOWING)) { s = b; t = a; }
+  } else if (a.off > b.off) { s = b; t = a; }
+  const r = document.createRange();
+  r.setStart(s.node, s.off);
+  r.setEnd(t.node, t.off);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(r);
+}
+
+function initManualSelection() {
+  document.addEventListener(
+    'mousedown',
+    (e) => {
+      if (e.button !== 0) return;
+      const tlEl = e.target.closest?.('.textLayer');
+      if (!tlEl) return;
+      if (e.detail >= 2) return; // double/triple click: native word/line select
+      e.preventDefault(); // Chromium's own selection is what overshoots
+      window.getSelection()?.removeAllRanges(); // a plain click clears, native-equivalent
+      const boxes = layerSpans(tlEl);
+      const a = anchorAt(boxes, e.clientX, e.clientY);
+      if (!a) return; // deep blank space: nothing to select
+      selAnchor = { ...a, layer: tlEl, boxes };
+      selLastApplied = null;
+    },
+    true,
+  );
+  document.addEventListener(
+    'mousemove',
+    (e) => {
+      if (!selAnchor || !(e.buttons & 1)) return;
+      const focus = anchorAt(selAnchor.boxes, e.clientX, e.clientY);
+      if (!focus) return;
+      const last = selLastApplied;
+      if (last && last.node === focus.node && last.off === focus.off) return;
+      selLastApplied = focus;
+      applySelection(selAnchor, focus);
+    },
+    true,
+  );
+  document.addEventListener('mouseup', () => { selAnchor = null; }, true);
+  window.addEventListener('blur', () => { selAnchor = null; });
+}
+
+// what context menus should treat as "the selection": the live selection if
+// present, else the last one remembered before a right-click collapsed it
+export function preferredSelection() {
   return selectionInfo() || lastSel;
-}
-
-// text of the last band drag, for Ctrl+C after the native selection was cleared
-export function recentBandText() {
-  return bandSel && Date.now() - bandSelAt < 5000 ? bandSel.text : null;
 }
 
 // Clean line rects for the selected characters: walk text nodes of the page's
@@ -474,7 +414,7 @@ export function startPinEdit(ann, isNew = false) {
 
 export function init() {
   setOverlayRenderer(renderWrapOverlays);
-  initDragBandTracking();
+  initManualSelection();
   document.addEventListener('selectionchange', () => {
     clearTimeout(selTimer);
     selTimer = setTimeout(() => { lastSel = selectionInfo(); }, 120);

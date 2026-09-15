@@ -601,86 +601,65 @@ async function main() {
       const norm = (t) => t.replace(/\s+/g, '');
       const clearSel = () => page.evaluate(() => window.getSelection()?.removeAllRanges());
 
-      // A: drag-from-blank — press in the page's left margin, drag into text:
-      // the crossed line gets highlighted from its first glyph, and the
-      // runaway native selection is cleared on release
-      const clearHl = () => page.evaluate(() => { window.mnpdf.S.anns.length = 0; });
-      await clearHl();
+      // A: drag-from-blank — press in the left margin, drag into text:
+      // the selection covers the crossed glyphs, starts at the first glyph,
+      // and PERSISTS after release (it's real text selection)
       await dragSelect(geo.left + 6, lines[1].top + 5, geo.left + geo.w * 0.5, lines[1].top + 5);
       await sleep(300);
-      await page.mouse.click(geo.left + geo.w * 0.3, lines[1].top + 5, { button: 'right' });
-      await sleep(300);
-      await clickAt('.menu-swatches .sw', 0);
-      await sleep(300);
       const selA = await page.evaluate(() => String(window.getSelection()));
-      const hlA = await page.evaluate(() => [...document.querySelectorAll('.hl')].map((d) => d.getBoundingClientRect()));
-      const stuckClass = await page.evaluate(() =>
-        document.querySelectorAll('.textLayer.selecting').length);
-      log('t17 drag-from-blank highlights the line, no runaway selection',
-          selA === '' && stuckClass === 0 && hlA.length === 1 &&
-          hlA[0].left >= lines[1].left - 8 && hlA[0].left <= lines[1].left + 30,
-          `sel=${JSON.stringify(selA.slice(0, 30))} hl=${hlA.length} hlLeft=${hlA[0] ? Math.round(hlA[0].left) : '-'} lineLeft=${Math.round(lines[1].left)}`);
+      const nA = norm(selA);
+      const expA = norm(lines[1].text);
+      log('t17 drag-from-blank: persistent glyph selection',
+          nA.length > 0 && expA.startsWith(nA) && nA.length >= expA.length * 0.3,
+          `sel=${nA.length}/${expA.length} chars, "${nA.slice(0, 30)}"`);
 
       // B: drag-to-blank — start on line 1, drag into the gap a few lines down:
-      // highlight covers exactly the 3 crossed lines, never the far text
+      // exactly the 3 crossed lines, never the far text
       await clearSel();
-      await clearHl();
       await dragSelect(
         Math.max(lines[0].left + 2, geo.left + 20), lines[0].top + 5,
         Math.max(lines[0].left + 2, geo.left + 20), lines[2].bottom + 7,
       );
       await sleep(300);
-      await page.mouse.click(geo.left + geo.w * 0.3, (lines[0].top + lines[2].bottom) / 2, { button: 'right' });
-      await sleep(300);
-      await clickAt('.menu-swatches .sw', 0);
-      await sleep(300);
       const selB = await page.evaluate(() => String(window.getSelection()));
-      const hlB = await page.evaluate(() => [...document.querySelectorAll('.hl')].map((d) => d.getBoundingClientRect()));
-      const hlBCovered = (o) => hlB.some((h) => h.top < o.top + 4 && h.bottom > o.bottom - 4);
-      log('t17 drag-to-blank covers 3 crossed lines only',
-          selB === '' && hlB.length === 3 && hlBCovered(lines[0]) && hlBCovered(lines[2]) && !hlBCovered(lines[6]),
-          `sel=${JSON.stringify(selB.slice(0, 20))} hl=${hlB.length} ` +
-          `l0=${hlBCovered(lines[0])} l2=${hlBCovered(lines[2])} far=${hlBCovered(lines[6])}`);
+      const nB = norm(selB);
+      const hasLine = (o, frac) => nB.includes(norm(o.text).slice(0, Math.max(8, Math.floor(norm(o.text).length * frac))));
+      log('t17 drag-to-blank: 3 crossed lines, no page-end run',
+          hasLine(lines[0], 0.5) && hasLine(lines[2], 0.5) && !hasLine(lines[6], 0.9),
+          `len=${nB.length} l0=${hasLine(lines[0], 0.5)} l2=${hasLine(lines[2], 0.5)} far=${hasLine(lines[6], 0.9)}`);
 
-      // B2: drag down the LEFT margin — full glyphs of every crossed line,
-      // nothing highlighted inside the page margins (the "fringe" bug)
-      await clearHl();
+      // B2: drag down the LEFT margin — every selected rect sits inside some
+      // line's glyph box (never the page fringe)
+      await clearSel();
       await dragSelect(
         Math.max(lines[0].left + 2, geo.left + 20), lines[0].top + 5,
         geo.left + 6, lines[4].top + 5,
       );
       await sleep(300);
-      await page.mouse.click(geo.left + geo.w * 0.4, (lines[0].top + lines[4].bottom) / 2, { button: 'right' });
-      await sleep(300);
-      await clickAt('.menu-swatches .sw', 0);
-      await sleep(300);
-      const hlB2 = await page.evaluate(() => [...document.querySelectorAll('.hl')].map((d) => d.getBoundingClientRect()));
-      // every highlight rect must fit inside SOME crossed line's glyph box
-      const b2Ok = hlB2.length >= 4 && hlB2.every((h) =>
-        lines.some((l) =>
-          h.left >= l.left - 8 && h.right <= l.right + 8 &&
-          h.top >= l.top - 8 && h.bottom <= l.bottom + 8));
+      const b2Rects = await page.evaluate(() => {
+        const s = window.getSelection();
+        if (!s || !s.rangeCount) return [];
+        return [...s.getRangeAt(0).getClientRects()].filter((r) => r.width > 1 && r.height > 1)
+          .map((r) => ({ l: r.left, r: r.right, t: r.top, b: r.bottom }));
+      });
+      const b2Ok = b2Rects.length > 0 && b2Rects.every((h) =>
+        lines.some((l) => h.l >= l.left - 8 && h.r <= l.right + 8 && h.t >= l.top - 8 && h.b <= l.bottom + 8));
       log('t17 left-margin drag: glyphs only, no fringe', b2Ok,
-          `hl=${hlB2.length} lefts=[${hlB2.map((h) => Math.round(h.left)).join(',')}] rights=[${hlB2.map((h) => Math.round(h.right)).join(',')}] lineL=${Math.round(lines[0].left)} lineR=${Math.round(lines[0].right)}`);
+          `rects=${b2Rects.length} ` +
+          `lefts=[${b2Rects.slice(0, 6).map((h) => Math.round(h.l)).join(',')}] rights=[${b2Rects.slice(0, 6).map((h) => Math.round(h.r)).join(',')}]`);
 
-      // C: in-text regression — a partial horizontal drag highlights that piece
+      // C: in-text regression — a partial horizontal drag selects that piece
       await clearSel();
-      await clearHl();
       await dragSelect(lines[1].left + 5, lines[1].top + 5, lines[1].left + 120, lines[1].top + 5);
       await sleep(300);
-      await page.mouse.click(lines[1].left + 60, lines[1].top + 5, { button: 'right' });
-      await sleep(300);
-      await clickAt('.menu-swatches .sw', 0);
-      await sleep(300);
-      const hlC = await page.evaluate(() => [...document.querySelectorAll('.hl')].map((d) => d.getBoundingClientRect()));
-      const cOk = hlC.length === 1 &&
-        hlC[0].left >= lines[1].left && hlC[0].left <= lines[1].left + 30 &&
-        hlC[0].right >= lines[1].left + 100 && hlC[0].right <= lines[1].left + 160;
-      log('t17 in-text partial drag highlights that piece', cOk,
-          `hl=${hlC.length} ${hlC[0] ? `x=${Math.round(hlC[0].left)}-${Math.round(hlC[0].right)}` : ''} want=${Math.round(lines[1].left)}+5..120`);
+      const selC = await page.evaluate(() => String(window.getSelection()));
+      const nC = norm(selC);
+      const expC = norm(lines[1].text);
+      log('t17 in-text partial drag selects that piece',
+          nC.length > 0 && expC.startsWith(nC) && nC.length <= expC.length * 0.6,
+          `sel=${nC.length}/${expC.length} chars`);
 
-      // D: right-click within a fresh band drag still offers highlight colors
-      await clearHl();
+      // D: right-click on the selection still offers highlight colors
       await dragSelect(
         Math.max(lines[0].left + 2, geo.left + 20), lines[0].top + 5,
         Math.max(lines[0].left + 2, geo.left + 20), lines[2].bottom + 7,
