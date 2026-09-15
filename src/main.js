@@ -105,7 +105,7 @@ function initContextMenu() {
         del: cmd.deletePage,
       }));
     }
-    const sel = annos.preferredSelection(e.clientX, e.clientY);
+    const sel = annos.preferredSelection(e.clientY);
     if (sel) return menuForSelection(e, sel);
     const wrapEl = e.target.closest?.('.pagewrap');
     if (wrapEl && S.pdf) return menuForPage(e, wrapEl);
@@ -125,6 +125,14 @@ function initKeyboard() {
     const c = e.ctrlKey || e.metaKey;
     const k = e.key;
     if (c && k === 'o') { e.preventDefault(); cmd.openCmd(); }
+    else if (c && k.toLowerCase() === 'c') {
+      // band drags clear the (overshooting) native selection on release —
+      // Ctrl+C right after a drag still copies the dragged text
+      if (!String(window.getSelection()).trim()) {
+        const t = annos.recentBandText();
+        if (t) { annos.copyText(t); toast('Copied'); e.preventDefault(); }
+      }
+    }
     else if (c && k.toLowerCase() === 's') { e.preventDefault(); e.shiftKey ? cmd.doSaveAs() : cmd.doSave(); }
     else if (c && k.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? cmd.redoCmd() : cmd.undoCmd(); }
     else if (c && k.toLowerCase() === 'y') { e.preventDefault(); cmd.redoCmd(); }
