@@ -6,7 +6,7 @@
 import { S, pushOp, onDocChange, newHighlight, newPin } from './state.js';
 import { viewportFor, positionOverlays, setOverlayRenderer } from './viewer.js';
 import { el } from './util.js';
-import { combineSpans, lineAt, offsetAtX, selectionOffsetsForLine, wordModeSpan, xOfOffset } from './selection.js';
+import { combineSpans, groupLineSpans, lineAt, offsetAtX, selectionOffsetsForLine, wordModeSpan, xOfOffset } from './selection.js';
 
 export const HL_COLORS = ['#ffd400', '#7ded72', '#6ec1ff', '#ff9db1', '#ffb257'];
 
@@ -104,8 +104,8 @@ function layerSpans(layer) {
 // every rendered text line of the document, in reading order.
 // docTop/docBottom are scroller-document y (stable while the view scrolls).
 // pdf.js can split one visual line into several spans (whitespace runs, font
-// changes); spans sharing one vertical box are merged into one logical line
-// so a drag between them never reads as a cross-line drag.
+// changes); spans of one visual line are merged into one logical line
+// (groupLineSpans) so a drag between them never reads as a cross-line drag.
 function allLines() {
   const sc = document.getElementById('scroller');
   const st = sc.scrollTop;
@@ -114,18 +114,9 @@ function allLines() {
     const layer = wrap.querySelector('.textLayer');
     if (!layer) return;
     const pageIdx = +wrap.dataset.i;
-    const spans = layerSpans(layer);
-    for (let i = 0; i < spans.length;) {
-      let j = i + 1;
-      let top = spans[i].top, bottom = spans[i].bottom;
-      while (j < spans.length) {
-        if (Math.max(top, spans[j].top) >= Math.min(bottom, spans[j].bottom)) break;
-        top = Math.min(top, spans[j].top);
-        bottom = Math.max(bottom, spans[j].bottom);
-        j++;
-      }
-      const group = spans.slice(i, j);
-      i = j;
+    for (const group of groupLineSpans(layerSpans(layer))) {
+      const top = Math.min(...group.map((s) => s.top));
+      const bottom = Math.max(...group.map((s) => s.bottom));
       out.push({ wrapEl: wrap, pageIdx, vis: combineSpans(group),
                  docTop: top + st, docBottom: bottom + st,
                  lh: bottom - top });

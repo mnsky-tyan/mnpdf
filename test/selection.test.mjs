@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { combineSpans, lineAt, offsetAtX, pointNearRect, bandClipRect, selectionOffsetsForLine, wordModeSpan, xOfOffset } from '../src/selection.js';
+import { combineSpans, groupLineSpans, lineAt, offsetAtX, pointNearRect, bandClipRect, selectionOffsetsForLine, wordModeSpan, xOfOffset } from '../src/selection.js';
 
 const line = (left, top, right, bottom) => ({ left, top, right, bottom, width: right - left, height: bottom - top });
 
@@ -107,6 +107,60 @@ test('word mode: drag across the split spans keeps whole words', () => {
   const [iS, offS, iE, offE] = wordModeSpan(0, 12, 17, 0, SPLIT.text, SPLIT.start, 8);
   assert.deepEqual([iS, offS, iE, offE], [0, 5, 0, 17]);
   assert.equal(charText(SPLIT, offS, offE), 'indent trial');
+});
+
+test('groupLineSpans: spans sharing one vertical line box merge into one group', () => {
+  const groups = groupLineSpans(SPLIT_SPANS);
+  assert.equal(groups.length, 1);
+  assert.equal(combineSpans(groups[0]).text, 'deep indent trial');
+});
+
+test('groupLineSpans: mixed-size spans of one line still merge', () => {
+  // a smaller inline span riding the same baseline (superscript-style):
+  // 8px of the 10px short box overlaps the 14px box -> same line
+  const groups = groupLineSpans([
+    { top: 10, bottom: 24 },
+    { top: 12, bottom: 22 },
+  ]);
+  assert.equal(groups.length, 1);
+});
+
+test('groupLineSpans: adjacent tight lines never merge', () => {
+  // leading (13px) smaller than the font size (14px): the boxes overlap by
+  // 1px, which the any-overlap predicate read as one line. Pre-fix this
+  // merged both lines into one logical line, so a press on the lower line
+  // could resolve a span on the upper one.
+  const groups = groupLineSpans([
+    { top: 10, bottom: 24 },
+    { top: 23, bottom: 37 },
+  ]);
+  assert.equal(groups.length, 2);
+});
+
+test('groupLineSpans: a tight line after a merged split line stays separate', () => {
+  // the real sequence on a split-line page: two spans of one visual line,
+  // then the next (tight) line
+  const groups = groupLineSpans([
+    ...SPLIT_SPANS,
+    { top: 23, bottom: 37 },
+  ]);
+  assert.equal(groups.length, 2);
+  assert.equal(groups[0].length, 2);
+  assert.equal(groups[1].length, 1);
+});
+
+test('groupLineSpans: a chain of tight lines stays one-per-group', () => {
+  // footnotes / dense reference lists: every line overlaps the next by 2px
+  const groups = groupLineSpans([
+    { top: 0, bottom: 14 },
+    { top: 12, bottom: 26 },
+    { top: 24, bottom: 38 },
+  ]);
+  assert.equal(groups.length, 3);
+});
+
+test('groupLineSpans: an empty layer yields no lines', () => {
+  assert.deepEqual(groupLineSpans([]), []);
 });
 
 test('offsetAtX/xOfOffset: a merged line maps through the span under the pointer', () => {

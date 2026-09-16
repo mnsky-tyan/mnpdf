@@ -57,6 +57,34 @@ export function combineSpans(spans) {
   };
 }
 
+// pdf.js can split one visual line into several spans (whitespace runs,
+// font changes) that share one vertical box; those are merged into one
+// logical line so a drag between them never reads as a cross-line drag.
+// Adjacent lines whose PDF leading is smaller than the font size still
+// overlap by a pixel or two - each span's box is font-size tall and pdf.js
+// tops it from the baseline - so any-overlap would fold two lines into one
+// and make a drag track neither anchor. Merging only when the overlap covers
+// at least half the shorter box keeps real lines apart while still merging
+// the mixed-size spans of one line, which overlap by a majority.
+export function groupLineSpans(spans) {
+  const groups = [];
+  for (let i = 0; i < spans.length;) {
+    let j = i + 1;
+    let top = spans[i].top, bottom = spans[i].bottom;
+    while (j < spans.length) {
+      const overlap = Math.min(bottom, spans[j].bottom) - Math.max(top, spans[j].top);
+      const shorter = Math.min(bottom - top, spans[j].bottom - spans[j].top);
+      if (overlap < shorter / 2) break;
+      top = Math.min(top, spans[j].top);
+      bottom = Math.max(bottom, spans[j].bottom);
+      j++;
+    }
+    groups.push(spans.slice(i, j));
+    i = j;
+  }
+  return groups;
+}
+
 // pointer x -> character offset in the combined space: the nearest span by
 // horizontal distance wins (ties keep reading order) and the offset
 // interpolates inside it, so an inter-span gap never consumes a character
