@@ -27,35 +27,39 @@ export function selectionOffsetsForLine(i, iA, offA, iF, offF, lineStart, lineEn
   return { start: lineStart, end: lineEnd };
 }
 
-// Word-boundary snapping over text[start, end). A focus on inter-word
-// whitespace snaps so the selection never collapses to a gap: an end boundary
-// keeps the trailing gap (a rightward drag grows through it), a start
-// boundary skips forward to the next word (a leftward drag never selects
-// whitespace alone).
-export function snapWordEnd(text, start, end, off) {
-  let i = Math.max(start, Math.min(end, off));
-  while (i > start && !/\s/.test(text[i - 1])) i--;
-  while (i < end && !/\s/.test(text[i])) i++;
-  return i;
+// Word-boundary snapping over the trimmed span slice text, whose characters
+// live at full-span offsets [start, start + text.length). A focus on
+// inter-word whitespace snaps so the selection never collapses to a gap: an
+// end boundary keeps the trailing gap (a rightward drag grows through it), a
+// start boundary skips forward to the next word (a leftward drag never
+// selects whitespace alone).
+export function snapWordEnd(text, start, off) {
+  let i = Math.max(0, Math.min(text.length, off - start));
+  while (i > 0 && !/\s/.test(text[i - 1])) i--;
+  while (i < text.length && !/\s/.test(text[i])) i++;
+  return start + i;
 }
 
-export function snapWordStart(text, start, end, off) {
-  let i = Math.max(start, Math.min(end, off));
-  while (i < end && /\s/.test(text[i])) i++;
-  while (i > start && !/\s/.test(text[i - 1])) i--;
-  return i;
+export function snapWordStart(text, start, off) {
+  let i = Math.max(0, Math.min(text.length, off - start));
+  while (i < text.length && /\s/.test(text[i])) i++;
+  while (i > 0 && !/\s/.test(text[i - 1])) i--;
+  return start + i;
 }
 
-// Word-mode (double-click-drag) offsets for one apply: the anchor word spans
-// [aStart, aEnd) and rel is the focus line relative to the anchor line
-// (-1 above, 0 same line, +1 below). The focus snaps to a word boundary on
-// the far side of the drag so whole words are selected in either direction;
-// on the same line the direction comes from the raw focus offset against the
-// anchor word start, and a leftward drag ends at the stored anchor word end.
-// Returns the [anchorOff, focusOff] pair for selectionOffsetsForLine.
-export function wordModeOffsets(rel, aStart, aEnd, text, start, end, off) {
-  if (rel === 0 && off < aStart) return [snapWordStart(text, start, end, off), aEnd];
-  return [aStart, rel < 0 ? snapWordStart(text, start, end, off) : snapWordEnd(text, start, end, off)];
+// Word-mode (double-click-drag) boundaries between the anchor word
+// [aStart, aEnd) on line iA and the word under the focus offset on line iF
+// (text/start describe the focus span's trimmed slice). Returns the
+// document-ordered [startLine, startOff, endLine, endOff] span for
+// selectionOffsetsForLine: whole words throughout, so each boundary line
+// keeps its word and every line in between is painted in full.
+export function wordModeSpan(iA, aStart, aEnd, iF, text, start, off) {
+  if (iA === iF) {
+    if (off < aStart) return [iA, snapWordStart(text, start, off), iA, aEnd];
+    return [iA, aStart, iA, snapWordEnd(text, start, off)];
+  }
+  if (iF > iA) return [iA, aStart, iF, snapWordEnd(text, start, off)];
+  return [iF, snapWordStart(text, start, off), iA, aEnd];
 }
 
 export function pointNearRect(x, y, r, slopX = START_SLOP_X, slopY = START_SLOP_Y) {

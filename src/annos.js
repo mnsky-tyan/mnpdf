@@ -6,7 +6,7 @@
 import { S, pushOp, onDocChange, newHighlight, newPin } from './state.js';
 import { viewportFor, positionOverlays, setOverlayRenderer } from './viewer.js';
 import { el } from './util.js';
-import { selectionOffsetsForLine, wordModeOffsets } from './selection.js';
+import { selectionOffsetsForLine, wordModeSpan } from './selection.js';
 
 export const HL_COLORS = ['#ffd400', '#7ded72', '#6ec1ff', '#ff9db1', '#ffb257'];
 
@@ -259,13 +259,11 @@ function applySelectionAt(x, docY) {
   const focus = lineAt(lines, docY);
   if (!anchorLine || !focus) return;
   const focusOff = offAtLine(focus, x);
-  const iA = lines.indexOf(anchorLine);
-  const iF = lines.indexOf(focus);
+  let iA = lines.indexOf(anchorLine);
+  let iF = lines.indexOf(focus);
   let offA = selAnchor.off, offF = focusOff;
   if (selAnchor.wordMode) {
-    const rel = iF > iA ? 1 : iF < iA ? -1 : 0;
-    const fv = focus.vis;
-    [offA, offF] = wordModeOffsets(rel, selAnchor.off, selAnchor.offEnd, fv.text, fv.start, fv.end, focusOff);
+    [iA, offA, iF, offF] = wordModeSpan(iA, selAnchor.off, selAnchor.offEnd, iF, focus.vis.text, focus.vis.start, focusOff);
   }
   selState = drawSelection(buildSegments(lines, iA, offA, iF, offF));
   renderSelection();
@@ -328,6 +326,7 @@ function initManualSelection() {
     true,
   );
   document.addEventListener('mouseup', (e) => {
+    if (e.button !== 0) return;
     // A mouseup can arrive before the animation frame queued by the final
     // mousemove. Apply the release coordinates synchronously before clearing
     // the drag, otherwise the painted focus remains one event behind.
