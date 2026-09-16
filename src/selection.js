@@ -174,6 +174,17 @@ export function wordModeSpan(iA, aStart, aEnd, iF, text, start, off) {
   return [iF, snapWordStart(text, start, off), iA, aEnd];
 }
 
+// Merge a page's lines into a drag's cached line list, keeping document order
+// (page index, then the page's own reading order) and every existing entry's
+// identity and position, so anchors already resolved against the cache stay
+// valid. Called when a page's text layer renders mid-drag.
+export function insertPageLines(lines, pageIdx, fresh) {
+  if (!fresh.length) return lines;
+  let at = 0;
+  while (at < lines.length && lines[at].pageIdx < pageIdx) at++;
+  return lines.slice(0, at).concat(fresh, lines.slice(at));
+}
+
 export function pointNearRect(x, y, r, slopX = START_SLOP_X, slopY = START_SLOP_Y) {
   if (!r || r.width < 1 || r.height < 2) return false;
   return (

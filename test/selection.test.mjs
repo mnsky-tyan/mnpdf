@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { combineSpans, groupLineSpans, lineAt, offsetAtX, pointNearRect, bandClipRect, selectionOffsetsForLine, wordModeSpan, xOfOffset } from '../src/selection.js';
+import { combineSpans, groupLineSpans, insertPageLines, lineAt, offsetAtX, pointNearRect, bandClipRect, selectionOffsetsForLine, wordModeSpan, xOfOffset } from '../src/selection.js';
 
 const line = (left, top, right, bottom) => ({ left, top, right, bottom, width: right - left, height: bottom - top });
 
@@ -372,4 +372,38 @@ test('bandClipRect: adjacent-line slop keeps an in-text drag inclusive', () => {
 test('bandClipRect: degenerate spans are skipped', () => {
   assert.equal(bandClipRect(line(50, 0, 50, 30), -5, 40, 0, 100), null);
   assert.equal(bandClipRect(line(0, 10, 100, 10.5), -5, 40, 0, 100), null);
+});
+
+test('insertPageLines: a page rendered mid-drag merges after the cached pages in order', () => {
+  const a = { pageIdx: 0, docTop: 0 };
+  const b = { pageIdx: 0, docTop: 20 };
+  const fresh = [{ pageIdx: 2, docTop: 100 }, { pageIdx: 2, docTop: 120 }];
+  const merged = insertPageLines([a, b], 2, fresh);
+  assert.deepEqual(
+    merged.map((l) => [l.pageIdx, l.docTop]),
+    [[0, 0], [0, 20], [2, 100], [2, 120]],
+  );
+  // cached entries keep identity, so an anchor already resolved stays valid
+  assert.equal(merged[0], a);
+  assert.equal(merged[1], b);
+});
+
+test('insertPageLines: a page above the cache lands before it, reading order kept', () => {
+  const fresh = [{ pageIdx: 1, docTop: 10 }, { pageIdx: 1, docTop: 30 }];
+  const merged = insertPageLines([{ pageIdx: 3, docTop: 50 }], 1, fresh);
+  assert.deepEqual(
+    merged.map((l) => [l.pageIdx, l.docTop]),
+    [[1, 10], [1, 30], [3, 50]],
+  );
+});
+
+test('insertPageLines: a page between cached pages inserts at its place', () => {
+  const lo = { pageIdx: 0 };
+  const hi = { pageIdx: 4 };
+  assert.deepEqual(insertPageLines([lo, hi], 2, [{ pageIdx: 2 }]), [lo, { pageIdx: 2 }, hi]);
+});
+
+test('insertPageLines: a page yielding no lines leaves the cache untouched', () => {
+  const cached = [{ pageIdx: 0 }];
+  assert.deepEqual(insertPageLines(cached, 1, []), cached);
 });

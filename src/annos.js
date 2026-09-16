@@ -6,7 +6,7 @@
 import { S, pushOp, onDocChange, newHighlight, newPin } from './state.js';
 import { viewportFor, positionOverlays, setSelectionDrag, setOverlayRenderer } from './viewer.js';
 import { el } from './util.js';
-import { combineSpans, groupLineSpans, lineAt, offsetAtX, selectionOffsetsForLine, wordModeSpan, xOfOffset } from './selection.js';
+import { combineSpans, groupLineSpans, insertPageLines, lineAt, offsetAtX, selectionOffsetsForLine, wordModeSpan, xOfOffset } from './selection.js';
 
 export const HL_COLORS = ['#ffd400', '#7ded72', '#6ec1ff', '#ff9db1', '#ffb257'];
 
@@ -106,23 +106,32 @@ function layerSpans(layer) {
 // pdf.js can split one visual line into several spans (whitespace runs, font
 // changes); spans of one visual line are merged into one logical line
 // (groupLineSpans) so a drag between them never reads as a cross-line drag.
+// Returns null while the layer has rendered no span yet, so a caller can
+// tell an unrendered page from a rendered-but-empty one.
+function pageLines(wrap, st) {
+  const layer = wrap.querySelector('.textLayer');
+  if (!layer || !layer.querySelector('span')) return null;
+  const pageIdx = +wrap.dataset.i;
+  const out = [];
+  for (const group of groupLineSpans(layerSpans(layer))) {
+    const top = Math.min(...group.map((s) => s.top));
+    const bottom = Math.max(...group.map((s) => s.bottom));
+    const vis = combineSpans(group);
+    for (const seg of vis.segs) { seg.top += st; seg.bottom += st; }
+    out.push({ wrapEl: wrap, pageIdx, vis,
+               docTop: top + st, docBottom: bottom + st,
+               lh: bottom - top });
+  }
+  return out;
+}
+
 function allLines() {
   const sc = document.getElementById('scroller');
   const st = sc.scrollTop;
   const out = [];
   document.querySelectorAll('.pagewrap').forEach((wrap) => {
-    const layer = wrap.querySelector('.textLayer');
-    if (!layer) return;
-    const pageIdx = +wrap.dataset.i;
-    for (const group of groupLineSpans(layerSpans(layer))) {
-      const top = Math.min(...group.map((s) => s.top));
-      const bottom = Math.max(...group.map((s) => s.bottom));
-      const vis = combineSpans(group);
-      for (const seg of vis.segs) { seg.top += st; seg.bottom += st; }
-      out.push({ wrapEl: wrap, pageIdx, vis,
-                 docTop: top + st, docBottom: bottom + st,
-                 lh: bottom - top });
-    }
+    const ls = pageLines(wrap, st);
+    if (ls) out.push(...ls);
   });
   return out;
 }
@@ -246,7 +255,27 @@ export function currentSelection() {
 
 let selLastLine = null;
 
+// A drag outlives the mousedown snapshot: pages whose text layer renders
+// during the drag must join the cached line list, or a drag that auto-scrolls
+// onto such a page resolves its lines to the nearest cached page and the
+// focus lands away from the drag end. Only pages not yet scanned are read,
+// so an already-scanned page is never re-extracted.
+function refreshDragLines() {
+  const sc = document.getElementById('scroller');
+  const st = sc.scrollTop;
+  const known = selAnchor.knownPages;
+  document.querySelectorAll('.pagewrap').forEach((wrap) => {
+    const pageIdx = +wrap.dataset.i;
+    if (known.has(pageIdx)) return;
+    const fresh = pageLines(wrap, st);
+    if (fresh === null) return;
+    known.add(pageIdx);
+    selAnchor.lines = insertPageLines(selAnchor.lines, pageIdx, fresh);
+  });
+}
+
 function applySelectionAt(x, docY) {
+  refreshDragLines();
   const lines = selAnchor.lines;
   // re-derive the anchor line from its stored doc position — stable across
   // scrolling and text-layer re-renders
@@ -298,7 +327,9 @@ function initManualSelection() {
         off = sOff;
         offEnd = eOff;
       }
-      selAnchor = { node: vis.node, off, offEnd, line, lines, wordMode, x: e.clientX, docY };
+      selAnchor = { node: vis.node, off, offEnd, line, lines,
+                    knownPages: new Set(lines.map((l) => l.pageIdx)),
+                    wordMode, x: e.clientX, docY };
       selPointer = { x: e.clientX, y: e.clientY };
       selLastKey = '';
       startSelAutoScroll();
