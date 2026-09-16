@@ -106,11 +106,14 @@ function layerSpans(layer) {
 // pdf.js can split one visual line into several spans (whitespace runs, font
 // changes); spans of one visual line are merged into one logical line
 // (groupLineSpans) so a drag between them never reads as a cross-line drag.
-// Returns null while the layer has rendered no span yet, so a caller can
-// tell an unrendered page from a rendered-but-empty one.
+// Returns null while the layer is still incomplete - pdf.js appends spans
+// incrementally, and the viewer adds the .endOfContent marker only after
+// TextLayer.render() finishes - so a caller never reads a partially rendered
+// page and can tell an unrendered page from a rendered-but-empty one.
 function pageLines(wrap, st) {
   const layer = wrap.querySelector('.textLayer');
-  if (!layer || !layer.querySelector('span')) return null;
+  if (!layer || !layer.querySelector('.endOfContent')) return null;
+  if (!layer.querySelector('span')) return null;
   const pageIdx = +wrap.dataset.i;
   const out = [];
   for (const group of groupLineSpans(layerSpans(layer))) {
@@ -165,17 +168,32 @@ function buildSegments(lines, iA, offA, iF, offF) {
     const line = lines[i];
     const vis = line.vis;
     const offsets = selectionOffsetsForLine(i, iA, offA, iF, offF, vis.start, vis.end);
-    // a merged line paints one rect per span: the trimmed inter-span gaps
-    // stay unpainted, exactly like the glyph boxes they cover
+    // a merged line paints one rect per span; the trimmed inter-span spaces
+    // the selection covers are painted too, so a split line is continuous
+    // like in any native viewer, while selection boundaries that start or end
+    // exactly on a space still leave it unpainted
     const sOff = Math.min(offsets.start, offsets.end);
     const eOff = Math.max(offsets.start, offsets.end);
     const rects = [];
-    for (const seg of vis.segs) {
+    const bands = [];
+    for (let k = 0; k < vis.segs.length; k++) {
+      const seg = vis.segs[k];
       const s = Math.max(sOff, seg.start), e = Math.min(eOff, seg.end);
-      if (e <= s) continue;
-      const sx = xOfOffset(vis, s), ex = xOfOffset(vis, e);
-      if (ex - sx < 0.5) continue;
-      rects.push([Math.min(sx, ex), Math.max(sx, ex), seg.top, seg.bottom]);
+      if (e > s) {
+        const sx = xOfOffset(vis, s), ex = xOfOffset(vis, e);
+        if (ex - sx >= 0.5) {
+          rects.push([Math.min(sx, ex), Math.max(sx, ex), seg.top, seg.bottom]);
+          bands[k] = [seg.top, seg.bottom];
+        }
+      }
+      const next = vis.segs[k + 1];
+      if (!next || sOff > seg.end || eOff < next.start) continue;
+      const l = xOfOffset(vis, seg.end);
+      const r = xOfOffset(vis, next.start);
+      if (r - l < 0.5) continue;
+      const band = bands[k] || bands[k + 1] || [seg.top, seg.bottom];
+      rects.push([l, r, band[0], band[1]]);
+      if (!bands[k]) bands[k] = [band[0], band[1]];
     }
     if (!rects.length) continue;
     segs.push({ line, rects, sOff, eOff });

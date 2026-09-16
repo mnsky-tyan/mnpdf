@@ -22,16 +22,31 @@ const SMALL = { node: {}, text: 'body', start: 0, left: 44, right: 72, top: 24, 
 const MERGED = combineSpans([TALL, SMALL]);
 
 // the rect composition buildSegments performs for one logical line: one rect
-// per span, painted at that span's own vertical extent
+// per span painted at that span's own vertical extent, plus the covered
+// inter-span spaces so a split line paints continuously
 const charRects = (vis, offA, offF) => {
   const o = selectionOffsetsForLine(0, 0, offA, 0, offF, vis.start, vis.end);
   const sOff = Math.min(o.start, o.end), eOff = Math.max(o.start, o.end);
   const rects = [];
-  for (const seg of vis.segs) {
+  const bands = [];
+  for (let k = 0; k < vis.segs.length; k++) {
+    const seg = vis.segs[k];
     const s = Math.max(sOff, seg.start), e = Math.min(eOff, seg.end);
-    if (e <= s) continue;
-    const sx = xOfOffset(vis, s), ex = xOfOffset(vis, e);
-    rects.push([Math.min(sx, ex), Math.max(sx, ex), seg.top, seg.bottom]);
+    if (e > s) {
+      const sx = xOfOffset(vis, s), ex = xOfOffset(vis, e);
+      if (ex - sx >= 0.5) {
+        rects.push([Math.min(sx, ex), Math.max(sx, ex), seg.top, seg.bottom]);
+        bands[k] = [seg.top, seg.bottom];
+      }
+    }
+    const next = vis.segs[k + 1];
+    if (!next || sOff > seg.end || eOff < next.start) continue;
+    const l = xOfOffset(vis, seg.end);
+    const r = xOfOffset(vis, next.start);
+    if (r - l < 0.5) continue;
+    const band = bands[k] || bands[k + 1] || [seg.top, seg.bottom];
+    rects.push([l, r, band[0], band[1]]);
+    if (!bands[k]) bands[k] = [band[0], band[1]];
   }
   return rects;
 };
@@ -323,7 +338,27 @@ test('paint: one span of a merged line paints its own box, not the line union', 
 
 test('paint: the tall span paints its own box, and both spans keep their extents', () => {
   assert.deepEqual(charRects(MERGED, 0, 3), [[10, 40, 10, 38]]);
-  assert.deepEqual(charRects(MERGED, 0, 8), [[10, 40, 10, 38], [44, 72, 24, 37]]);
+  // a selection covering both spans also paints the space between them
+  assert.deepEqual(charRects(MERGED, 0, 8), [
+    [10, 40, 10, 38], [40, 44, 10, 38], [44, 72, 24, 37],
+  ]);
+});
+
+test('paint: a covered inter-span space paints between the two spans', () => {
+  // char drag 'ep...tr' across the SPLIT line covers the trimmed space at
+  // combined offset 4, so the band is continuous: [26..42] + [42..50] + [50..86]
+  assert.deepEqual(charRects(SPLIT, 14, 2), [
+    [26, 42, 10, 24], [42, 50, 10, 24], [50, 86, 10, 24],
+  ]);
+});
+
+test('paint: a selection ending exactly on a space leaves it unpainted', () => {
+  assert.deepEqual(charRects(SPLIT, 2, 4), [[26, 42, 10, 24]]);
+  assert.equal(charText(SPLIT, 2, 4), 'ep');
+});
+
+test('paint: a selection that is only the space paints exactly the space', () => {
+  assert.deepEqual(charRects(SPLIT, 4, 5), [[42, 50, 10, 24]]);
 });
 
 test('pointNearRect: press on a glyph box starts a selection', () => {
