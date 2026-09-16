@@ -1,8 +1,23 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { pointNearRect, bandClipRect } from '../src/selection.js';
+import { pointNearRect, bandClipRect, selectionOffsetsForLine } from '../src/selection.js';
 
 const line = (left, top, right, bottom) => ({ left, top, right, bottom, width: right - left, height: bottom - top });
+
+test('selectionOffsetsForLine: same-line left-to-right drag keeps both anchors', () => {
+  assert.deepEqual(selectionOffsetsForLine(2, 2, 4, 2, 11, 0, 20), { start: 4, end: 11 });
+});
+
+test('selectionOffsetsForLine: same-line right-to-left drag keeps both anchors', () => {
+  assert.deepEqual(selectionOffsetsForLine(2, 2, 11, 2, 4, 0, 20), { start: 4, end: 11 });
+});
+
+test('selectionOffsetsForLine: cross-line trims follow drag direction', () => {
+  assert.deepEqual(selectionOffsetsForLine(1, 1, 4, 3, 11, 0, 20), { start: 4, end: 20 });
+  assert.deepEqual(selectionOffsetsForLine(3, 1, 4, 3, 11, 0, 20), { start: 0, end: 11 });
+  assert.deepEqual(selectionOffsetsForLine(1, 3, 11, 1, 4, 0, 20), { start: 0, end: 4 });
+  assert.deepEqual(selectionOffsetsForLine(3, 3, 11, 1, 4, 0, 20), { start: 11, end: 20 });
+});
 
 test('pointNearRect: press on a glyph box starts a selection', () => {
   assert.equal(pointNearRect(50, 10, line(0, 0, 100, 14)), true);

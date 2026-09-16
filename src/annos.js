@@ -6,6 +6,7 @@
 import { S, pushOp, onDocChange, newHighlight, newPin } from './state.js';
 import { viewportFor, positionOverlays, setOverlayRenderer } from './viewer.js';
 import { el } from './util.js';
+import { selectionOffsetsForLine } from './selection.js';
 
 export const HL_COLORS = ['#ffd400', '#7ded72', '#6ec1ff', '#ff9db1', '#ffb257'];
 
@@ -178,21 +179,13 @@ function snapWord(vis, off) {
 // margins and page gaps stay unpainted.
 function buildSegments(lines, iA, offA, iF, offF) {
   const fi = Math.min(iA, iF), li = Math.max(iA, iF);
-  // which end of the selection the anchor/focus offsets belong to depends on
-  // the drag direction (upward drags reverse the anchor/focus roles)
-  const downward = iA <= iF;
   const segs = [];
   for (let i = fi; i <= li; i++) {
     const line = lines[i];
     const vis = line.vis;
-    let sx = vis.left, sOff = vis.start, ex = vis.right, eOff = vis.end;
-    if (i === fi) {
-      if (downward) { sx = xOfOffset(vis, offA); sOff = offA; }
-      else { ex = xOfOffset(vis, offF); eOff = offF; }
-    } else if (i === li) {
-      if (downward) { ex = xOfOffset(vis, offF); eOff = offF; }
-      else { sx = xOfOffset(vis, offA); sOff = offA; }
-    }
+    const offsets = selectionOffsetsForLine(i, iA, offA, iF, offF, vis.start, vis.end);
+    const sOff = offsets.start, eOff = offsets.end;
+    const sx = xOfOffset(vis, sOff), ex = xOfOffset(vis, eOff);
     if (ex - sx < 0.5) continue;
     segs.push({ line, sx: Math.min(sx, ex), ex: Math.max(sx, ex), sOff, eOff,
                 docTop: line.docTop, docBottom: line.docBottom });
@@ -335,7 +328,18 @@ function initManualSelection() {
     },
     true,
   );
-  document.addEventListener('mouseup', () => { selAnchor = null; stopSelAutoScroll(); }, true);
+  document.addEventListener('mouseup', (e) => {
+    // A mouseup can arrive before the animation frame queued by the final
+    // mousemove. Apply the release coordinates synchronously before clearing
+    // the drag, otherwise the painted focus remains one event behind.
+    if (selAnchor) {
+      if (selApplyRaf) { cancelAnimationFrame(selApplyRaf); selApplyRaf = 0; }
+      const sc = document.getElementById('scroller');
+      applySelectionAt(e.clientX, e.clientY + sc.scrollTop);
+    }
+    selAnchor = null;
+    stopSelAutoScroll();
+  }, true);
   document.addEventListener('pointercancel', () => { selAnchor = null; stopSelAutoScroll(); });
   window.addEventListener('blur', () => { selAnchor = null; stopSelAutoScroll(); });
   document.addEventListener('keydown', (e) => {

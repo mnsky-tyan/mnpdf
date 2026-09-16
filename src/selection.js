@@ -6,6 +6,27 @@
 export const START_SLOP_X = 12;
 export const START_SLOP_Y = 6;
 
+// Character offsets painted for one line between an anchor and focus. A
+// same-line drag has two boundaries, regardless of drag direction.
+export function selectionOffsetsForLine(i, iA, offA, iF, offF, lineStart, lineEnd) {
+  if (iA === iF) {
+    return { start: Math.min(offA, offF), end: Math.max(offA, offF) };
+  }
+  const first = Math.min(iA, iF);
+  const last = Math.max(iA, iF);
+  if (i === first) {
+    return iA < iF
+      ? { start: offA, end: lineEnd }
+      : { start: lineStart, end: offF };
+  }
+  if (i === last) {
+    return iA < iF
+      ? { start: lineStart, end: offF }
+      : { start: offA, end: lineEnd };
+  }
+  return { start: lineStart, end: lineEnd };
+}
+
 export function pointNearRect(x, y, r, slopX = START_SLOP_X, slopY = START_SLOP_Y) {
   if (!r || r.width < 1 || r.height < 2) return false;
   return (
