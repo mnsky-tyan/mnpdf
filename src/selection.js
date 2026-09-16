@@ -46,7 +46,9 @@ export function combineSpans(spans) {
     if (text) text += ' ';
     const at = start + text.length;
     segs.push({ node: span.node, start: at, end: at + span.text.length,
-                left: span.left, right: span.right, text: span.text });
+                left: span.left, right: span.right,
+                top: span.top, bottom: span.bottom,
+                text: span.text });
     text += span.text;
   }
   return {

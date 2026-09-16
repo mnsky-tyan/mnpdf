@@ -4,7 +4,7 @@
 // text shows on hover and is stored in the per-document sidecar (never baked
 // into the PDF), so nothing is printed on the page.
 import { S, pushOp, onDocChange, newHighlight, newPin } from './state.js';
-import { viewportFor, positionOverlays, setOverlayRenderer } from './viewer.js';
+import { viewportFor, positionOverlays, setSelectionDrag, setOverlayRenderer } from './viewer.js';
 import { el } from './util.js';
 import { combineSpans, groupLineSpans, lineAt, offsetAtX, selectionOffsetsForLine, wordModeSpan, xOfOffset } from './selection.js';
 
@@ -117,7 +117,9 @@ function allLines() {
     for (const group of groupLineSpans(layerSpans(layer))) {
       const top = Math.min(...group.map((s) => s.top));
       const bottom = Math.max(...group.map((s) => s.bottom));
-      out.push({ wrapEl: wrap, pageIdx, vis: combineSpans(group),
+      const vis = combineSpans(group);
+      for (const seg of vis.segs) { seg.top += st; seg.bottom += st; }
+      out.push({ wrapEl: wrap, pageIdx, vis,
                  docTop: top + st, docBottom: bottom + st,
                  lh: bottom - top });
     }
@@ -164,18 +166,18 @@ function buildSegments(lines, iA, offA, iF, offF) {
       if (e <= s) continue;
       const sx = xOfOffset(vis, s), ex = xOfOffset(vis, e);
       if (ex - sx < 0.5) continue;
-      rects.push([Math.min(sx, ex), Math.max(sx, ex)]);
+      rects.push([Math.min(sx, ex), Math.max(sx, ex), seg.top, seg.bottom]);
     }
     if (!rects.length) continue;
-    segs.push({ line, rects, sOff, eOff,
-                docTop: line.docTop, docBottom: line.docBottom });
+    segs.push({ line, rects, sOff, eOff });
   }
   for (let i = 1; i < segs.length; i++) {
     const prev = segs[i - 1], cur = segs[i];
     if (prev.line.wrapEl !== cur.line.wrapEl) continue;
-    const gap = cur.docTop - prev.docBottom;
-    const bridge = (prev.docBottom - prev.docTop) * 1.5;
-    if (gap > 0 && gap < bridge) cur.docTop = prev.docBottom;
+    const pr = prev.rects[prev.rects.length - 1], cr = cur.rects[0];
+    const gap = cr[2] - pr[3];
+    const bridge = (pr[3] - pr[2]) * 1.5;
+    if (gap > 0 && gap < bridge) cr[2] = pr[3];
   }
   return segs;
 }
@@ -189,11 +191,9 @@ function drawSelection(segs) {
     const vp = viewportFor(seg.line.pageIdx);
     if (!vp) continue;
     const wr = seg.line.wrapEl.getBoundingClientRect();
-    const topView = seg.docTop - st;
-    const botView = seg.docBottom - st;
-    for (const [sx, ex] of seg.rects) {
-      const p1 = vp.convertToPdfPoint(sx - wr.left, topView - wr.top);
-      const p2 = vp.convertToPdfPoint(ex - wr.left, botView - wr.top);
+    for (const [sx, ex, top, bottom] of seg.rects) {
+      const p1 = vp.convertToPdfPoint(sx - wr.left, top - st - wr.top);
+      const p2 = vp.convertToPdfPoint(ex - wr.left, bottom - st - wr.top);
       const rect = [
         Math.min(p1[0], p2[0]), Math.min(p1[1], p2[1]),
         Math.max(p1[0], p2[0]), Math.max(p1[1], p2[1]),
@@ -350,6 +350,7 @@ function scheduleApply() {
 // keeps scrolling; the selection extends over the newly revealed lines —
 // across page boundaries.
 function startSelAutoScroll() {
+  setSelectionDrag(true);
   if (selRaf) return;
   const scroller = document.getElementById('scroller');
   const tick = () => {
@@ -370,6 +371,7 @@ function startSelAutoScroll() {
 
 function stopSelAutoScroll() {
   if (selRaf) { cancelAnimationFrame(selRaf); selRaf = 0; }
+  setSelectionDrag(false);
 }
 
 function rectsOverlap(a, b) {

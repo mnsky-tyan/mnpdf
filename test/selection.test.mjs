@@ -12,6 +12,30 @@ const SPLIT_SPANS = [
 ];
 const SPLIT = combineSpans(SPLIT_SPANS);
 
+// a tall inline glyph merged with the adjacent body line, as spanVisibleBox
+// sees them: the 13px overlap covers half the 13px short box, so groupLineSpans
+// folds them into one logical line. Painting that line's union band would
+// cover the other span's glyphs even when only one span is selected, so each
+// combined seg keeps its own vertical extent.
+const TALL = { node: {}, text: 'Big', start: 0, left: 10, right: 40, top: 10, bottom: 38 };
+const SMALL = { node: {}, text: 'body', start: 0, left: 44, right: 72, top: 24, bottom: 37 };
+const MERGED = combineSpans([TALL, SMALL]);
+
+// the rect composition buildSegments performs for one logical line: one rect
+// per span, painted at that span's own vertical extent
+const charRects = (vis, offA, offF) => {
+  const o = selectionOffsetsForLine(0, 0, offA, 0, offF, vis.start, vis.end);
+  const sOff = Math.min(o.start, o.end), eOff = Math.max(o.start, o.end);
+  const rects = [];
+  for (const seg of vis.segs) {
+    const s = Math.max(sOff, seg.start), e = Math.min(eOff, seg.end);
+    if (e <= s) continue;
+    const sx = xOfOffset(vis, s), ex = xOfOffset(vis, e);
+    rects.push([Math.min(sx, ex), Math.max(sx, ex), seg.top, seg.bottom]);
+  }
+  return rects;
+};
+
 // what annos.js buildSegments + drawSelection compose for one logical line:
 // per-span paint bounds joined into the copied text
 const charText = (vis, offA, offF) => {
@@ -275,6 +299,31 @@ test('wordModeSpan: upward multi-line drag paints every line between in full', (
   // middle line is painted in full
   assert.deepEqual(selectionOffsetsForLine(1, 0, 9, 2, 14, 0, 14), { start: 0, end: 14 });
   assert.equal(text, 'ARC-AGI-3. models must be To incentivize');
+});
+
+test('groupLineSpans: a tall inline glyph merges with the adjacent line', () => {
+  // the reachable precondition of the union-band defect: the 28px glyph
+  // swallows the 13px line below it into one logical line
+  assert.equal(groupLineSpans([TALL, SMALL]).length, 1);
+});
+
+test('combineSpans: a merged line keeps each span its own vertical extent', () => {
+  assert.deepEqual(
+    MERGED.segs.map((s) => [s.top, s.bottom]),
+    [[10, 38], [24, 37]],
+  );
+});
+
+test('paint: one span of a merged line paints its own box, not the line union', () => {
+  // selection confined to the small span (combined offsets [4, 8)): pre-fix
+  // its rect was painted at the merged line's union [10, 38], covering the
+  // tall glyph's text, which the copied string ('body') does not include
+  assert.deepEqual(charRects(MERGED, 4, 8), [[44, 72, 24, 37]]);
+});
+
+test('paint: the tall span paints its own box, and both spans keep their extents', () => {
+  assert.deepEqual(charRects(MERGED, 0, 3), [[10, 40, 10, 38]]);
+  assert.deepEqual(charRects(MERGED, 0, 8), [[10, 40, 10, 38], [44, 72, 24, 37]]);
 });
 
 test('pointNearRect: press on a glyph box starts a selection', () => {
