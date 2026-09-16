@@ -27,6 +27,37 @@ export function selectionOffsetsForLine(i, iA, offA, iF, offF, lineStart, lineEn
   return { start: lineStart, end: lineEnd };
 }
 
+// Word-boundary snapping over text[start, end). A focus on inter-word
+// whitespace snaps so the selection never collapses to a gap: an end boundary
+// keeps the trailing gap (a rightward drag grows through it), a start
+// boundary skips forward to the next word (a leftward drag never selects
+// whitespace alone).
+export function snapWordEnd(text, start, end, off) {
+  let i = Math.max(start, Math.min(end, off));
+  while (i > start && !/\s/.test(text[i - 1])) i--;
+  while (i < end && !/\s/.test(text[i])) i++;
+  return i;
+}
+
+export function snapWordStart(text, start, end, off) {
+  let i = Math.max(start, Math.min(end, off));
+  while (i < end && /\s/.test(text[i])) i++;
+  while (i > start && !/\s/.test(text[i - 1])) i--;
+  return i;
+}
+
+// Word-mode (double-click-drag) offsets for one apply: the anchor word spans
+// [aStart, aEnd) and rel is the focus line relative to the anchor line
+// (-1 above, 0 same line, +1 below). The focus snaps to a word boundary on
+// the far side of the drag so whole words are selected in either direction;
+// on the same line the direction comes from the raw focus offset against the
+// anchor word start, and a leftward drag ends at the stored anchor word end.
+// Returns the [anchorOff, focusOff] pair for selectionOffsetsForLine.
+export function wordModeOffsets(rel, aStart, aEnd, text, start, end, off) {
+  if (rel === 0 && off < aStart) return [snapWordStart(text, start, end, off), aEnd];
+  return [aStart, rel < 0 ? snapWordStart(text, start, end, off) : snapWordEnd(text, start, end, off)];
+}
+
 export function pointNearRect(x, y, r, slopX = START_SLOP_X, slopY = START_SLOP_Y) {
   if (!r || r.width < 1 || r.height < 2) return false;
   return (

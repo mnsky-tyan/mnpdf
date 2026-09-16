@@ -6,7 +6,7 @@
 import { S, pushOp, onDocChange, newHighlight, newPin } from './state.js';
 import { viewportFor, positionOverlays, setOverlayRenderer } from './viewer.js';
 import { el } from './util.js';
-import { selectionOffsetsForLine } from './selection.js';
+import { selectionOffsetsForLine, wordModeOffsets } from './selection.js';
 
 export const HL_COLORS = ['#ffd400', '#7ded72', '#6ec1ff', '#ff9db1', '#ffb257'];
 
@@ -164,14 +164,6 @@ function offAtLine(l, x) {
   return offsetAtX(vis, x);
 }
 
-function snapWord(vis, off) {
-  let i = Math.max(vis.start, Math.min(vis.end, off)) - vis.start;
-  const t = vis.text;
-  while (i > 0 && !/\s/.test(t[i - 1] || ' ')) i--;
-  while (i < t.length && !/\s/.test(t[i] || ' ')) i++;
-  return vis.start + i;
-}
-
 // per-line segments between two anchors (ordered): boundary lines are trimmed
 // to the pointer character, middle lines are full glyphs, and each selected
 // line extends down to the next selected line's top so the block is
@@ -266,11 +258,16 @@ function applySelectionAt(x, docY) {
   const anchorLine = lineAt(lines, selAnchor.docY);
   const focus = lineAt(lines, docY);
   if (!anchorLine || !focus) return;
-  let focusOff = offAtLine(focus, x);
-  if (selAnchor.wordMode) focusOff = snapWord(focus.vis, focusOff);
+  const focusOff = offAtLine(focus, x);
   const iA = lines.indexOf(anchorLine);
   const iF = lines.indexOf(focus);
-  selState = drawSelection(buildSegments(lines, iA, selAnchor.off, iF, focusOff));
+  let offA = selAnchor.off, offF = focusOff;
+  if (selAnchor.wordMode) {
+    const rel = iF > iA ? 1 : iF < iA ? -1 : 0;
+    const fv = focus.vis;
+    [offA, offF] = wordModeOffsets(rel, selAnchor.off, selAnchor.offEnd, fv.text, fv.start, fv.end, focusOff);
+  }
+  selState = drawSelection(buildSegments(lines, iA, offA, iF, offF));
   renderSelection();
 }
 
@@ -302,17 +299,19 @@ function initManualSelection() {
       else if (e.clientX >= vis.right - 2) off = vis.end;
       else off = offsetAtX(vis, e.clientX);
       const wordMode = e.detail >= 2;
+      let offEnd = off;
       if (wordMode) {
         // double click: the word under the press; dragging extends by words
         let sOff = off, eOff = off;
         const t = vis.text;
         while (sOff > vis.start && !/\s/.test(t[sOff - 1 - vis.start] || ' ')) sOff--;
         while (eOff < vis.end && !/\s/.test(t[eOff - vis.start] || ' ')) eOff++;
-        selState = drawSelection(buildSegments([line], 0, sOff, 0, eOff), [line], 0);
+        selState = drawSelection(buildSegments([line], 0, sOff, 0, eOff));
         renderSelection();
         off = sOff;
+        offEnd = eOff;
       }
-      selAnchor = { node: vis.node, off, line, lines, wordMode, x: e.clientX, docY };
+      selAnchor = { node: vis.node, off, offEnd, line, lines, wordMode, x: e.clientX, docY };
       selPointer = { x: e.clientX, y: e.clientY };
       selLastKey = '';
       startSelAutoScroll();
