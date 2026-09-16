@@ -6,7 +6,7 @@
 import { S, pushOp, onDocChange, newHighlight, newPin } from './state.js';
 import { viewportFor, positionOverlays, setOverlayRenderer } from './viewer.js';
 import { el } from './util.js';
-import { selectionOffsetsForLine, wordModeSpan } from './selection.js';
+import { lineAt, selectionOffsetsForLine, wordModeSpan } from './selection.js';
 
 export const HL_COLORS = ['#ffd400', '#7ded72', '#6ec1ff', '#ff9db1', '#ffb257'];
 
@@ -132,22 +132,8 @@ function allLines() {
   return out;
 }
 
-function lineAt(lines, docY) {
-  if (!lines.length) return null;
-  for (const l of lines) {
-    if (docY >= l.docTop - 2 && docY <= l.docBottom + 2) return l;
-  }
-  let best = null, bestD = Infinity;
-  for (const l of lines) {
-    const c = (l.docTop + l.docBottom) / 2;
-    const d = Math.abs(docY - c);
-    if (d < bestD) { bestD = d; best = l; }
-  }
-  return best;
-}
-
 function anchorAt(lines, x, docY) {
-  const line = lineAt(lines, docY);
+  const line = lineAt(lines, docY, x);
   if (!line) return null;
   const vis = line.vis;
   let off;
@@ -255,8 +241,8 @@ function applySelectionAt(x, docY) {
   const lines = selAnchor.lines;
   // re-derive the anchor line from its stored doc position — stable across
   // scrolling and text-layer re-renders
-  const anchorLine = lineAt(lines, selAnchor.docY);
-  const focus = lineAt(lines, docY);
+  const anchorLine = lineAt(lines, selAnchor.docY, selAnchor.x);
+  const focus = lineAt(lines, docY, x);
   if (!anchorLine || !focus) return;
   const focusOff = offAtLine(focus, x);
   let iA = lines.indexOf(anchorLine);
@@ -289,7 +275,7 @@ function initManualSelection() {
       const sc = document.getElementById('scroller');
       const docY = e.clientY + sc.scrollTop;
       const lines = allLines();
-      const line = lineAt(lines, docY);
+      const line = lineAt(lines, docY, e.clientX);
       if (!line) return;
       const vis = line.vis;
       let off;

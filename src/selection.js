@@ -6,6 +6,32 @@
 export const START_SLOP_X = 12;
 export const START_SLOP_Y = 6;
 
+// Resolve the span under a document-space y coordinate. pdf.js can split one
+// visual line into several spans with the same vertical box, so use pointer x
+// to select the actual span instead of returning the first vertical match.
+export function lineAt(lines, docY, x) {
+  if (!lines.length) return null;
+  let best = null;
+  let bestY = Infinity;
+  let bestX = Infinity;
+  for (const line of lines) {
+    const centerY = (line.docTop + line.docBottom) / 2;
+    const yDistance = docY >= line.docTop - 2 && docY <= line.docBottom + 2
+      ? 0
+      : Math.abs(docY - centerY);
+    const vis = line.vis;
+    const xDistance = x == null || !vis
+      ? 0
+      : x < vis.left ? vis.left - x : x > vis.right ? x - vis.right : 0;
+    if (yDistance < bestY || (yDistance === bestY && xDistance < bestX)) {
+      best = line;
+      bestY = yDistance;
+      bestX = xDistance;
+    }
+  }
+  return best;
+}
+
 // Character offsets painted for one line between an anchor and focus. A
 // same-line drag has two boundaries, regardless of drag direction.
 export function selectionOffsetsForLine(i, iA, offA, iF, offF, lineStart, lineEnd) {

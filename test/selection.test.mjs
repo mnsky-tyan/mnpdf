@@ -1,8 +1,19 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { pointNearRect, bandClipRect, selectionOffsetsForLine, wordModeSpan } from '../src/selection.js';
+import { lineAt, pointNearRect, bandClipRect, selectionOffsetsForLine, wordModeSpan } from '../src/selection.js';
 
 const line = (left, top, right, bottom) => ({ left, top, right, bottom, width: right - left, height: bottom - top });
+const splitSpan = (text, left, right, top = 10, bottom = 24) => ({
+  docTop: top,
+  docBottom: bottom,
+  vis: { text, left, right, start: 0, end: text.length },
+});
+
+const SPLIT_LINE = [
+  splitSpan('deep', 10, 42),
+  splitSpan('indent', 50, 98),
+  splitSpan('trial', 106, 146),
+];
 
 // Word-mode regression fixtures mirroring the reported ARC-AGI-3 drag: the
 // anchor line reads 'To incentivize this' with the double-clicked word
@@ -29,6 +40,29 @@ const wordText = (iA, aStart, aEnd, iF, lines, off) => {
   }
   return { span: [iS, offS, iE, offE], text: parts.join(' ').replace(/\s+/g, ' ').trim() };
 };
+
+test('lineAt: callers without x keep reading-order resolution', () => {
+  assert.equal(lineAt(SPLIT_LINE, 17), SPLIT_LINE[0]);
+});
+
+test('lineAt: press on a second span resolves that span, not the first on its visual line', () => {
+  assert.equal(lineAt(SPLIT_LINE, 17, 70), SPLIT_LINE[1]);
+  assert.equal(lineAt(SPLIT_LINE, 17, 70).vis.text, 'indent');
+});
+
+test('lineAt: character drag on a later span resolves the focus span', () => {
+  const focus = lineAt(SPLIT_LINE, 17, 126);
+  assert.equal(focus, SPLIT_LINE[2]);
+  assert.equal(focus.vis.text, 'trial');
+});
+
+test('lineAt: inter-span gap resolves the horizontally nearest span', () => {
+  assert.equal(lineAt(SPLIT_LINE, 17, 103), SPLIT_LINE[2]);
+});
+
+test('lineAt: pointer beyond a split line end resolves the final span', () => {
+  assert.equal(lineAt(SPLIT_LINE, 17, 180), SPLIT_LINE[2]);
+});
 
 test('selectionOffsetsForLine: same-line left-to-right drag keeps both anchors', () => {
   assert.deepEqual(selectionOffsetsForLine(2, 2, 4, 2, 11, 0, 20), { start: 4, end: 11 });
