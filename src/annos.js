@@ -6,7 +6,7 @@
 import { S, pushOp, onDocChange, newHighlight, newPin } from './state.js';
 import { viewportFor, positionOverlays, setOverlayRenderer } from './viewer.js';
 import { el } from './util.js';
-import { lineAt, selectionOffsetsForLine, wordModeSpan } from './selection.js';
+import { combineSpans, lineAt, offsetAtX, selectionOffsetsForLine, wordModeSpan, xOfOffset } from './selection.js';
 
 export const HL_COLORS = ['#ffd400', '#7ded72', '#6ec1ff', '#ff9db1', '#ffb257'];
 
@@ -101,20 +101,11 @@ function layerSpans(layer) {
   return out;
 }
 
-function offsetAtX(vis, x) {
-  if (!vis.node || vis.right <= vis.left) return vis.start;
-  const frac = (x - vis.left) / (vis.right - vis.left);
-  return Math.max(vis.start, Math.min(vis.end, vis.start + Math.round(frac * (vis.end - vis.start))));
-}
-
-function xOfOffset(vis, off) {
-  if (!vis.node || vis.end <= vis.start) return vis.left;
-  const frac = (off - vis.start) / (vis.end - vis.start);
-  return vis.left + frac * (vis.right - vis.left);
-}
-
 // every rendered text line of the document, in reading order.
 // docTop/docBottom are scroller-document y (stable while the view scrolls).
+// pdf.js can split one visual line into several spans (whitespace runs, font
+// changes); spans sharing one vertical box are merged into one logical line
+// so a drag between them never reads as a cross-line drag.
 function allLines() {
   const sc = document.getElementById('scroller');
   const st = sc.scrollTop;
@@ -123,10 +114,21 @@ function allLines() {
     const layer = wrap.querySelector('.textLayer');
     if (!layer) return;
     const pageIdx = +wrap.dataset.i;
-    for (const vis of layerSpans(layer)) {
-      out.push({ wrapEl: wrap, pageIdx, vis,
-                 docTop: vis.top + st, docBottom: vis.bottom + st,
-                 lh: vis.bottom - vis.top });
+    const spans = layerSpans(layer);
+    for (let i = 0; i < spans.length;) {
+      let j = i + 1;
+      let top = spans[i].top, bottom = spans[i].bottom;
+      while (j < spans.length) {
+        if (Math.max(top, spans[j].top) >= Math.min(bottom, spans[j].bottom)) break;
+        top = Math.min(top, spans[j].top);
+        bottom = Math.max(bottom, spans[j].bottom);
+        j++;
+      }
+      const group = spans.slice(i, j);
+      i = j;
+      out.push({ wrapEl: wrap, pageIdx, vis: combineSpans(group),
+                 docTop: top + st, docBottom: bottom + st,
+                 lh: bottom - top });
     }
   });
   return out;
@@ -149,7 +151,6 @@ function offAtLine(l, x) {
   if (x >= vis.right - 2) return vis.end;
   return offsetAtX(vis, x);
 }
-
 // per-line segments between two anchors (ordered): boundary lines are trimmed
 // to the pointer character, middle lines are full glyphs, and each selected
 // line extends down to the next selected line's top so the block is
@@ -162,10 +163,20 @@ function buildSegments(lines, iA, offA, iF, offF) {
     const line = lines[i];
     const vis = line.vis;
     const offsets = selectionOffsetsForLine(i, iA, offA, iF, offF, vis.start, vis.end);
-    const sOff = offsets.start, eOff = offsets.end;
-    const sx = xOfOffset(vis, sOff), ex = xOfOffset(vis, eOff);
-    if (ex - sx < 0.5) continue;
-    segs.push({ line, sx: Math.min(sx, ex), ex: Math.max(sx, ex), sOff, eOff,
+    // a merged line paints one rect per span: the trimmed inter-span gaps
+    // stay unpainted, exactly like the glyph boxes they cover
+    const sOff = Math.min(offsets.start, offsets.end);
+    const eOff = Math.max(offsets.start, offsets.end);
+    const rects = [];
+    for (const seg of vis.segs) {
+      const s = Math.max(sOff, seg.start), e = Math.min(eOff, seg.end);
+      if (e <= s) continue;
+      const sx = xOfOffset(vis, s), ex = xOfOffset(vis, e);
+      if (ex - sx < 0.5) continue;
+      rects.push([Math.min(sx, ex), Math.max(sx, ex)]);
+    }
+    if (!rects.length) continue;
+    segs.push({ line, rects, sOff, eOff,
                 docTop: line.docTop, docBottom: line.docBottom });
   }
   for (let i = 1; i < segs.length; i++) {
@@ -189,15 +200,22 @@ function drawSelection(segs) {
     const wr = seg.line.wrapEl.getBoundingClientRect();
     const topView = seg.docTop - st;
     const botView = seg.docBottom - st;
-    const p1 = vp.convertToPdfPoint(seg.sx - wr.left, topView - wr.top);
-    const p2 = vp.convertToPdfPoint(seg.ex - wr.left, botView - wr.top);
-    const rect = [
-      Math.min(p1[0], p2[0]), Math.min(p1[1], p2[1]),
-      Math.max(p1[0], p2[0]), Math.max(p1[1], p2[1]),
-    ];
-    if (!byPage.has(seg.line.pageIdx)) byPage.set(seg.line.pageIdx, { srcIdx: seg.line.pageIdx, rects: [] });
-    byPage.get(seg.line.pageIdx).rects.push(rect);
-    parts.push(seg.line.vis.text.slice(seg.sOff - seg.line.vis.start, seg.eOff - seg.line.vis.start));
+    for (const [sx, ex] of seg.rects) {
+      const p1 = vp.convertToPdfPoint(sx - wr.left, topView - wr.top);
+      const p2 = vp.convertToPdfPoint(ex - wr.left, botView - wr.top);
+      const rect = [
+        Math.min(p1[0], p2[0]), Math.min(p1[1], p2[1]),
+        Math.max(p1[0], p2[0]), Math.max(p1[1], p2[1]),
+      ];
+      if (!byPage.has(seg.line.pageIdx)) byPage.set(seg.line.pageIdx, { srcIdx: seg.line.pageIdx, rects: [] });
+      byPage.get(seg.line.pageIdx).rects.push(rect);
+    }
+    const lineParts = [];
+    for (const spanSeg of seg.line.vis.segs) {
+      const s = Math.max(seg.sOff, spanSeg.start), e = Math.min(seg.eOff, spanSeg.end);
+      if (e > s) lineParts.push(spanSeg.text.slice(s - spanSeg.start, e - spanSeg.start));
+    }
+    parts.push(lineParts.join(' '));
   }
   return { segments: [...byPage.values()], text: parts.join(' ').replace(/\s+/g, ' ').trim() };
 }
@@ -256,12 +274,6 @@ function applySelectionAt(x, docY) {
 }
 
 function lines_key(l) { return selAnchor.lines.indexOf(l); }
-function focusOffAt(l, x) {
-  const vis = l.vis;
-  if (x <= vis.left + 2) return vis.start;
-  if (x >= vis.right - 2) return vis.end;
-  return offsetAtX(vis, x);
-}
 
 function initManualSelection() {
   document.addEventListener(

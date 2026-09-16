@@ -1,19 +1,29 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { lineAt, pointNearRect, bandClipRect, selectionOffsetsForLine, wordModeSpan } from '../src/selection.js';
+import { combineSpans, lineAt, offsetAtX, pointNearRect, bandClipRect, selectionOffsetsForLine, wordModeSpan, xOfOffset } from '../src/selection.js';
 
 const line = (left, top, right, bottom) => ({ left, top, right, bottom, width: right - left, height: bottom - top });
-const splitSpan = (text, left, right, top = 10, bottom = 24) => ({
-  docTop: top,
-  docBottom: bottom,
-  vis: { text, left, right, start: 0, end: text.length },
-});
 
-const SPLIT_LINE = [
-  splitSpan('deep', 10, 42),
-  splitSpan('indent', 50, 98),
-  splitSpan('trial', 106, 146),
+// a visual line pdf.js split into spans, as spanVisibleBox/allLines see it:
+// 'deep' + 'indent trial' on one box, each span already trimmed
+const SPLIT_SPANS = [
+  { node: {}, text: 'deep', start: 0, left: 10, right: 42, top: 10, bottom: 24 },
+  { node: {}, text: 'indent trial', start: 0, left: 50, right: 98, top: 10, bottom: 24 },
 ];
+const SPLIT = combineSpans(SPLIT_SPANS);
+
+// what annos.js buildSegments + drawSelection compose for one logical line:
+// per-span paint bounds joined into the copied text
+const charText = (vis, offA, offF) => {
+  const o = selectionOffsetsForLine(0, 0, offA, 0, offF, vis.start, vis.end);
+  const sOff = Math.min(o.start, o.end), eOff = Math.max(o.start, o.end);
+  const parts = [];
+  for (const seg of vis.segs) {
+    const s = Math.max(sOff, seg.start), e = Math.min(eOff, seg.end);
+    if (e > s) parts.push(seg.text.slice(s - seg.start, e - seg.start));
+  }
+  return parts.join(' ');
+};
 
 // Word-mode regression fixtures mirroring the reported ARC-AGI-3 drag: the
 // anchor line reads 'To incentivize this' with the double-clicked word
@@ -41,27 +51,77 @@ const wordText = (iA, aStart, aEnd, iF, lines, off) => {
   return { span: [iS, offS, iE, offE], text: parts.join(' ').replace(/\s+/g, ' ').trim() };
 };
 
-test('lineAt: callers without x keep reading-order resolution', () => {
-  assert.equal(lineAt(SPLIT_LINE, 17), SPLIT_LINE[0]);
+test('combineSpans: same-visual-line spans share one coordinate space', () => {
+  assert.equal(SPLIT.text, 'deep indent trial');
+  assert.equal(SPLIT.start, 0);
+  assert.equal(SPLIT.end, 17);
+  assert.deepEqual(SPLIT.segs.map((s) => [s.start, s.end]), [[0, 4], [5, 17]]);
+  assert.equal(SPLIT.left, 10);
+  assert.equal(SPLIT.right, 98);
 });
 
-test('lineAt: press on a second span resolves that span, not the first on its visual line', () => {
-  assert.equal(lineAt(SPLIT_LINE, 17, 70), SPLIT_LINE[1]);
-  assert.equal(lineAt(SPLIT_LINE, 17, 70).vis.text, 'indent');
+test('combineSpans: a single span keeps its own node and exact offsets', () => {
+  const single = combineSpans([SPLIT_SPANS[0]]);
+  assert.equal(single.node, SPLIT_SPANS[0].node);
+  assert.equal(single.text, 'deep');
+  assert.deepEqual(single.segs.map((s) => [s.start, s.end]), [[0, 4]]);
 });
 
-test('lineAt: character drag on a later span resolves the focus span', () => {
-  const focus = lineAt(SPLIT_LINE, 17, 126);
-  assert.equal(focus, SPLIT_LINE[2]);
-  assert.equal(focus.vis.text, 'trial');
+test('lineAt: press resolves the visual line under the pointer, y first', () => {
+  const above = { docTop: 0, docBottom: 14, vis: { left: 10, right: 90 } };
+  const below = { docTop: 20, docBottom: 34, vis: { left: 10, right: 90 } };
+  assert.equal(lineAt([above, below], 25, 50), below);
+  assert.equal(lineAt([above, below], 8, 50), above);
 });
 
-test('lineAt: inter-span gap resolves the horizontally nearest span', () => {
-  assert.equal(lineAt(SPLIT_LINE, 17, 103), SPLIT_LINE[2]);
+test('lineAt: callers without x resolve by vertical position alone', () => {
+  const above = { docTop: 0, docBottom: 14, vis: { left: 10, right: 40 } };
+  const below = { docTop: 20, docBottom: 34, vis: { left: 10, right: 40 } };
+  assert.equal(lineAt([above, below], 25), below);
+  assert.equal(lineAt([above, below], 5), above);
 });
 
-test('lineAt: pointer beyond a split line end resolves the final span', () => {
-  assert.equal(lineAt(SPLIT_LINE, 17, 180), SPLIT_LINE[2]);
+test('lineAt: an x outside the line resolves the nearest line horizontally', () => {
+  const near = { docTop: 0, docBottom: 14, vis: { left: 10, right: 40 } };
+  const far = { docTop: 0, docBottom: 14, vis: { left: 200, right: 230 } };
+  assert.equal(lineAt([near, far], 7, 60), near);
+});
+
+test('character drag: leftward across the split spans paints exactly between both anchors', () => {
+  // anchor inside 'trial' (span offset 9 -> combined 5 + 9 = 14), focus inside
+  // 'deep' (span offset 2 -> combined 2): pre-fix this read as a cross-line
+  // drag and painted the complement ('de' + 'trial')
+  assert.equal(charText(SPLIT, 14, 2), 'ep indent tr');
+});
+
+test('character drag: rightward across the split spans keeps both anchors', () => {
+  assert.equal(charText(SPLIT, 2, 14), 'ep indent tr');
+});
+
+test('character drag: both anchors inside one span keep span-local behavior', () => {
+  assert.equal(charText(SPLIT, 6, 10), 'nden');
+});
+
+test('word mode: drag across the split spans keeps whole words', () => {
+  // double-click 'trial' [12, 17), drag left into 'indent' (combined 8)
+  const [iS, offS, iE, offE] = wordModeSpan(0, 12, 17, 0, SPLIT.text, SPLIT.start, 8);
+  assert.deepEqual([iS, offS, iE, offE], [0, 5, 0, 17]);
+  assert.equal(charText(SPLIT, offS, offE), 'indent trial');
+});
+
+test('offsetAtX/xOfOffset: a merged line maps through the span under the pointer', () => {
+  // inside the first span
+  assert.ok(offsetAtX(SPLIT, 30) < 5, 'offset inside the first span');
+  // in the trimmed gap: nearest span wins, never a phantom character
+  assert.equal(offsetAtX(SPLIT, 46), 4);
+  // inside the second span
+  assert.ok(offsetAtX(SPLIT, 70) >= 5 && offsetAtX(SPLIT, 70) < 17);
+  // offsets round-trip through pointer x within one span
+  const off = 5 + 3;
+  assert.ok(Math.abs(xOfOffset(SPLIT, off) - xOfOffset(SPLIT, off)) < 0.01);
+  assert.ok(xOfOffset(SPLIT, 0) <= xOfOffset(SPLIT, 4));
+  assert.ok(xOfOffset(SPLIT, 4) < xOfOffset(SPLIT, 5));
+  assert.ok(xOfOffset(SPLIT, 17) > xOfOffset(SPLIT, 16));
 });
 
 test('selectionOffsetsForLine: same-line left-to-right drag keeps both anchors', () => {

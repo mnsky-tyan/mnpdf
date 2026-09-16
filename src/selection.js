@@ -32,6 +32,62 @@ export function lineAt(lines, docY, x) {
   return best;
 }
 
+// A visual line can be several pdf.js spans (whitespace runs, font changes)
+// sharing one vertical box. They are merged into one logical line whose
+// combined text joins the span slices with a space - the trimmed inter-span
+// whitespace - so a drag between two spans of one visual line stays inside
+// that line and paints exactly between both anchors. Every combined offset
+// maps to exactly one span (segs), in full-span coordinates.
+export function combineSpans(spans) {
+  const segs = [];
+  let text = '';
+  const start = spans.length ? spans[0].start : 0;
+  for (const span of spans) {
+    if (text) text += ' ';
+    const at = start + text.length;
+    segs.push({ node: span.node, start: at, end: at + span.text.length,
+                left: span.left, right: span.right, text: span.text });
+    text += span.text;
+  }
+  return {
+    text, start, end: start + text.length, segs,
+    node: spans.length === 1 ? spans[0].node : null,
+    left: spans.length ? Math.min(...spans.map((s) => s.left)) : 0,
+    right: spans.length ? Math.max(...spans.map((s) => s.right)) : 0,
+  };
+}
+
+// pointer x -> character offset in the combined space: the nearest span by
+// horizontal distance wins (ties keep reading order) and the offset
+// interpolates inside it, so an inter-span gap never consumes a character
+export function offsetAtX(vis, x) {
+  const segs = vis.segs || [];
+  if (!segs.length) return vis.start;
+  let best = segs[0], bestD = Infinity;
+  for (const seg of segs) {
+    const d = x < seg.left ? seg.left - x : x > seg.right ? x - seg.right : 0;
+    if (d < bestD) { bestD = d; best = seg; }
+  }
+  if (best.right <= best.left) return best.start;
+  const frac = Math.max(0, Math.min(1, (x - best.left) / (best.right - best.left)));
+  return Math.max(best.start, Math.min(best.end, best.start + Math.round(frac * (best.end - best.start))));
+}
+
+// character offset -> pointer x, clamped to the span holding that offset
+export function xOfOffset(vis, off) {
+  const segs = vis.segs || [];
+  if (!segs.length) return vis.left;
+  let best = segs[0];
+  for (const seg of segs) {
+    if (off < seg.start) break; // offset sits in the trimmed gap: keep the earlier span
+    best = seg;
+  }
+  if (off <= best.start) return best.left;
+  if (off >= best.end) return best.right;
+  const frac = (off - best.start) / (best.end - best.start);
+  return best.left + frac * (best.right - best.left);
+}
+
 // Character offsets painted for one line between an anchor and focus. A
 // same-line drag has two boundaries, regardless of drag direction.
 export function selectionOffsetsForLine(i, iA, offA, iF, offF, lineStart, lineEnd) {
