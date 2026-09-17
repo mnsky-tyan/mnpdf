@@ -4,8 +4,9 @@
 // text shows on hover and is stored in the per-document sidecar (never baked
 // into the PDF), so nothing is printed on the page.
 import { S, pushOp, onDocChange, newHighlight, newPin } from './state.js';
-import { viewportFor, positionOverlays, setOverlayRenderer } from './viewer.js';
+import { viewportFor, positionOverlays, setSelectionDrag, setOverlayRenderer } from './viewer.js';
 import { el } from './util.js';
+import { anchorOffsets, buildSegments, combineSpans, groupLineSpans, insertPageLines, lineAt, segText, wordModeSpan } from './selection.js';
 
 export const HL_COLORS = ['#ffd400', '#7ded72', '#6ec1ff', '#ff9db1', '#ffb257'];
 
@@ -57,9 +58,8 @@ function renderWrapOverlays(i, w, vp) {
 // (viewport y + scrollTop) so the selection stays anchored while edge
 // auto-scroll moves the view. Line boxes are computed once per drag.
 
-let selAnchor = null;   // {node, off, lines, line, wordMode}
+let selAnchor = null;
 let selState = null;    // {segments: [{srcIdx, rects}], text}
-let selLastKey = '';
 let selPointer = null;  // {x, y} client coords
 let selRaf = 0;
 let selApplyRaf = 0;
@@ -100,111 +100,53 @@ function layerSpans(layer) {
   return out;
 }
 
-function offsetAtX(vis, x) {
-  if (!vis.node || vis.right <= vis.left) return vis.start;
-  const frac = (x - vis.left) / (vis.right - vis.left);
-  return Math.max(vis.start, Math.min(vis.end, vis.start + Math.round(frac * (vis.end - vis.start))));
-}
-
-function xOfOffset(vis, off) {
-  if (!vis.node || vis.end <= vis.start) return vis.left;
-  const frac = (off - vis.start) / (vis.end - vis.start);
-  return vis.left + frac * (vis.right - vis.left);
-}
-
 // every rendered text line of the document, in reading order.
 // docTop/docBottom are scroller-document y (stable while the view scrolls).
-function allLines() {
-  const sc = document.getElementById('scroller');
-  const st = sc.scrollTop;
+// pdf.js can split one visual line into several spans (whitespace runs, font
+// changes); spans of one visual line are merged into one logical line
+// (groupLineSpans) so a drag between them never reads as a cross-line drag.
+// complete = false reads the spans already appended while pdf.js is still
+// streaming the layer: the pressed page must resolve on its own text even
+// before .endOfContent lands, since the canvas (visible text) renders first
+// and the spans under the pointer are already valid. Returns null for an
+// unrendered layer so a caller can tell it from a rendered-but-empty one.
+function pageLines(wrap, st, complete = true) {
+  const layer = wrap.querySelector('.textLayer');
+  if (!layer) return null;
+  if (complete && !layer.querySelector('.endOfContent')) return null;
+  if (!layer.querySelector('span')) return null;
+  const pageIdx = +wrap.dataset.i;
   const out = [];
-  document.querySelectorAll('.pagewrap').forEach((wrap) => {
-    const layer = wrap.querySelector('.textLayer');
-    if (!layer) return;
-    const pageIdx = +wrap.dataset.i;
-    for (const vis of layerSpans(layer)) {
-      out.push({ wrapEl: wrap, pageIdx, vis,
-                 docTop: vis.top + st, docBottom: vis.bottom + st,
-                 lh: vis.bottom - vis.top });
-    }
-  });
+  for (const group of groupLineSpans(layerSpans(layer))) {
+    const top = Math.min(...group.map((s) => s.top));
+    const bottom = Math.max(...group.map((s) => s.bottom));
+    const vis = combineSpans(group);
+    for (const seg of vis.segs) { seg.top += st; seg.bottom += st; }
+    out.push({ wrapEl: wrap, pageIdx, vis,
+               docTop: top + st, docBottom: bottom + st,
+               lh: bottom - top });
+  }
   return out;
 }
 
-function lineAt(lines, docY) {
-  if (!lines.length) return null;
-  for (const l of lines) {
-    if (docY >= l.docTop - 2 && docY <= l.docBottom + 2) return l;
-  }
-  let best = null, bestD = Infinity;
-  for (const l of lines) {
-    const c = (l.docTop + l.docBottom) / 2;
-    const d = Math.abs(docY - c);
-    if (d < bestD) { bestD = d; best = l; }
-  }
-  return best;
-}
-
-function anchorAt(lines, x, docY) {
-  const line = lineAt(lines, docY);
-  if (!line) return null;
-  const vis = line.vis;
-  let off;
-  if (x <= vis.left + 2) off = vis.start;
-  else if (x >= vis.right - 2) off = vis.end;
-  else off = offsetAtX(vis, x);
-  return { node: vis.node, off, line };
-}
-
-function offAtLine(l, x) {
-  const vis = l.vis;
-  if (x <= vis.left + 2) return vis.start;
-  if (x >= vis.right - 2) return vis.end;
-  return offsetAtX(vis, x);
-}
-
-function snapWord(vis, off) {
-  let i = Math.max(vis.start, Math.min(vis.end, off)) - vis.start;
-  const t = vis.text;
-  while (i > 0 && !/\s/.test(t[i - 1] || ' ')) i--;
-  while (i < t.length && !/\s/.test(t[i] || ' ')) i++;
-  return vis.start + i;
-}
-
-// per-line segments between two anchors (ordered): boundary lines are trimmed
-// to the pointer character, middle lines are full glyphs, and each selected
-// line extends down to the next selected line's top so the block is
-// continuous — but the bridge is capped at ~1.5 line heights, so figures,
-// margins and page gaps stay unpainted.
-function buildSegments(lines, iA, offA, iF, offF) {
-  const fi = Math.min(iA, iF), li = Math.max(iA, iF);
-  // which end of the selection the anchor/focus offsets belong to depends on
-  // the drag direction (upward drags reverse the anchor/focus roles)
-  const downward = iA <= iF;
-  const segs = [];
-  for (let i = fi; i <= li; i++) {
-    const line = lines[i];
-    const vis = line.vis;
-    let sx = vis.left, sOff = vis.start, ex = vis.right, eOff = vis.end;
-    if (i === fi) {
-      if (downward) { sx = xOfOffset(vis, offA); sOff = offA; }
-      else { ex = xOfOffset(vis, offF); eOff = offF; }
-    } else if (i === li) {
-      if (downward) { ex = xOfOffset(vis, offF); eOff = offF; }
-      else { sx = xOfOffset(vis, offA); sOff = offA; }
-    }
-    if (ex - sx < 0.5) continue;
-    segs.push({ line, sx: Math.min(sx, ex), ex: Math.max(sx, ex), sOff, eOff,
-                docTop: line.docTop, docBottom: line.docBottom });
-  }
-  for (let i = 1; i < segs.length; i++) {
-    const prev = segs[i - 1], cur = segs[i];
-    if (prev.line.wrapEl !== cur.line.wrapEl) continue;
-    const gap = cur.docTop - prev.docBottom;
-    const bridge = (prev.docBottom - prev.docTop) * 1.5;
-    if (gap > 0 && gap < bridge) cur.docTop = prev.docBottom;
-  }
-  return segs;
+// pressWrap is the page the mousedown landed on: it is read without the
+// end-of-content gate so a press on visible-but-still-streaming text resolves
+// that page instead of falling back to a line of a neighbouring page. partial
+// lists the pages read that way, which must stay refresh candidates until
+// their layer finishes, so a partial read never closes a page.
+function allLines(pressWrap = null) {
+  const sc = document.getElementById('scroller');
+  const st = sc.scrollTop;
+  const lines = [];
+  const partial = [];
+  document.querySelectorAll('.pagewrap').forEach((wrap) => {
+    const complete = wrap !== pressWrap;
+    const ls = pageLines(wrap, st, complete);
+    if (!ls) return;
+    lines.push(...ls);
+    if (!complete) partial.push(+wrap.dataset.i);
+  });
+  return { lines, partial };
 }
 
 function drawSelection(segs) {
@@ -216,17 +158,17 @@ function drawSelection(segs) {
     const vp = viewportFor(seg.line.pageIdx);
     if (!vp) continue;
     const wr = seg.line.wrapEl.getBoundingClientRect();
-    const topView = seg.docTop - st;
-    const botView = seg.docBottom - st;
-    const p1 = vp.convertToPdfPoint(seg.sx - wr.left, topView - wr.top);
-    const p2 = vp.convertToPdfPoint(seg.ex - wr.left, botView - wr.top);
-    const rect = [
-      Math.min(p1[0], p2[0]), Math.min(p1[1], p2[1]),
-      Math.max(p1[0], p2[0]), Math.max(p1[1], p2[1]),
-    ];
-    if (!byPage.has(seg.line.pageIdx)) byPage.set(seg.line.pageIdx, { srcIdx: seg.line.pageIdx, rects: [] });
-    byPage.get(seg.line.pageIdx).rects.push(rect);
-    parts.push(seg.line.vis.text.slice(seg.sOff - seg.line.vis.start, seg.eOff - seg.line.vis.start));
+    for (const [sx, ex, top, bottom] of seg.rects) {
+      const p1 = vp.convertToPdfPoint(sx - wr.left, top - st - wr.top);
+      const p2 = vp.convertToPdfPoint(ex - wr.left, bottom - st - wr.top);
+      const rect = [
+        Math.min(p1[0], p2[0]), Math.min(p1[1], p2[1]),
+        Math.max(p1[0], p2[0]), Math.max(p1[1], p2[1]),
+      ];
+      if (!byPage.has(seg.line.pageIdx)) byPage.set(seg.line.pageIdx, { srcIdx: seg.line.pageIdx, rects: [] });
+      byPage.get(seg.line.pageIdx).rects.push(rect);
+    }
+    parts.push(segText(seg));
   }
   return { segments: [...byPage.values()], text: parts.join(' ').replace(/\s+/g, ' ').trim() };
 }
@@ -264,29 +206,41 @@ export function currentSelection() {
   return { segments: selState.segments, text: selState.text };
 }
 
-let selLastLine = null;
-
-function applySelectionAt(x, docY) {
-  const lines = selAnchor.lines;
-  // re-derive the anchor line from its stored doc position — stable across
-  // scrolling and text-layer re-renders
-  const anchorLine = lineAt(lines, selAnchor.docY);
-  const focus = lineAt(lines, docY);
-  if (!anchorLine || !focus) return;
-  let focusOff = offAtLine(focus, x);
-  if (selAnchor.wordMode) focusOff = snapWord(focus.vis, focusOff);
-  const iA = lines.indexOf(anchorLine);
-  const iF = lines.indexOf(focus);
-  selState = drawSelection(buildSegments(lines, iA, selAnchor.off, iF, focusOff));
-  renderSelection();
+// A drag outlives the mousedown snapshot: pages whose text layer renders
+// during the drag must join the cached line list, or a drag that auto-scrolls
+// onto such a page resolves its lines to the nearest cached page and the
+// focus lands away from the drag end. Only pages not yet scanned are read,
+// so an already-scanned page is never re-extracted.
+function refreshDragLines() {
+  const sc = document.getElementById('scroller');
+  const st = sc.scrollTop;
+  const known = selAnchor.knownPages;
+  document.querySelectorAll('.pagewrap').forEach((wrap) => {
+    const pageIdx = +wrap.dataset.i;
+    if (known.has(pageIdx)) return;
+    const fresh = pageLines(wrap, st);
+    if (fresh === null) return;
+    known.add(pageIdx);
+    selAnchor.lines = insertPageLines(selAnchor.lines, pageIdx, fresh);
+  });
 }
 
-function lines_key(l) { return selAnchor.lines.indexOf(l); }
-function focusOffAt(l, x) {
-  const vis = l.vis;
-  if (x <= vis.left + 2) return vis.start;
-  if (x >= vis.right - 2) return vis.end;
-  return offsetAtX(vis, x);
+function applySelectionAt(x, docY) {
+  refreshDragLines();
+  const lines = selAnchor.lines;
+  const anchorLine = lineAt(lines, selAnchor.docY, selAnchor.x);
+  const focus = lineAt(lines, docY, x);
+  if (!anchorLine || !focus) return;
+  Object.assign(selAnchor, anchorOffsets(anchorLine.vis, selAnchor.x, selAnchor.wordMode));
+  const focusOff = anchorOffsets(focus.vis, x, false).off;
+  let iA = lines.indexOf(anchorLine);
+  let iF = lines.indexOf(focus);
+  let offA = selAnchor.off, offF = focusOff;
+  if (selAnchor.wordMode) {
+    [iA, offA, iF, offF] = wordModeSpan(iA, selAnchor.off, selAnchor.offEnd, iF, focus.vis.text, focus.vis.start, focusOff);
+  }
+  selState = drawSelection(buildSegments(lines, iA, offA, iF, offF));
+  renderSelection();
 }
 
 function initManualSelection() {
@@ -300,28 +254,24 @@ function initManualSelection() {
       clearSelection();
       const sc = document.getElementById('scroller');
       const docY = e.clientY + sc.scrollTop;
-      const lines = allLines();
-      const line = lineAt(lines, docY);
+      const pressWrap = tlEl.closest('.pagewrap') || null;
+      const { lines, partial } = allLines(pressWrap);
+      const line = lineAt(lines, docY, e.clientX);
       if (!line) return;
-      const vis = line.vis;
-      let off;
-      if (e.clientX <= vis.left + 2) off = vis.start;
-      else if (e.clientX >= vis.right - 2) off = vis.end;
-      else off = offsetAtX(vis, e.clientX);
       const wordMode = e.detail >= 2;
+      const { off, offEnd } = anchorOffsets(line.vis, e.clientX, wordMode);
       if (wordMode) {
-        // double click: the word under the press; dragging extends by words
-        let sOff = off, eOff = off;
-        const t = vis.text;
-        while (sOff > vis.start && !/\s/.test(t[sOff - 1 - vis.start] || ' ')) sOff--;
-        while (eOff < vis.end && !/\s/.test(t[eOff - vis.start] || ' ')) eOff++;
-        selState = drawSelection(buildSegments([line], 0, sOff, 0, eOff), [line], 0);
+        selState = drawSelection(buildSegments([line], 0, off, 0, offEnd));
         renderSelection();
-        off = sOff;
       }
-      selAnchor = { node: vis.node, off, line, lines, wordMode, x: e.clientX, docY };
+      // a page read while still streaming must stay a refresh candidate, so
+      // the drag adopts its complete lines once the layer finishes
+      const known = new Set(lines.map((l) => l.pageIdx));
+      for (const idx of partial) known.delete(idx);
+      selAnchor = { off, offEnd, lines,
+                    knownPages: known,
+                    wordMode, x: e.clientX, docY };
       selPointer = { x: e.clientX, y: e.clientY };
-      selLastKey = '';
       startSelAutoScroll();
     },
     true,
@@ -335,7 +285,19 @@ function initManualSelection() {
     },
     true,
   );
-  document.addEventListener('mouseup', () => { selAnchor = null; stopSelAutoScroll(); }, true);
+  document.addEventListener('mouseup', (e) => {
+    if (e.button !== 0) return;
+    // A mouseup can arrive before the animation frame queued by the final
+    // mousemove. Apply the release coordinates synchronously before clearing
+    // the drag, otherwise the painted focus remains one event behind.
+    if (selAnchor) {
+      if (selApplyRaf) { cancelAnimationFrame(selApplyRaf); selApplyRaf = 0; }
+      const sc = document.getElementById('scroller');
+      applySelectionAt(e.clientX, e.clientY + sc.scrollTop);
+    }
+    selAnchor = null;
+    stopSelAutoScroll();
+  }, true);
   document.addEventListener('pointercancel', () => { selAnchor = null; stopSelAutoScroll(); });
   window.addEventListener('blur', () => { selAnchor = null; stopSelAutoScroll(); });
   document.addEventListener('keydown', (e) => {
@@ -359,6 +321,7 @@ function scheduleApply() {
 // keeps scrolling; the selection extends over the newly revealed lines —
 // across page boundaries.
 function startSelAutoScroll() {
+  setSelectionDrag(true);
   if (selRaf) return;
   const scroller = document.getElementById('scroller');
   const tick = () => {
@@ -379,6 +342,7 @@ function startSelAutoScroll() {
 
 function stopSelAutoScroll() {
   if (selRaf) { cancelAnimationFrame(selRaf); selRaf = 0; }
+  setSelectionDrag(false);
 }
 
 function rectsOverlap(a, b) {
