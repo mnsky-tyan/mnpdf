@@ -103,6 +103,17 @@ export function offsetAtX(vis, x) {
   return Math.max(best.start, Math.min(best.end, best.start + Math.round(frac * (best.end - best.start))));
 }
 
+export function anchorOffsets(vis, x, wordMode = false) {
+  let off = x <= vis.left + 2 ? vis.start
+    : x >= vis.right - 2 ? vis.end : offsetAtX(vis, x);
+  let offEnd = off;
+  if (wordMode) {
+    while (off > vis.start && !/\s/.test(vis.text[off - 1 - vis.start] || ' ')) off--;
+    while (offEnd < vis.end && !/\s/.test(vis.text[offEnd - vis.start] || ' ')) offEnd++;
+  }
+  return { off, offEnd };
+}
+
 // character offset -> pointer x, clamped to the span holding that offset
 export function xOfOffset(vis, off) {
   const segs = vis.segs || [];
@@ -203,7 +214,7 @@ export function buildSegments(lines, iA, offA, iF, offF) {
         }
       }
       const next = vis.segs[k + 1];
-      if (!next || sOff > seg.end || eOff < next.start) continue;
+      if (!next || sOff >= seg.end || eOff <= next.start) continue;
       const l = xOfOffset(vis, seg.end);
       const r = xOfOffset(vis, next.start);
       if (r - l < 0.5) continue;

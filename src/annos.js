@@ -6,7 +6,7 @@
 import { S, pushOp, onDocChange, newHighlight, newPin } from './state.js';
 import { viewportFor, positionOverlays, setSelectionDrag, setOverlayRenderer } from './viewer.js';
 import { el } from './util.js';
-import { buildSegments, combineSpans, groupLineSpans, insertPageLines, lineAt, offsetAtX, segText, selectionOffsetsForLine, wordModeSpan, xOfOffset } from './selection.js';
+import { anchorOffsets, buildSegments, combineSpans, groupLineSpans, insertPageLines, lineAt, offsetAtX, segText, wordModeSpan } from './selection.js';
 
 export const HL_COLORS = ['#ffd400', '#7ded72', '#6ec1ff', '#ff9db1', '#ffb257'];
 
@@ -58,9 +58,8 @@ function renderWrapOverlays(i, w, vp) {
 // (viewport y + scrollTop) so the selection stays anchored while edge
 // auto-scroll moves the view. Line boxes are computed once per drag.
 
-let selAnchor = null;   // {node, off, lines, line, wordMode}
+let selAnchor = null;
 let selState = null;    // {segments: [{srcIdx, rects}], text}
-let selLastKey = '';
 let selPointer = null;  // {x, y} client coords
 let selRaf = 0;
 let selApplyRaf = 0;
@@ -150,17 +149,6 @@ function allLines(pressWrap = null) {
   return { lines, partial };
 }
 
-function anchorAt(lines, x, docY) {
-  const line = lineAt(lines, docY, x);
-  if (!line) return null;
-  const vis = line.vis;
-  let off;
-  if (x <= vis.left + 2) off = vis.start;
-  else if (x >= vis.right - 2) off = vis.end;
-  else off = offsetAtX(vis, x);
-  return { node: vis.node, off, line };
-}
-
 function offAtLine(l, x) {
   const vis = l.vis;
   if (x <= vis.left + 2) return vis.start;
@@ -224,8 +212,6 @@ export function currentSelection() {
   return { segments: selState.segments, text: selState.text };
 }
 
-let selLastLine = null;
-
 // A drag outlives the mousedown snapshot: pages whose text layer renders
 // during the drag must join the cached line list, or a drag that auto-scrolls
 // onto such a page resolves its lines to the nearest cached page and the
@@ -248,11 +234,10 @@ function refreshDragLines() {
 function applySelectionAt(x, docY) {
   refreshDragLines();
   const lines = selAnchor.lines;
-  // re-derive the anchor line from its stored doc position — stable across
-  // scrolling and text-layer re-renders
   const anchorLine = lineAt(lines, selAnchor.docY, selAnchor.x);
   const focus = lineAt(lines, docY, x);
   if (!anchorLine || !focus) return;
+  Object.assign(selAnchor, anchorOffsets(anchorLine.vis, selAnchor.x, selAnchor.wordMode));
   const focusOff = offAtLine(focus, x);
   let iA = lines.indexOf(anchorLine);
   let iF = lines.indexOf(focus);
@@ -263,8 +248,6 @@ function applySelectionAt(x, docY) {
   selState = drawSelection(buildSegments(lines, iA, offA, iF, offF));
   renderSelection();
 }
-
-function lines_key(l) { return selAnchor.lines.indexOf(l); }
 
 function initManualSelection() {
   document.addEventListener(
@@ -281,33 +264,20 @@ function initManualSelection() {
       const { lines, partial } = allLines(pressWrap);
       const line = lineAt(lines, docY, e.clientX);
       if (!line) return;
-      const vis = line.vis;
-      let off;
-      if (e.clientX <= vis.left + 2) off = vis.start;
-      else if (e.clientX >= vis.right - 2) off = vis.end;
-      else off = offsetAtX(vis, e.clientX);
       const wordMode = e.detail >= 2;
-      let offEnd = off;
+      const { off, offEnd } = anchorOffsets(line.vis, e.clientX, wordMode);
       if (wordMode) {
-        // double click: the word under the press; dragging extends by words
-        let sOff = off, eOff = off;
-        const t = vis.text;
-        while (sOff > vis.start && !/\s/.test(t[sOff - 1 - vis.start] || ' ')) sOff--;
-        while (eOff < vis.end && !/\s/.test(t[eOff - vis.start] || ' ')) eOff++;
-        selState = drawSelection(buildSegments([line], 0, sOff, 0, eOff));
+        selState = drawSelection(buildSegments([line], 0, off, 0, offEnd));
         renderSelection();
-        off = sOff;
-        offEnd = eOff;
       }
       // a page read while still streaming must stay a refresh candidate, so
       // the drag adopts its complete lines once the layer finishes
       const known = new Set(lines.map((l) => l.pageIdx));
       for (const idx of partial) known.delete(idx);
-      selAnchor = { node: vis.node, off, offEnd, line, lines,
+      selAnchor = { off, offEnd, lines,
                     knownPages: known,
                     wordMode, x: e.clientX, docY };
       selPointer = { x: e.clientX, y: e.clientY };
-      selLastKey = '';
       startSelAutoScroll();
     },
     true,

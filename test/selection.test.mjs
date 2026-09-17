@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildSegments, combineSpans, groupLineSpans, insertPageLines, lineAt, offsetAtX, pointNearRect, bandClipRect, segText, selectionOffsetsForLine, wordModeSpan, xOfOffset } from '../src/selection.js';
+import { anchorOffsets, buildSegments, combineSpans, groupLineSpans, insertPageLines, lineAt, offsetAtX, pointNearRect, bandClipRect, segText, selectionOffsetsForLine, wordModeSpan, xOfOffset } from '../src/selection.js';
 
 const line = (left, top, right, bottom) => ({ left, top, right, bottom, width: right - left, height: bottom - top });
 
@@ -322,9 +322,38 @@ test('paint: a selection ending exactly on a space leaves it unpainted', () => {
   assert.equal(charText(SPLIT, 2, 4), 'ep');
 });
 
-test('paint: a selection that is only the space paints exactly the space', () => {
-  assert.deepEqual(charRects(SPLIT, 4, 5), [[42, 50, 10, 24]]);
+test('paint: a selection that only reaches the gap paints no phantom strip', () => {
+  assert.deepEqual(charRects(SPLIT, 4, 5), []);
+  assert.equal(charText(SPLIT, 4, 5), '');
+  assert.deepEqual(charRects(SPLIT, 2, 5), [[26, 42, 10, 24]]);
+  assert.equal(charText(SPLIT, 2, 5), 'ep');
+  assert.deepEqual(charRects(SPLIT, 2, 6), [
+    [26, 42, 10, 24], [42, 50, 10, 24], [50, 54, 10, 24],
+  ]);
+  assert.equal(charText(SPLIT, 2, 6), 'ep i');
 });
+
+for (const wordMode of [false, true]) {
+  test(`anchorOffsets: rescan keeps the press position in ${wordMode ? 'word' : 'character'} mode`, () => {
+    const partial = { ...oneLine(combineSpans([SPLIT_SPANS[1]])), docTop: 10, docBottom: 24 };
+    const complete = { ...oneLine(SPLIT), docTop: 10, docBottom: 24 };
+    const pressX = 62;
+    const before = anchorOffsets(partial.vis, pressX, wordMode);
+    const lines = insertPageLines([partial], 0, [complete]);
+    const anchor = lineAt(lines, 17, pressX);
+    const after = anchorOffsets(anchor.vis, pressX, wordMode);
+    assert.equal(after.off - before.off, 5);
+    assert.equal(after.offEnd - before.offEnd, 5);
+    assert.equal(xOfOffset(partial.vis, before.off), xOfOffset(anchor.vis, after.off));
+    assert.deepEqual(after, wordMode ? { off: 5, offEnd: 11 } : { off: 8, offEnd: 8 });
+    assert.equal(charText(anchor.vis, after.off, 14), wordMode ? 'indent tr' : 'ent tr');
+    assert.notEqual(charText(anchor.vis, before.off, 14), charText(anchor.vis, after.off, 14));
+    const span = wordMode
+      ? wordModeSpan(0, after.off, after.offEnd, 0, anchor.vis.text, anchor.vis.start, 2)
+      : [0, after.off, 0, 2];
+    assert.equal(buildSegments(lines, ...span).map(segText).join(' '), wordMode ? 'deep indent' : 'ep ind');
+  });
+}
 
 test('pointNearRect: press on a glyph box starts a selection', () => {
   assert.equal(pointNearRect(50, 10, line(0, 0, 100, 14)), true);
