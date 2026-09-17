@@ -174,15 +174,83 @@ export function wordModeSpan(iA, aStart, aEnd, iF, text, start, off) {
   return [iF, snapWordStart(text, start, off), iA, aEnd];
 }
 
+// Per-line paint bounds between two anchors (ordered): boundary lines are
+// trimmed to the pointer character, middle lines are full glyphs, and each
+// selected line extends down to the next selected line's top so the block is
+// continuous - but the bridge is capped at ~1.5 line heights, so figures,
+// margins and page gaps stay unpainted. A merged line paints one rect per
+// span at that span's own vertical extent plus the covered inter-span
+// spaces, so the painted area is exactly what segText copies.
+export function buildSegments(lines, iA, offA, iF, offF) {
+  const fi = Math.min(iA, iF), li = Math.max(iA, iF);
+  const segs = [];
+  for (let i = fi; i <= li; i++) {
+    const line = lines[i];
+    const vis = line.vis;
+    const offsets = selectionOffsetsForLine(i, iA, offA, iF, offF, vis.start, vis.end);
+    const sOff = Math.min(offsets.start, offsets.end);
+    const eOff = Math.max(offsets.start, offsets.end);
+    const rects = [];
+    const bands = [];
+    for (let k = 0; k < vis.segs.length; k++) {
+      const seg = vis.segs[k];
+      const s = Math.max(sOff, seg.start), e = Math.min(eOff, seg.end);
+      if (e > s) {
+        const sx = xOfOffset(vis, s), ex = xOfOffset(vis, e);
+        if (ex - sx >= 0.5) {
+          rects.push([Math.min(sx, ex), Math.max(sx, ex), seg.top, seg.bottom]);
+          bands[k] = [seg.top, seg.bottom];
+        }
+      }
+      const next = vis.segs[k + 1];
+      if (!next || sOff > seg.end || eOff < next.start) continue;
+      const l = xOfOffset(vis, seg.end);
+      const r = xOfOffset(vis, next.start);
+      if (r - l < 0.5) continue;
+      const band = bands[k] || [seg.top, seg.bottom];
+      rects.push([l, r, band[0], band[1]]);
+    }
+    if (!rects.length) continue;
+    segs.push({ line, rects, sOff, eOff });
+  }
+  for (let i = 1; i < segs.length; i++) {
+    const prev = segs[i - 1], cur = segs[i];
+    if (prev.line.wrapEl !== cur.line.wrapEl) continue;
+    const pr = prev.rects[prev.rects.length - 1], cr = cur.rects[0];
+    const gap = cr[2] - pr[3];
+    const bridge = (pr[3] - pr[2]) * 1.5;
+    if (gap > 0 && gap < bridge) cr[2] = pr[3];
+  }
+  return segs;
+}
+
+// The copied text for one painted segment: the span slices its rects cover,
+// joined with the trimmed inter-span spaces. Paint and copy derive from the
+// same sOff/eOff window, so what is painted blue is what Highlight/Copy act
+// on.
+export function segText(seg) {
+  const parts = [];
+  for (const spanSeg of seg.line.vis.segs) {
+    const s = Math.max(seg.sOff, spanSeg.start), e = Math.min(seg.eOff, spanSeg.end);
+    if (e > s) parts.push(spanSeg.text.slice(s - spanSeg.start, e - spanSeg.start));
+  }
+  return parts.join(' ');
+}
+
 // Merge a page's lines into a drag's cached line list, keeping document order
 // (page index, then the page's own reading order) and every existing entry's
 // identity and position, so anchors already resolved against the cache stay
 // valid. Called when a page's text layer renders mid-drag.
+// A page re-scanned after a partial read (a press resolved while its layer
+// was still streaming) drops its own stale entries, so the cache keeps
+// exactly one contiguous run per page and every other page's entries keep
+// their identity and position.
 export function insertPageLines(lines, pageIdx, fresh) {
   if (!fresh.length) return lines;
+  const kept = lines.filter((l) => l.pageIdx !== pageIdx);
   let at = 0;
-  while (at < lines.length && lines[at].pageIdx < pageIdx) at++;
-  return lines.slice(0, at).concat(fresh, lines.slice(at));
+  while (at < kept.length && kept[at].pageIdx < pageIdx) at++;
+  return kept.slice(0, at).concat(fresh, kept.slice(at));
 }
 
 export function pointNearRect(x, y, r, slopX = START_SLOP_X, slopY = START_SLOP_Y) {

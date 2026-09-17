@@ -6,7 +6,7 @@
 import { S, pushOp, onDocChange, newHighlight, newPin } from './state.js';
 import { viewportFor, positionOverlays, setSelectionDrag, setOverlayRenderer } from './viewer.js';
 import { el } from './util.js';
-import { combineSpans, groupLineSpans, insertPageLines, lineAt, offsetAtX, selectionOffsetsForLine, wordModeSpan, xOfOffset } from './selection.js';
+import { buildSegments, combineSpans, groupLineSpans, insertPageLines, lineAt, offsetAtX, segText, selectionOffsetsForLine, wordModeSpan, xOfOffset } from './selection.js';
 
 export const HL_COLORS = ['#ffd400', '#7ded72', '#6ec1ff', '#ff9db1', '#ffb257'];
 
@@ -106,13 +106,15 @@ function layerSpans(layer) {
 // pdf.js can split one visual line into several spans (whitespace runs, font
 // changes); spans of one visual line are merged into one logical line
 // (groupLineSpans) so a drag between them never reads as a cross-line drag.
-// Returns null while the layer is still incomplete - pdf.js appends spans
-// incrementally, and the viewer adds the .endOfContent marker only after
-// TextLayer.render() finishes - so a caller never reads a partially rendered
-// page and can tell an unrendered page from a rendered-but-empty one.
-function pageLines(wrap, st) {
+// complete = false reads the spans already appended while pdf.js is still
+// streaming the layer: the pressed page must resolve on its own text even
+// before .endOfContent lands, since the canvas (visible text) renders first
+// and the spans under the pointer are already valid. Returns null for an
+// unrendered layer so a caller can tell it from a rendered-but-empty one.
+function pageLines(wrap, st, complete = true) {
   const layer = wrap.querySelector('.textLayer');
-  if (!layer || !layer.querySelector('.endOfContent')) return null;
+  if (!layer) return null;
+  if (complete && !layer.querySelector('.endOfContent')) return null;
   if (!layer.querySelector('span')) return null;
   const pageIdx = +wrap.dataset.i;
   const out = [];
@@ -128,15 +130,24 @@ function pageLines(wrap, st) {
   return out;
 }
 
-function allLines() {
+// pressWrap is the page the mousedown landed on: it is read without the
+// end-of-content gate so a press on visible-but-still-streaming text resolves
+// that page instead of falling back to a line of a neighbouring page. partial
+// lists the pages read that way, which must stay refresh candidates until
+// their layer finishes, so a partial read never closes a page.
+function allLines(pressWrap = null) {
   const sc = document.getElementById('scroller');
   const st = sc.scrollTop;
-  const out = [];
+  const lines = [];
+  const partial = [];
   document.querySelectorAll('.pagewrap').forEach((wrap) => {
-    const ls = pageLines(wrap, st);
-    if (ls) out.push(...ls);
+    const complete = wrap !== pressWrap;
+    const ls = pageLines(wrap, st, complete);
+    if (!ls) return;
+    lines.push(...ls);
+    if (!complete) partial.push(+wrap.dataset.i);
   });
-  return out;
+  return { lines, partial };
 }
 
 function anchorAt(lines, x, docY) {
@@ -156,59 +167,6 @@ function offAtLine(l, x) {
   if (x >= vis.right - 2) return vis.end;
   return offsetAtX(vis, x);
 }
-// per-line segments between two anchors (ordered): boundary lines are trimmed
-// to the pointer character, middle lines are full glyphs, and each selected
-// line extends down to the next selected line's top so the block is
-// continuous — but the bridge is capped at ~1.5 line heights, so figures,
-// margins and page gaps stay unpainted.
-function buildSegments(lines, iA, offA, iF, offF) {
-  const fi = Math.min(iA, iF), li = Math.max(iA, iF);
-  const segs = [];
-  for (let i = fi; i <= li; i++) {
-    const line = lines[i];
-    const vis = line.vis;
-    const offsets = selectionOffsetsForLine(i, iA, offA, iF, offF, vis.start, vis.end);
-    // a merged line paints one rect per span; the trimmed inter-span spaces
-    // the selection covers are painted too, so a split line is continuous
-    // like in any native viewer, while selection boundaries that start or end
-    // exactly on a space still leave it unpainted
-    const sOff = Math.min(offsets.start, offsets.end);
-    const eOff = Math.max(offsets.start, offsets.end);
-    const rects = [];
-    const bands = [];
-    for (let k = 0; k < vis.segs.length; k++) {
-      const seg = vis.segs[k];
-      const s = Math.max(sOff, seg.start), e = Math.min(eOff, seg.end);
-      if (e > s) {
-        const sx = xOfOffset(vis, s), ex = xOfOffset(vis, e);
-        if (ex - sx >= 0.5) {
-          rects.push([Math.min(sx, ex), Math.max(sx, ex), seg.top, seg.bottom]);
-          bands[k] = [seg.top, seg.bottom];
-        }
-      }
-      const next = vis.segs[k + 1];
-      if (!next || sOff > seg.end || eOff < next.start) continue;
-      const l = xOfOffset(vis, seg.end);
-      const r = xOfOffset(vis, next.start);
-      if (r - l < 0.5) continue;
-      const band = bands[k] || bands[k + 1] || [seg.top, seg.bottom];
-      rects.push([l, r, band[0], band[1]]);
-      if (!bands[k]) bands[k] = [band[0], band[1]];
-    }
-    if (!rects.length) continue;
-    segs.push({ line, rects, sOff, eOff });
-  }
-  for (let i = 1; i < segs.length; i++) {
-    const prev = segs[i - 1], cur = segs[i];
-    if (prev.line.wrapEl !== cur.line.wrapEl) continue;
-    const pr = prev.rects[prev.rects.length - 1], cr = cur.rects[0];
-    const gap = cr[2] - pr[3];
-    const bridge = (pr[3] - pr[2]) * 1.5;
-    if (gap > 0 && gap < bridge) cr[2] = pr[3];
-  }
-  return segs;
-}
-
 function drawSelection(segs) {
   const sc = document.getElementById('scroller');
   const st = sc.scrollTop;
@@ -228,12 +186,7 @@ function drawSelection(segs) {
       if (!byPage.has(seg.line.pageIdx)) byPage.set(seg.line.pageIdx, { srcIdx: seg.line.pageIdx, rects: [] });
       byPage.get(seg.line.pageIdx).rects.push(rect);
     }
-    const lineParts = [];
-    for (const spanSeg of seg.line.vis.segs) {
-      const s = Math.max(seg.sOff, spanSeg.start), e = Math.min(seg.eOff, spanSeg.end);
-      if (e > s) lineParts.push(spanSeg.text.slice(s - spanSeg.start, e - spanSeg.start));
-    }
-    parts.push(lineParts.join(' '));
+    parts.push(segText(seg));
   }
   return { segments: [...byPage.values()], text: parts.join(' ').replace(/\s+/g, ' ').trim() };
 }
@@ -324,7 +277,8 @@ function initManualSelection() {
       clearSelection();
       const sc = document.getElementById('scroller');
       const docY = e.clientY + sc.scrollTop;
-      const lines = allLines();
+      const pressWrap = tlEl.closest('.pagewrap') || null;
+      const { lines, partial } = allLines(pressWrap);
       const line = lineAt(lines, docY, e.clientX);
       if (!line) return;
       const vis = line.vis;
@@ -345,8 +299,12 @@ function initManualSelection() {
         off = sOff;
         offEnd = eOff;
       }
+      // a page read while still streaming must stay a refresh candidate, so
+      // the drag adopts its complete lines once the layer finishes
+      const known = new Set(lines.map((l) => l.pageIdx));
+      for (const idx of partial) known.delete(idx);
       selAnchor = { node: vis.node, off, offEnd, line, lines,
-                    knownPages: new Set(lines.map((l) => l.pageIdx)),
+                    knownPages: known,
                     wordMode, x: e.clientX, docY };
       selPointer = { x: e.clientX, y: e.clientY };
       selLastKey = '';

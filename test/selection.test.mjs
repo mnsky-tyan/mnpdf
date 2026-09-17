@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { combineSpans, groupLineSpans, insertPageLines, lineAt, offsetAtX, pointNearRect, bandClipRect, selectionOffsetsForLine, wordModeSpan, xOfOffset } from '../src/selection.js';
+import { buildSegments, combineSpans, groupLineSpans, insertPageLines, lineAt, offsetAtX, pointNearRect, bandClipRect, segText, selectionOffsetsForLine, wordModeSpan, xOfOffset } from '../src/selection.js';
 
 const line = (left, top, right, bottom) => ({ left, top, right, bottom, width: right - left, height: bottom - top });
 
@@ -21,48 +21,15 @@ const TALL = { node: {}, text: 'Big', start: 0, left: 10, right: 40, top: 10, bo
 const SMALL = { node: {}, text: 'body', start: 0, left: 44, right: 72, top: 24, bottom: 37 };
 const MERGED = combineSpans([TALL, SMALL]);
 
-// the rect composition buildSegments performs for one logical line: one rect
-// per span painted at that span's own vertical extent, plus the covered
-// inter-span spaces so a split line paints continuously
-const charRects = (vis, offA, offF) => {
-  const o = selectionOffsetsForLine(0, 0, offA, 0, offF, vis.start, vis.end);
-  const sOff = Math.min(o.start, o.end), eOff = Math.max(o.start, o.end);
-  const rects = [];
-  const bands = [];
-  for (let k = 0; k < vis.segs.length; k++) {
-    const seg = vis.segs[k];
-    const s = Math.max(sOff, seg.start), e = Math.min(eOff, seg.end);
-    if (e > s) {
-      const sx = xOfOffset(vis, s), ex = xOfOffset(vis, e);
-      if (ex - sx >= 0.5) {
-        rects.push([Math.min(sx, ex), Math.max(sx, ex), seg.top, seg.bottom]);
-        bands[k] = [seg.top, seg.bottom];
-      }
-    }
-    const next = vis.segs[k + 1];
-    if (!next || sOff > seg.end || eOff < next.start) continue;
-    const l = xOfOffset(vis, seg.end);
-    const r = xOfOffset(vis, next.start);
-    if (r - l < 0.5) continue;
-    const band = bands[k] || bands[k + 1] || [seg.top, seg.bottom];
-    rects.push([l, r, band[0], band[1]]);
-    if (!bands[k]) bands[k] = [band[0], band[1]];
-  }
-  return rects;
-};
-
-// what annos.js buildSegments + drawSelection compose for one logical line:
-// per-span paint bounds joined into the copied text
-const charText = (vis, offA, offF) => {
-  const o = selectionOffsetsForLine(0, 0, offA, 0, offF, vis.start, vis.end);
-  const sOff = Math.min(o.start, o.end), eOff = Math.max(o.start, o.end);
-  const parts = [];
-  for (const seg of vis.segs) {
-    const s = Math.max(sOff, seg.start), e = Math.min(eOff, seg.end);
-    if (e > s) parts.push(seg.text.slice(s - seg.start, e - seg.start));
-  }
-  return parts.join(' ');
-};
+// the real paint/copy composition for one logical line: buildSegments lays out
+// the rects and segText slices the copied string, so the invariant "what is
+// painted blue is exactly what Highlight/Copy act on" is exercised against
+// the code that actually paints and copies
+const oneLine = (vis) => ({ vis, wrapEl: {}, pageIdx: 0 });
+const charRects = (vis, offA, offF) =>
+  buildSegments([oneLine(vis)], 0, offA, 0, offF)[0]?.rects ?? [];
+const charText = (vis, offA, offF) =>
+  buildSegments([oneLine(vis)], 0, offA, 0, offF).map(segText).join(' ');
 
 // Word-mode regression fixtures mirroring the reported ARC-AGI-3 drag: the
 // anchor line reads 'To incentivize this' with the double-clicked word
@@ -73,21 +40,19 @@ const A_START = 0, A_END = 19;
 const WORD_START = 3, WORD_END = 14;
 const FOCUS_LINE = 'red-team ARC-AGI-3.';
 const F_START = 0, F_END = 19;
-const A_SPAN = { text: ANCHOR_LINE, start: A_START };
-const R_SPAN = { text: FOCUS_LINE, start: F_START };
+// single-span lines as combineSpans sees them: vis.text is the trimmed slice
+// at vis.start and full-span offsets address the whole span
+const visLine = (text, start) =>
+  combineSpans([{ node: {}, text, start, left: 10, right: 10 + text.length * 8, top: 10, bottom: 24 }]);
+const A_SPAN = visLine(ANCHOR_LINE, A_START);
+const R_SPAN = visLine(FOCUS_LINE, F_START);
 
-// the exact composition applySelectionAt/buildSegments/drawSelection perform:
-// the word-mode span feeds per-line paint bounds and the line slices join
-// into the copied text
+// the word-mode span feeds the real composition: buildSegments lays out the
+// per-line paint bounds and segText joins the copied string
 const wordText = (iA, aStart, aEnd, iF, lines, off) => {
   const [iS, offS, iE, offE] = wordModeSpan(iA, aStart, aEnd, iF, lines[iF].text, lines[iF].start, off);
-  const parts = [];
-  for (let i = Math.min(iS, iE); i <= Math.max(iS, iE); i++) {
-    const l = lines[i];
-    const o = selectionOffsetsForLine(i, iS, offS, iE, offE, l.start, l.start + l.text.length);
-    parts.push(l.text.slice(o.start - l.start, o.end - l.start));
-  }
-  return { span: [iS, offS, iE, offE], text: parts.join(' ').replace(/\s+/g, ' ').trim() };
+  const segs = buildSegments(lines.map(oneLine), iS, offS, iE, offE);
+  return { span: [iS, offS, iE, offE], text: segs.map(segText).join(' ').replace(/\s+/g, ' ').trim() };
 };
 
 test('combineSpans: same-visual-line spans share one coordinate space', () => {
@@ -265,7 +230,7 @@ test('wordModeSpan: trimmed span with leading whitespace keeps word-exact bounda
   // models the span text '  To incentivize this': vis.text is the trimmed
   // slice at vis.start = 2, the anchor word lives at full offsets [5, 16),
   // and offsets arrive in full-span coordinates (the annos.js call shape)
-  const TRIMMED = { text: 'To incentivize this', start: 2 };
+  const TRIMMED = visLine('To incentivize this', 2);
   // drag right while still over the anchor word (full offset 10)
   const { span, text } = wordText(0, 5, 16, 0, [TRIMMED], 10);
   assert.deepEqual(span, [0, 5, 0, 16]);
@@ -308,7 +273,7 @@ test('wordModeSpan: drag to a line above starts at the focus word and ends at th
 });
 
 test('wordModeSpan: upward multi-line drag paints every line between in full', () => {
-  const MID = { text: 'models must be', start: 0 };
+  const MID = visLine('models must be', 0);
   const { span, text } = wordText(2, WORD_START, WORD_END, 0, [R_SPAN, MID, A_SPAN], 10);
   assert.deepEqual(span, [0, 9, 2, 14]);
   // middle line is painted in full
@@ -441,4 +406,19 @@ test('insertPageLines: a page between cached pages inserts at its place', () => 
 test('insertPageLines: a page yielding no lines leaves the cache untouched', () => {
   const cached = [{ pageIdx: 0 }];
   assert.deepEqual(insertPageLines(cached, 1, []), cached);
+});
+
+test('insertPageLines: a completed re-scan replaces the page\'s stale partial entries', () => {
+  // a press resolved while the layer was still streaming leaves partial lines
+  // in the cache; once the layer finishes, the re-scan must replace them
+  // instead of duplicating the page, or the drag would see the page twice
+  const stale = [{ pageIdx: 0, docTop: 0 }, { pageIdx: 2, docTop: 100 }];
+  const fresh = [{ pageIdx: 2, docTop: 100 }, { pageIdx: 2, docTop: 120 }];
+  const merged = insertPageLines(stale, 2, fresh);
+  assert.deepEqual(
+    merged.map((l) => [l.pageIdx, l.docTop]),
+    [[0, 0], [2, 100], [2, 120]],
+  );
+  // other pages keep their identity, so an anchor already resolved stays valid
+  assert.equal(merged[0], stale[0]);
 });
