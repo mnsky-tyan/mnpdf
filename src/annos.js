@@ -6,7 +6,7 @@
 import { S, pushOp, onDocChange, newHighlight, newPin } from './state.js';
 import { viewportFor, positionOverlays, setSelectionDrag, setOverlayRenderer } from './viewer.js';
 import { el } from './util.js';
-import { anchorOffsets, buildSegments, combineSpans, groupLineSpans, insertPageLines, lineAt, offsetAtX, segText, wordModeSpan } from './selection.js';
+import { anchorOffsets, buildSegments, combineSpans, groupLineSpans, insertPageLines, lineAt, segText, wordModeSpan } from './selection.js';
 
 export const HL_COLORS = ['#ffd400', '#7ded72', '#6ec1ff', '#ff9db1', '#ffb257'];
 
@@ -149,12 +149,6 @@ function allLines(pressWrap = null) {
   return { lines, partial };
 }
 
-function offAtLine(l, x) {
-  const vis = l.vis;
-  if (x <= vis.left + 2) return vis.start;
-  if (x >= vis.right - 2) return vis.end;
-  return offsetAtX(vis, x);
-}
 function drawSelection(segs) {
   const sc = document.getElementById('scroller');
   const st = sc.scrollTop;
@@ -238,7 +232,7 @@ function applySelectionAt(x, docY) {
   const focus = lineAt(lines, docY, x);
   if (!anchorLine || !focus) return;
   Object.assign(selAnchor, anchorOffsets(anchorLine.vis, selAnchor.x, selAnchor.wordMode));
-  const focusOff = offAtLine(focus, x);
+  const focusOff = anchorOffsets(focus.vis, x, false).off;
   let iA = lines.indexOf(anchorLine);
   let iF = lines.indexOf(focus);
   let offA = selAnchor.off, offF = focusOff;

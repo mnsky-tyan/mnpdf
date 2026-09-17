@@ -45,7 +45,7 @@ export function combineSpans(spans) {
   for (const span of spans) {
     if (text) text += ' ';
     const at = start + text.length;
-    segs.push({ node: span.node, start: at, end: at + span.text.length,
+    segs.push({ start: at, end: at + span.text.length,
                 left: span.left, right: span.right,
                 top: span.top, bottom: span.bottom,
                 text: span.text });
@@ -53,7 +53,6 @@ export function combineSpans(spans) {
   }
   return {
     text, start, end: start + text.length, segs,
-    node: spans.length === 1 ? spans[0].node : null,
     left: spans.length ? Math.min(...spans.map((s) => s.left)) : 0,
     right: spans.length ? Math.max(...spans.map((s) => s.right)) : 0,
   };
@@ -202,7 +201,6 @@ export function buildSegments(lines, iA, offA, iF, offF) {
     const sOff = Math.min(offsets.start, offsets.end);
     const eOff = Math.max(offsets.start, offsets.end);
     const rects = [];
-    const bands = [];
     for (let k = 0; k < vis.segs.length; k++) {
       const seg = vis.segs[k];
       const s = Math.max(sOff, seg.start), e = Math.min(eOff, seg.end);
@@ -210,7 +208,6 @@ export function buildSegments(lines, iA, offA, iF, offF) {
         const sx = xOfOffset(vis, s), ex = xOfOffset(vis, e);
         if (ex - sx >= 0.5) {
           rects.push([Math.min(sx, ex), Math.max(sx, ex), seg.top, seg.bottom]);
-          bands[k] = [seg.top, seg.bottom];
         }
       }
       const next = vis.segs[k + 1];
@@ -218,8 +215,7 @@ export function buildSegments(lines, iA, offA, iF, offF) {
       const l = xOfOffset(vis, seg.end);
       const r = xOfOffset(vis, next.start);
       if (r - l < 0.5) continue;
-      const band = bands[k] || [seg.top, seg.bottom];
-      rects.push([l, r, band[0], band[1]]);
+      rects.push([l, r, seg.top, seg.bottom]);
     }
     if (!rects.length) continue;
     segs.push({ line, rects, sOff, eOff });

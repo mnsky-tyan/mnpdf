@@ -64,9 +64,8 @@ test('combineSpans: same-visual-line spans share one coordinate space', () => {
   assert.equal(SPLIT.right, 98);
 });
 
-test('combineSpans: a single span keeps its own node and exact offsets', () => {
+test('combineSpans: a single span keeps its text and exact offsets', () => {
   const single = combineSpans([SPLIT_SPANS[0]]);
-  assert.equal(single.node, SPLIT_SPANS[0].node);
   assert.equal(single.text, 'deep');
   assert.deepEqual(single.segs.map((s) => [s.start, s.end]), [[0, 4]]);
 });
