@@ -835,6 +835,42 @@ async function main() {
     log('t20 hide titlebar restores the frameless layout', !off.on && off.top === '0px', JSON.stringify(off));
   }
 
+  // T21 double-click word selection is glyph-exact: the drawn rect must match
+  // the word's true DOM Range box (proportional offset mapping cut glyphs)
+  if (!filter || filter === 't21') {
+    await openApp();
+    await sleep(300);
+    const w = await page.evaluate(() => {
+      for (const span of document.querySelectorAll('.pagewrap[data-i="0"] .textLayer span')) {
+        const t = span.textContent || '';
+        const at = t.indexOf('ipsum');
+        if (at < 0) continue;
+        const r = document.createRange();
+        r.setStart(span.firstChild, at);
+        r.setEnd(span.firstChild, at + 'ipsum'.length);
+        const b = r.getBoundingClientRect();
+        return { x: (b.left + b.right) / 2, y: (b.top + b.bottom) / 2,
+                 left: b.left, right: b.right };
+      }
+      return null;
+    });
+    if (!w) throw new Error('word "ipsum" not found on page 1');
+    await page.mouse.dblclick(w.x, w.y);
+    await sleep(350);
+    const res = await page.evaluate(() => {
+      const rs = [...document.querySelectorAll('.selrect')].map((d) => d.getBoundingClientRect());
+      return { text: window.mnpdf.annos.currentSelection()?.text || '',
+               left: rs.length ? Math.min(...rs.map((r) => r.left)) : 0,
+               right: rs.length ? Math.max(...rs.map((r) => r.right)) : 0,
+               n: rs.length };
+    });
+    const dl = Math.abs(res.left - w.left), dr = Math.abs(res.right - w.right);
+    await shot('t21_word_select');
+    log('t21 double-click selects exactly the word (glyph-exact edges)',
+        res.n === 1 && res.text.trim() === 'ipsum' && dl < 2 && dr < 2,
+        `text=${JSON.stringify(res.text.trim())} dl=${dl.toFixed(2)} dr=${dr.toFixed(2)}`);
+  }
+
   await browser.close();
   const failed = results.filter((r) => !r.ok);
   console.log(`\n${results.length - failed.length}/${results.length} passed`);

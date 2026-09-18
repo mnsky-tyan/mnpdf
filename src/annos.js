@@ -5,7 +5,7 @@
 // into the PDF), so nothing is printed on the page.
 import { S, pushOp, onDocChange, newHighlight, newPin } from './state.js';
 import { viewportFor, positionOverlays, setOverlayRenderer } from './viewer.js';
-import { buildSegments, mergeRows, rowOffsetAtX, rowXOf, spanOffsetAtX, spanXOf } from './selection.js';
+import { buildSegments, mergeRows, rowOffsetAtX, rowXOf } from './selection.js';
 import { el } from './util.js';
 
 // pastel set — vivid primaries fought with the text under them (v1.3.3)
@@ -114,15 +114,42 @@ function layerSpans(layer) {
   return out;
 }
 
-// per-span mappers (the node guards cover spans without a text node, which
-// cannot map into glyphs); the row mappers in selection.js build on these
+// per-span mappers. Glyph-exact: the browser laid the text out, so DOM ranges
+// over the span's text node give the true character boxes — proportional
+// mapping (offset/chars × width) misses by up to a character on proportional
+// fonts, which is visible on word selection (double-click cut the last glyph).
+// The node guards cover spans without a text node, which cannot map into
+// glyphs; those keep the span box as the approximation.
+const charBoxes = new WeakMap();
+function visChars(vis) {
+  let boxes = charBoxes.get(vis.node);
+  if (!boxes) {
+    boxes = [];
+    for (let i = vis.start; i < vis.end; i++) {
+      const r = document.createRange();
+      r.setStart(vis.node, i);
+      r.setEnd(vis.node, i + 1);
+      const b = r.getBoundingClientRect();
+      boxes.push({ left: b.left, right: b.right });
+    }
+    charBoxes.set(vis.node, boxes);
+  }
+  return boxes;
+}
+
 function localOff(vis, x) {
   if (!vis.node || vis.right <= vis.left) return vis.start;
-  return spanOffsetAtX(vis, x);
+  const boxes = visChars(vis);
+  for (let i = 0; i < boxes.length; i++) {
+    if (x <= boxes[i].right) return vis.start + i + (x > (boxes[i].left + boxes[i].right) / 2 ? 1 : 0);
+  }
+  return vis.end;
 }
 function localX(vis, off) {
   if (!vis.node || vis.end <= vis.start) return vis.left;
-  return spanXOf(vis, off);
+  if (off <= vis.start) return vis.left;
+  if (off >= vis.end) return vis.right;
+  return visChars(vis)[off - vis.start].left;
 }
 
 function offsetAtX(vis, x) {
@@ -310,7 +337,7 @@ function initManualSelection() {
       if (!line) return;
       selLinesAt = performance.now();
       const vis = line.vis;
-      const off = offsetAtX(vis, e.clientX);
+      let off = offsetAtX(vis, e.clientX);
       const wordMode = e.detail >= 2;
       if (wordMode) {
         // double click: the word under the press; dragging extends by words
