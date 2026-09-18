@@ -256,10 +256,26 @@ export function currentSelection() {
   return { segments: selState.segments, text: selState.text };
 }
 
-let selLastLine = null;
+let selLinesAt = 0; // when selAnchor.lines was built
+
+// pages render lazily as you scroll. The row list captured at mousedown only
+// knows the pages rendered back then, so a drag that walks into newly
+// rendered pages would stall at the old edge while the view keeps scrolling
+// (pointer maps to the nearest stale row forever). Rebuild cheaply: on span
+// count change (a page's text layer got populated) and at least every 200ms.
+function cachedLines() {
+  const count = document.querySelectorAll('.pagewrap .textLayer span').length;
+  const stale = performance.now() - selLinesAt > 200;
+  if (count !== selAnchor.spanCount || stale) {
+    selAnchor.lines = allLines();
+    selAnchor.spanCount = count;
+    selLinesAt = performance.now();
+  }
+  return selAnchor.lines;
+}
 
 function applySelectionAt(x, docY) {
-  const lines = selAnchor.lines;
+  const lines = cachedLines();
   // re-derive the anchor line from its stored doc position — stable across
   // scrolling and text-layer re-renders
   const anchorLine = lineAt(lines, selAnchor.docY);
@@ -287,6 +303,7 @@ function initManualSelection() {
       const lines = allLines();
       const line = lineAt(lines, docY);
       if (!line) return;
+      selLinesAt = performance.now();
       const vis = line.vis;
       const off = offsetAtX(vis, e.clientX);
       const wordMode = e.detail >= 2;
@@ -300,7 +317,8 @@ function initManualSelection() {
         renderSelection();
         off = sOff;
       }
-      selAnchor = { node: vis.node, off, line, lines, wordMode, x: e.clientX, docY };
+      selAnchor = { off, line, lines, wordMode, docY,
+                    spanCount: document.querySelectorAll('.pagewrap .textLayer span').length };
       selPointer = { x: e.clientX, y: e.clientY };
       selLastKey = '';
       startSelAutoScroll();
