@@ -160,6 +160,25 @@ test('mergeRows: rows a pitch apart stay separate', () => {
   assert.deepEqual(rows3.map((r) => r.text), ['aaa', 'bbb', 'ccc']);
 });
 
+test('mergeRows: interleaved table cells reassemble into visual lines', () => {
+  // pdf.js emits wrapped table cells column-by-column: DOM order goes
+  // line1-col1, line2-col1, line1-col2, line2-col2. Chaining in that order
+  // shattered each visual line into per-cell fragments, so double-clicking a
+  // word in column 2 resolved to column 1's fragment.
+  const spanAt = (l, r, t, text) => ({ ...span(l, r, t, text), left: l, right: r, top: t, bottom: t + 17.8 });
+  const ents = [
+    spanAt(144, 236.8, 616.5, 'Deployment'),
+    spanAt(250.7, 297, 616.5, 'matu-'),
+    spanAt(144, 171.6, 638.6, 'rity'),
+    spanAt(316.5, 576.5, 616.5, 'DEV runtime and stub adapters;'),
+    spanAt(316.5, 468.2, 638.6, 'official run blocked.'),
+  ];
+  const rows = mergeRows(ents);
+  assert.equal(rows.length, 2, 'two visual lines, not four fragments');
+  assert.match(rows[0].text, /^Deployment matu- DEV runtime/);
+  assert.match(rows[1].text, /^rity official run/);
+});
+
 test('rowOffsetAtX: pointer over the SECOND span of a split row moves the trim past it (stuck-trim regression)', () => {
   const r = merged[0];
   // cursor deep inside the 'Comparisons' span: the offset must land in that

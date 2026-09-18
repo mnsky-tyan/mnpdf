@@ -61,7 +61,12 @@ export function sameRow(a, b) {
 // untouched (annos.js keeps DOM references on them).
 export function mergeRows(ents) {
   const rows = [];
-  for (const ent of ents) {
+  // pdf.js emits wrapped table cells column-by-column, so DOM order
+  // interleaves the visual lines of a table row and chained grouping would
+  // shatter each line into per-cell fragments (clicks then resolve to the
+  // wrong cell). Sort by position first: one chain = one visual line.
+  const sorted = [...ents].sort((a, b) => (a.top - b.top) || (a.left - b.left));
+  for (const ent of sorted) {
     const last = rows[rows.length - 1];
     if (last && sameRow(last, ent)) {
       last.parts.push(ent);
