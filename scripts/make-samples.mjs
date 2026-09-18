@@ -47,5 +47,28 @@ async function make(name, pageCount, paraRepeat) {
   console.log(`wrote public/${name} (${bytes.length} bytes, ${pageCount} pages)`);
 }
 
+// A page of short tight blocks (3-5 lines, 15pt leading) separated by wide
+// blank gaps (44pt): regression fixture for selection continuity — the drawn
+// selection must bridge the paragraph gaps instead of leaving white stripes.
+async function makeGappy(name) {
+  const doc = await PDFDocument.create();
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+  const page = doc.addPage([612, 792]);
+  const { width } = page.getSize();
+  const body = wrap(PARA, font, 12, width - 120);
+  let y = 740;
+  for (let b = 0; b < 6 && y > 60; b++) {
+    for (const line of body.slice(0, 3 + (b % 3))) {
+      page.drawText(line, { x: 60, y, size: 12, font, color: rgb(0.13, 0.13, 0.15) });
+      y -= 15;
+    }
+    y -= 44;
+  }
+  const bytes = await doc.save();
+  writeFileSync(resolve(pub, name), bytes);
+  console.log(`wrote public/${name} (${bytes.length} bytes, 1 page)`);
+}
+
 await make('sample.pdf', 5, 5);
 await make('big.pdf', 60, 6);
+await makeGappy('gaps.pdf');

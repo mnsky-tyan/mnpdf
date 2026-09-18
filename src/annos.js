@@ -5,6 +5,7 @@
 // into the PDF), so nothing is printed on the page.
 import { S, pushOp, onDocChange, newHighlight, newPin } from './state.js';
 import { viewportFor, positionOverlays, setOverlayRenderer } from './viewer.js';
+import { buildSegments } from './selection.js';
 import { el } from './util.js';
 
 export const HL_COLORS = ['#ffd400', '#7ded72', '#6ec1ff', '#ff9db1', '#ffb257'];
@@ -123,9 +124,14 @@ function allLines() {
     if (!layer) return;
     const pageIdx = +wrap.dataset.i;
     for (const vis of layerSpans(layer)) {
+      // top/bottom mirror docTop/docBottom in scroller-document space — the
+      // shared vertical space the pure segment builder (selection.js) works in
       out.push({ wrapEl: wrap, pageIdx, vis,
                  docTop: vis.top + st, docBottom: vis.bottom + st,
-                 lh: vis.bottom - vis.top });
+                 left: vis.left, right: vis.right,
+                 top: vis.top + st, bottom: vis.bottom + st,
+                 start: vis.start, end: vis.end,
+                 xOf: (off) => xOfOffset(vis, off) });
     }
   });
   return out;
@@ -171,41 +177,8 @@ function snapWord(vis, off) {
   return vis.start + i;
 }
 
-// per-line segments between two anchors (ordered): boundary lines are trimmed
-// to the pointer character, middle lines are full glyphs, and each selected
-// line extends down to the next selected line's top so the block is
-// continuous — but the bridge is capped at ~1.5 line heights, so figures,
-// margins and page gaps stay unpainted.
-function buildSegments(lines, iA, offA, iF, offF) {
-  const fi = Math.min(iA, iF), li = Math.max(iA, iF);
-  // which end of the selection the anchor/focus offsets belong to depends on
-  // the drag direction (upward drags reverse the anchor/focus roles)
-  const downward = iA <= iF;
-  const segs = [];
-  for (let i = fi; i <= li; i++) {
-    const line = lines[i];
-    const vis = line.vis;
-    let sx = vis.left, sOff = vis.start, ex = vis.right, eOff = vis.end;
-    if (i === fi) {
-      if (downward) { sx = xOfOffset(vis, offA); sOff = offA; }
-      else { ex = xOfOffset(vis, offF); eOff = offF; }
-    } else if (i === li) {
-      if (downward) { ex = xOfOffset(vis, offF); eOff = offF; }
-      else { sx = xOfOffset(vis, offA); sOff = offA; }
-    }
-    if (ex - sx < 0.5) continue;
-    segs.push({ line, sx: Math.min(sx, ex), ex: Math.max(sx, ex), sOff, eOff,
-                docTop: line.docTop, docBottom: line.docBottom });
-  }
-  for (let i = 1; i < segs.length; i++) {
-    const prev = segs[i - 1], cur = segs[i];
-    if (prev.line.wrapEl !== cur.line.wrapEl) continue;
-    const gap = cur.docTop - prev.docBottom;
-    const bridge = (prev.docBottom - prev.docTop) * 1.5;
-    if (gap > 0 && gap < bridge) cur.docTop = prev.docBottom;
-  }
-  return segs;
-}
+// boundary segments are trimmed and the block bridged by the pure
+// geometry in selection.js (direction-aware, pitch-limited)
 
 function drawSelection(segs) {
   const sc = document.getElementById('scroller');
