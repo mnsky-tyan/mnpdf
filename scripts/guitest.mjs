@@ -111,7 +111,9 @@ async function pixelStats(sel) {
 
 async function main() {
   browser = await chromium.launch({
-    executablePath: 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
+    // MNPDF_BROWSER overrides the browser binary (e.g. a Linux chromium when
+    // developing outside Windows)
+    executablePath: process.env.MNPDF_BROWSER || 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
     headless: true,
   });
   ctx = await browser.newContext({ viewport: { width: 1000, height: 800 } });
@@ -671,6 +673,27 @@ async function main() {
           selC.n === 1 && nC.length > 0 && expC.startsWith(nC) && nC.length <= expC.length * 0.6,
           `selrects=${selC.n} sel=${nC.length}/${expC.length} chars`);
 
+      // E: upward drag — the topmost selected row must be trimmed from the
+      // pointer to the line end (never a left-to-right stripe from the margin)
+      await clearSel();
+      await dragSelect(lines[4].left + 120, lines[4].top + 5, lines[1].left + 40, lines[1].top + 5);
+      await sleep(300);
+      const selE = await page.evaluate(() => {
+        const rects = [...document.querySelectorAll('.selrect')].map((d) => {
+          const r = d.getBoundingClientRect();
+          return { l: Math.round(r.left), t: Math.round(r.top), r: Math.round(r.right), b: Math.round(r.bottom) };
+        }).sort((a, b) => a.t - b.t);
+        return { rects, text: (window.mnpdf.annos.currentSelection()?.text || '') };
+      });
+      const focusX = lines[1].left + 40, anchorX = lines[4].left + 120;
+      const top = selE.rects[0], bot = selE.rects[selE.rects.length - 1];
+      const topOk = selE.rects.length >= 4 &&
+        top.l >= focusX - 14 && top.l <= focusX + 14 && top.r >= lines[1].right - 14;
+      const botOk = bot.r >= anchorX - 14 && bot.r <= anchorX + 14 && bot.l <= lines[4].left + 14;
+      log('t17 upward drag: top row trimmed right of the pointer, bottom row left of it',
+          topOk && botOk,
+          `rects=${selE.rects.length} top=${JSON.stringify(top)} bot=${JSON.stringify(bot)}`);
+
       // D: right-click on a highlight offers recolor/delete/copy
       await dragSelect(
         Math.max(lines[0].left + 2, geo.left + 20), lines[0].top + 5,
@@ -714,6 +737,40 @@ async function main() {
     await shot('t18_bottom_menu');
     log('t18 bottom right-click: menu fits, last item reachable', !!fits,
         JSON.stringify(m));
+  }
+
+  // T19 selection continuity: paragraph gaps inside a drag stay filled — no
+  // white stripes between selected text blocks (gaps.pdf blocks + 44pt breaks)
+  if (!filter || filter === 't19') {
+    await openApp('http://localhost:5173/?file=gaps.pdf');
+    await sleep(300);
+    const geo = await page1Geo();
+    const ls = await page.evaluate(() => {
+      const spans = [...document.querySelectorAll('.pagewrap[data-i="0"] .textLayer span')]
+        .map((s) => s.getBoundingClientRect())
+        .filter((r) => r.height >= 2 && r.width >= 1)
+        .sort((a, b) => a.top - b.top);
+      return spans.map((r) => ({ top: r.top, bottom: r.bottom, left: r.left, right: r.right }));
+    });
+    if (ls.length < 8) throw new Error('too few text lines: ' + ls.length);
+    // drag from a mid-line of block 1 to a mid-line of block 3 (two gaps crossed)
+    const a = ls[2], b = ls[ls.length - 3];
+    await dragSelect(geo.left + geo.w * 0.5, a.top + 5, geo.left + geo.w * 0.5, b.top + 5);
+    await sleep(400);
+    const rects = await page.evaluate(() => [...document.querySelectorAll('.selrect')].map((d) => {
+      const r = d.getBoundingClientRect();
+      return { t: r.top, b: r.bottom, l: r.left, r: r.right };
+    }).sort((x, y) => x.t - y.t));
+    const stripes = [];
+    for (let i = 1; i < rects.length; i++) {
+      const gap = rects[i].t - rects[i - 1].b;
+      if (gap > 3) stripes.push(Math.round(gap));
+    }
+    const covered = rects.length > 0 && rects[0].t <= a.top + 6 && rects[rects.length - 1].b >= b.bottom - 6;
+    await shot('t19_gaps_filled');
+    log('t19 selection bridges paragraph gaps (no white stripes)', covered && stripes.length === 0,
+        `rects=${rects.length} stripes=${JSON.stringify(stripes)} ` +
+        `tb=[${rects.map((r) => `${Math.round(r.t)}-${Math.round(r.b)}`).join(' ')}]`);
   }
 
   await browser.close();
