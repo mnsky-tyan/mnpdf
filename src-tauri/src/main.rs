@@ -128,9 +128,13 @@ fn apply_default_bounds(win: &tauri::WebviewWindow) {
 // page's ctrl+wheel handler; tauri.conf.json re-enables it (zoomHotkeysEnabled).
 // That also arms WebView2's accelerator-key zoom (Ctrl+/-), which would
 // double-apply with the app's own zoom, so hand those keys back to the page.
+// Finally, tell WebView2 we prefer small over fast: trim caches and drop
+// inactive backing stores eagerly — a reader re-renders those cheaply.
 #[cfg(windows)]
-fn claim_webview_zoom(win: &tauri::WebviewWindow) {
-    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings3;
+fn tune_webview2(win: &tauri::WebviewWindow) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2Settings3, ICoreWebView2_19, COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW,
+    };
     use windows::core::Interface;
     let _ = win.with_webview(move |webview| unsafe {
         let Ok(core) = webview.controller().CoreWebView2() else {
@@ -143,6 +147,10 @@ fn claim_webview_zoom(win: &tauri::WebviewWindow) {
             return;
         };
         let _ = s3.SetAreBrowserAcceleratorKeysEnabled(false);
+        let Ok(low) = core.cast::<ICoreWebView2_19>() else {
+            return;
+        };
+        let _ = low.SetMemoryUsageTargetLevel(COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW);
     });
 }
 
@@ -151,7 +159,7 @@ fn setup_window(app: &tauri::AppHandle) {
         return;
     };
     #[cfg(windows)]
-    claim_webview_zoom(&win);
+    tune_webview2(&win);
     let restored = win_file(app)
         .and_then(|p| fs::read_to_string(p).ok())
         .and_then(|t| serde_json::from_str::<WinState>(&t).ok());
