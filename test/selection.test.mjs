@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { pointNearRect, bandClipRect, buildSegments, linePitch } from '../src/selection.js';
+import { pointNearRect, bandClipRect, buildSegments, linePitch, mergeRows, rowOffsetAtX, rowXOf, spanOffsetAtX, spanXOf } from '../src/selection.js';
 
 const line = (left, top, right, bottom) => ({ left, top, right, bottom, width: right - left, height: bottom - top });
 
@@ -128,4 +128,69 @@ test('buildSegments: never bridges across pages', () => {
   const twoPages = [row(0, 0, 100, 0), row(30, 0, 100, 0), row(0, 0, 100, 1)];
   const segs = buildSegments(twoPages, 0, 0, 2, 10);
   assert.equal(segs[2].docTop, 0); // the page gap is not filled
+});
+
+// ---- rows: merging split pdf.js spans + row-space offset mapping ----
+
+// a pdf.js span entry: glyph box [left,right]x[top,top+20] with its own
+// trimmed text occupying [start,end] of its text node
+const span = (left, right, top, text, start = 0) => ({
+  left, right, top, bottom: top + 20, start, end: start + text.length, text,
+});
+
+// a split visual row like the ARC report's: 'totype.' + space span +
+// 'Comparisons…' (wide justify gap before the last span)
+const splitRow = [
+  span(117.6, 172.3, 100, 'totype.'),
+  span(172.3, 178, 100, ' '),
+  span(187.5, 882.4, 100, 'Comparisons'),
+];
+const merged = mergeRows(splitRow);
+const local = (b, x) => spanOffsetAtX(b, x);
+
+assert.equal(merged.length, 1, 'vertically overlapping spans merge into one row');
+assert.equal(merged[0].left, 117.6);
+assert.equal(merged[0].right, 882.4);
+assert.equal(merged[0].text, 'totype.  Comparisons'); // span texts + the justify-gap space
+assert.deepEqual(merged[0].parts, splitRow, 'original span entries stay reachable');
+
+test('mergeRows: rows a pitch apart stay separate', () => {
+  const rows3 = mergeRows([span(0, 100, 0, 'aaa'), span(0, 100, 30, 'bbb'), span(0, 100, 60, 'ccc')]);
+  assert.equal(rows3.length, 3);
+  assert.deepEqual(rows3.map((r) => r.text), ['aaa', 'bbb', 'ccc']);
+});
+
+test('rowOffsetAtX: pointer over the SECOND span of a split row moves the trim past it (stuck-trim regression)', () => {
+  const r = merged[0];
+  // cursor deep inside the 'Comparisons' span: the offset must land in that
+  // span's text, not clamp to the first span's end (the old bug froze the
+  // highlight at the span boundary)
+  const off = rowOffsetAtX(r, 500, local);
+  assert.ok(off >= 9, `offset ${off} must be past the first spans' text`);
+  assert.ok(off < r.text.length);
+});
+
+test('rowOffsetAtX: inter-span gap snaps to the nearer span edge; row edges clamp', () => {
+  const r = merged[0];
+  assert.equal(rowOffsetAtX(r, 181, local), 8); // in the justify gap, nearer the space span's end
+  assert.equal(rowOffsetAtX(r, 100, local), 0); // left margin
+  assert.equal(rowOffsetAtX(r, 990, local), r.text.length); // right margin
+});
+
+test('rowXOf: merged offset maps back into the correct span; ends clamp to the row box', () => {
+  const r = merged[0];
+  const x = rowXOf(r, 11, spanXOf); // offset 11 = 2 glyphs into 'Comparisons'
+  assert.ok(x > 187.5 && x < 882.4, `x ${x} inside the Comparisons span`);
+  assert.equal(rowXOf(r, 0, spanXOf), 117.6);
+  assert.equal(rowXOf(r, 999, spanXOf), 882.4);
+});
+
+test('spanOffsetAtX/spanXOf: proportional mapping with edge slop', () => {
+  const b = { left: 100, right: 200, start: 5, end: 15 };
+  assert.equal(spanOffsetAtX(b, 90), 5); // 2px slop pulls margin presses to the start
+  assert.equal(spanOffsetAtX(b, 150), 10);
+  assert.equal(spanOffsetAtX(b, 210), 15);
+  assert.equal(spanXOf(b, 5), 100);
+  assert.equal(spanXOf(b, 10), 150);
+  assert.equal(spanXOf(b, 15), 200);
 });

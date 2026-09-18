@@ -39,6 +39,108 @@ export function linePitch(lines) {
   return d[d.length >> 1];
 }
 
+// ---- rows ----
+// pdf.js splits one rendered text row into several spans (kerning, justified
+// space gaps, bold lead-ins). Per-span selection entries break trims: the row
+// trim clamps to the first span, drops as zero-width, and the remaining spans
+// paint full-width — the highlight looks stuck no matter where the pointer
+// goes, and pieces of the row fall out of the selection range. So spans whose
+// boxes overlap vertically are merged into one row entry with a single shared
+// offset space; trims, bridges and text slices then work per row.
+
+export function sameRow(a, b) {
+  const overlap = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+  const minH = Math.min(a.bottom - a.top, b.bottom - b.top);
+  return overlap > minH * 0.45;
+}
+
+// ents: {left, right, top, bottom, start, end, text} in reading order, one per
+// pdf.js span, in one shared vertical space. Returns rows: same box shape plus
+// {parts: ents, offs: [{ent, cum}], text} where cum is each span's start index
+// in the concatenated row text. All other properties of ent pass through
+// untouched (annos.js keeps DOM references on them).
+export function mergeRows(ents) {
+  const rows = [];
+  for (const ent of ents) {
+    const last = rows[rows.length - 1];
+    if (last && sameRow(last, ent)) {
+      last.parts.push(ent);
+      last.left = Math.min(last.left, ent.left);
+      last.right = Math.max(last.right, ent.right);
+      last.top = Math.min(last.top, ent.top);
+      last.bottom = Math.max(last.bottom, ent.bottom);
+      continue;
+    }
+    rows.push({ parts: [ent], left: ent.left, right: ent.right, top: ent.top, bottom: ent.bottom });
+  }
+  for (const r of rows) {
+    let text = '', prev = null;
+    r.offs = [];
+    for (const p of r.parts) {
+      // a wide horizontal gap between spans is a space the per-span texts
+      // lost (spanVisibleBox trims their trailing whitespace)
+      if (prev && p.left - prev.right > (r.bottom - r.top) * 0.25) text += ' ';
+      r.offs.push({ ent: p, cum: text.length });
+      text += p.text;
+      prev = p;
+    }
+    r.start = 0;
+    r.end = text.length;
+    r.text = text;
+  }
+  return rows;
+}
+
+// pointer x -> offset inside one span's own text (proportional glyph
+// fraction; the 2px edge slop keeps margin presses at the span boundaries)
+export function spanOffsetAtX(b, x) {
+  if (b.right <= b.left) return b.start;
+  if (x <= b.left + 2) return b.start;
+  if (x >= b.right - 2) return b.end;
+  const frac = (x - b.left) / (b.right - b.left);
+  return Math.max(b.start, Math.min(b.end, b.start + Math.round(frac * (b.end - b.start))));
+}
+
+// offset inside one span's own text -> x
+export function spanXOf(b, off) {
+  if (b.end <= b.start) return b.left;
+  const frac = (off - b.start) / (b.end - b.start);
+  return b.left + frac * (b.right - b.left);
+}
+
+// pointer x -> offset in the merged row text: the span under the pointer (or
+// the nearest one, in inter-span gaps and at row edges) contributes its local
+// offset. localOff(box, x) maps within one span's own text space.
+export function rowOffsetAtX(row, x, localOff) {
+  if (x <= row.left + 2) return 0;
+  if (x >= row.right - 2) return row.text.length;
+  let best = null, bestD = Infinity;
+  for (const o of row.offs) {
+    const b = o.ent;
+    if (x >= b.left && x <= b.right) { best = o; break; }
+    const d = x < b.left ? b.left - x : x - b.right;
+    if (d < bestD) { bestD = d; best = o; }
+  }
+  const b = best.ent;
+  const lx = Math.max(b.left, Math.min(b.right, x));
+  return best.cum + (localOff(b, lx) - b.start);
+}
+
+// offset in the merged row text -> x. localX(box, off) maps one span's own
+// text offset to x.
+export function rowXOf(row, off, localX) {
+  if (off <= 0) return row.left;
+  if (off >= row.text.length) return row.right;
+  let best = row.offs[row.offs.length - 1];
+  for (const o of row.offs) {
+    // <= so an offset at a span's end maps to that span's right edge, not
+    // the next span's left edge (they differ by the inter-span gap)
+    if (off <= o.cum + o.ent.text.length) { best = o; break; }
+  }
+  const local = Math.max(0, Math.min(off - best.cum, best.ent.text.length));
+  return localX(best.ent, best.ent.start + local);
+}
+
 // How much inter-line whitespace a selected block fills so it reads as one
 // continuous highlight: line leading plus normal paragraph breaks (a blank
 // line, paragraph spacing) are bridged; anything several line pitches tall

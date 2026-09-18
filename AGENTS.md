@@ -7,7 +7,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 ## Verify
 
 - Unit tests (pure selection geometry, no DOM): `npm test` (node --test, `test/selection.test.mjs`).
-- GUI end-to-end: `npm run samples` first (writes public/*.pdf), `npm run dev` on port 5173, then `node scripts/guitest.mjs [t17|t19|…]` — defaults to Windows Edge; set `MNPDF_BROWSER` to another chromium binary.
+- GUI end-to-end: `npm run samples` first (writes public/*.pdf), `npm run dev` on port 5173, then `node scripts/guitest.mjs [t17|t19|…]` — defaults to Windows Edge; set `MNPDF_BROWSER` to another chromium binary. While a dev app occupies port 5173, point the suite at another vite with `MNPDF_GUITEST_BASE`.
 - Native Windows review from WSL: Windows node can run `scripts/guitest.mjs` (copy it to a Windows temp dir with `npm i playwright-core`) against the WSL vite server — Windows reaches it on `localhost:5173`.
 - `src/selection.js` must stay DOM-free (pure geometry); the mnpdf-drawn selection pipeline is: `annos.js allLines()` → `buildSegments()` → `drawSelection()` → `renderSelection()`.
 

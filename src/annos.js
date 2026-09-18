@@ -5,7 +5,7 @@
 // into the PDF), so nothing is printed on the page.
 import { S, pushOp, onDocChange, newHighlight, newPin } from './state.js';
 import { viewportFor, positionOverlays, setOverlayRenderer } from './viewer.js';
-import { buildSegments } from './selection.js';
+import { buildSegments, mergeRows, rowOffsetAtX, rowXOf, spanOffsetAtX, spanXOf } from './selection.js';
 import { el } from './util.js';
 
 export const HL_COLORS = ['#ffd400', '#7ded72', '#6ec1ff', '#ff9db1', '#ffb257'];
@@ -76,7 +76,15 @@ function spanVisibleBox(span) {
   }
   const lead = text.length - text.replace(/^\s+/, '').length;
   const end = lead + text.trim().length;
-  if (end <= lead) return null;
+  if (end <= lead) {
+    // whitespace-only span: no glyphs, but it still occupies real advance
+    // width — keep it as a one-space contribution so the merged row text
+    // keeps its word separation ("Retrodict reports", not "Retrodictreports")
+    if (!text.length) return null;
+    const r = span.getBoundingClientRect();
+    return { left: r.left, right: r.right, top: r.top, bottom: r.bottom,
+             node, start: 0, end: 1, text: ' ' };
+  }
   const range = document.createRange();
   range.setStart(node, lead);
   range.setEnd(node, end);
@@ -101,20 +109,44 @@ function layerSpans(layer) {
   return out;
 }
 
-function offsetAtX(vis, x) {
+// per-span mappers (the node guards cover spans without a text node, which
+// cannot map into glyphs); the row mappers in selection.js build on these
+function localOff(vis, x) {
   if (!vis.node || vis.right <= vis.left) return vis.start;
-  const frac = (x - vis.left) / (vis.right - vis.left);
-  return Math.max(vis.start, Math.min(vis.end, vis.start + Math.round(frac * (vis.end - vis.start))));
+  return spanOffsetAtX(vis, x);
+}
+function localX(vis, off) {
+  if (!vis.node || vis.end <= vis.start) return vis.left;
+  return spanXOf(vis, off);
+}
+
+function offsetAtX(vis, x) {
+  return rowOffsetAtX(vis, x, localOff);
 }
 
 function xOfOffset(vis, off) {
-  if (!vis.node || vis.end <= vis.start) return vis.left;
-  const frac = (off - vis.start) / (vis.end - vis.start);
-  return vis.left + frac * (vis.right - vis.left);
+  return rowXOf(vis, off, localX);
 }
 
-// every rendered text line of the document, in reading order.
-// docTop/docBottom are scroller-document y (stable while the view scrolls).
+// one rendered text row: spans merged by vertical overlap (see selection.js
+// mergeRows — per-span entries break row trims and drop mid-row pieces).
+// Merged box + text live on the row; per-span vis boxes stay reachable as
+// row.parts for the offset mappers.
+function rowEntries(layer, st) {
+  const rows = mergeRows(layerSpans(layer));
+  return rows.map((row) => ({
+    vis: row,
+    docTop: row.top + st, docBottom: row.bottom + st,
+    left: row.left, right: row.right,
+    top: row.top + st, bottom: row.bottom + st,
+    start: 0, end: row.text.length,
+    xOf: (off) => rowXOf(row, off, localX),
+  }));
+}
+
+// every rendered text line of the document, in reading order — one entry per
+// visual row. docTop/docBottom are scroller-document y (stable while the view
+// scrolls); x stays client-viewport (stable while scrolling).
 function allLines() {
   const sc = document.getElementById('scroller');
   const st = sc.scrollTop;
@@ -123,15 +155,10 @@ function allLines() {
     const layer = wrap.querySelector('.textLayer');
     if (!layer) return;
     const pageIdx = +wrap.dataset.i;
-    for (const vis of layerSpans(layer)) {
-      // top/bottom mirror docTop/docBottom in scroller-document space — the
-      // shared vertical space the pure segment builder (selection.js) works in
-      out.push({ wrapEl: wrap, pageIdx, vis,
-                 docTop: vis.top + st, docBottom: vis.bottom + st,
-                 left: vis.left, right: vis.right,
-                 top: vis.top + st, bottom: vis.bottom + st,
-                 start: vis.start, end: vis.end,
-                 xOf: (off) => xOfOffset(vis, off) });
+    for (const e of rowEntries(layer, st)) {
+      e.wrapEl = wrap;
+      e.pageIdx = pageIdx;
+      out.push(e);
     }
   });
   return out;
@@ -154,19 +181,11 @@ function lineAt(lines, docY) {
 function anchorAt(lines, x, docY) {
   const line = lineAt(lines, docY);
   if (!line) return null;
-  const vis = line.vis;
-  let off;
-  if (x <= vis.left + 2) off = vis.start;
-  else if (x >= vis.right - 2) off = vis.end;
-  else off = offsetAtX(vis, x);
-  return { node: vis.node, off, line };
+  return { off: offsetAtX(line.vis, x), line };
 }
 
 function offAtLine(l, x) {
-  const vis = l.vis;
-  if (x <= vis.left + 2) return vis.start;
-  if (x >= vis.right - 2) return vis.end;
-  return offsetAtX(vis, x);
+  return offsetAtX(l.vis, x);
 }
 
 function snapWord(vis, off) {
@@ -254,14 +273,6 @@ function applySelectionAt(x, docY) {
   renderSelection();
 }
 
-function lines_key(l) { return selAnchor.lines.indexOf(l); }
-function focusOffAt(l, x) {
-  const vis = l.vis;
-  if (x <= vis.left + 2) return vis.start;
-  if (x >= vis.right - 2) return vis.end;
-  return offsetAtX(vis, x);
-}
-
 function initManualSelection() {
   document.addEventListener(
     'mousedown',
@@ -277,10 +288,7 @@ function initManualSelection() {
       const line = lineAt(lines, docY);
       if (!line) return;
       const vis = line.vis;
-      let off;
-      if (e.clientX <= vis.left + 2) off = vis.start;
-      else if (e.clientX >= vis.right - 2) off = vis.end;
-      else off = offsetAtX(vis, e.clientX);
+      const off = offsetAtX(vis, e.clientX);
       const wordMode = e.detail >= 2;
       if (wordMode) {
         // double click: the word under the press; dragging extends by words

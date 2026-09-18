@@ -24,14 +24,17 @@ function log(name, ok, note = '') {
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function openApp(url = 'http://localhost:5173/?file=sample.pdf', opts = {}) {
+// app under test; override to run the suite while a dev app occupies 5173
+const BASE = process.env.MNPDF_GUITEST_BASE || 'http://localhost:5173/';
+
+async function openApp(url = BASE + '?file=sample.pdf', opts = {}) {
   if (page) { try { await page.close(); } catch {} } // no cross-page sidecar flushes
   page = await ctx.newPage();
   page.on('console', (m) => {
     if (m.type() === 'error' && !m.text().includes('404')) console.log('  [console.error]', m.text().slice(0, 300));
   });
   page.on('pageerror', (e) => console.log('  [pageerror]', String(e).slice(0, 300)));
-  await page.goto('http://localhost:5173/');
+  await page.goto(BASE);
   await page.evaluate(() => localStorage.clear()); // isolate per-doc sidecars between tests
   await page.goto(url);
   await page.waitForLoadState('domcontentloaded');
@@ -492,7 +495,7 @@ async function main() {
     });
     const touching = Math.abs(m.pageW - m.clientW) <= 1;
     // plain launch (no ?file=) must reopen the last document
-    await page.goto('http://localhost:5173/');
+    await page.goto(BASE);
     await page.waitForTimeout(2500);
     const reopened = await page.evaluate(() => ({ name: window.mnpdf.S.name, n: window.mnpdf.S.nPages }));
     await shot('t14_fit_touch');
@@ -742,31 +745,37 @@ async function main() {
   // T19 selection continuity: paragraph gaps inside a drag stay filled — no
   // white stripes between selected text blocks (gaps.pdf blocks + 44pt breaks)
   if (!filter || filter === 't19') {
-    await openApp('http://localhost:5173/?file=gaps.pdf');
+    await openApp(BASE + '?file=gaps.pdf');
     await sleep(300);
     const geo = await page1Geo();
     const ls = await page.evaluate(() => {
+      const st = document.getElementById('scroller').scrollTop;
       const spans = [...document.querySelectorAll('.pagewrap[data-i="0"] .textLayer span')]
         .map((s) => s.getBoundingClientRect())
         .filter((r) => r.height >= 2 && r.width >= 1)
         .sort((a, b) => a.top - b.top);
-      return spans.map((r) => ({ top: r.top, bottom: r.bottom, left: r.left, right: r.right }));
+      return spans.map((r) => ({ top: r.top, bottom: r.bottom,
+                                 docTop: r.top + st, docBottom: r.bottom + st,
+                                 left: r.left, right: r.right }));
     });
     if (ls.length < 8) throw new Error('too few text lines: ' + ls.length);
     // drag from a mid-line of block 1 to a mid-line of block 3 (two gaps crossed)
     const a = ls[2], b = ls[ls.length - 3];
     await dragSelect(geo.left + geo.w * 0.5, a.top + 5, geo.left + geo.w * 0.5, b.top + 5);
     await sleep(400);
-    const rects = await page.evaluate(() => [...document.querySelectorAll('.selrect')].map((d) => {
-      const r = d.getBoundingClientRect();
-      return { t: r.top, b: r.bottom, l: r.left, r: r.right };
-    }).sort((x, y) => x.t - y.t));
+    const rects = await page.evaluate(() => {
+      const st = document.getElementById('scroller').scrollTop;
+      return [...document.querySelectorAll('.selrect')].map((d) => {
+        const r = d.getBoundingClientRect();
+        return { t: r.top + st, b: r.bottom + st, l: r.left, r: r.right };
+      }).sort((x, y) => x.t - y.t);
+    });
     const stripes = [];
     for (let i = 1; i < rects.length; i++) {
       const gap = rects[i].t - rects[i - 1].b;
       if (gap > 3) stripes.push(Math.round(gap));
     }
-    const covered = rects.length > 0 && rects[0].t <= a.top + 6 && rects[rects.length - 1].b >= b.bottom - 6;
+    const covered = rects.length > 0 && rects[0].t <= a.docTop + 6 && rects[rects.length - 1].b >= b.docBottom - 6;
     await shot('t19_gaps_filled');
     log('t19 selection bridges paragraph gaps (no white stripes)', covered && stripes.length === 0,
         `rects=${rects.length} stripes=${JSON.stringify(stripes)} ` +
