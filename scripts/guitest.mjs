@@ -309,6 +309,46 @@ async function main() {
         `goto="${pill3.trim()}" zoom="${pillZoom.trim()}"`);
   }
 
+  // T23 trackpad pinch zoom: pinch arrives as a cancelable ctrl+wheel; the
+  // app must zoom around the cursor instead of the webview scaling the UI
+  if (!filter || filter === 't23') {
+    await openApp();
+    await sleep(400);
+    const probe = await page.evaluate(() => {
+      const sc = document.getElementById('scroller');
+      const c = document.querySelector('.pagewrap canvas');
+      return { w0: c.getBoundingClientRect().width, z0: window.mnpdf.S.zoom,
+               x: sc.getBoundingClientRect().left + sc.clientWidth / 2,
+               y: sc.getBoundingClientRect().top + sc.clientHeight / 2 };
+    });
+    for (const dy of [-120, -120, -120]) {
+      await page.evaluate(({ x, y, dy }) => {
+        document.getElementById('scroller').dispatchEvent(
+          new WheelEvent('wheel', { ctrlKey: true, deltaY: dy, clientX: x, clientY: y, bubbles: true, cancelable: true }));
+      }, { x: probe.x, y: probe.y, dy });
+      await sleep(150);
+    }
+    await sleep(400);
+    const after = await page.evaluate(() => {
+      const c = document.querySelector('.pagewrap canvas');
+      return { w1: c.getBoundingClientRect().width, z1: window.mnpdf.S.zoom };
+    });
+    const grew = after.z1 > probe.z0 * 1.3 && after.w1 > probe.w0 * 1.3;
+    // pinch out from the same spot must keep that spot roughly under the
+    // cursor (anchored zoom): shrink back to the start zoom and compare canvas
+    for (const dy of [120, 120, 120, 120, 120]) {
+      await page.evaluate(({ x, y, dy }) => {
+        document.getElementById('scroller').dispatchEvent(
+          new WheelEvent('wheel', { ctrlKey: true, deltaY: dy, clientX: x, clientY: y, bubbles: true, cancelable: true }));
+      }, { x: probe.x, y: probe.y, dy });
+      await sleep(120);
+    }
+    const back = await page.evaluate(() => ({ z2: window.mnpdf.S.zoom }));
+    await shot('t23_pinch_zoom');
+    log('t23 ctrl+wheel (trackpad pinch) zooms anchored', grew && back.z2 < after.z1 * 0.6,
+        `zoom ${probe.z0.toFixed(2)} -> ${after.z1.toFixed(2)} -> ${back.z2.toFixed(2)}`);
+  }
+
   // T7 thumbnails + rotate
   if (!filter || filter === 't7') {
     await openApp();

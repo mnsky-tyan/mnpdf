@@ -120,10 +120,34 @@ fn apply_default_bounds(win: &tauri::WebviewWindow) {
     let _ = win.set_position(PhysicalPosition::new(x.max(0), y.max(0)));
 }
 
+// WebView2 ships pinch zoom disabled, so trackpad pinch never reaches the
+// page's ctrl+wheel handler; tauri.conf.json re-enables it (zoomHotkeysEnabled).
+// That also arms WebView2's accelerator-key zoom (Ctrl+/-), which would
+// double-apply with the app's own zoom, so hand those keys back to the page.
+#[cfg(windows)]
+fn claim_webview_zoom(win: &tauri::WebviewWindow) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings3;
+    use windows::core::Interface;
+    let _ = win.with_webview(move |webview| unsafe {
+        let Ok(core) = webview.controller().CoreWebView2() else {
+            return;
+        };
+        let Ok(settings) = core.Settings() else {
+            return;
+        };
+        let Ok(s3) = settings.cast::<ICoreWebView2Settings3>() else {
+            return;
+        };
+        let _ = s3.SetAreBrowserAcceleratorKeysEnabled(false);
+    });
+}
+
 fn setup_window(app: &tauri::AppHandle) {
     let Some(win) = app.get_webview_window("main") else {
         return;
     };
+    #[cfg(windows)]
+    claim_webview_zoom(&win);
     let restored = win_file(app)
         .and_then(|p| fs::read_to_string(p).ok())
         .and_then(|t| serde_json::from_str::<WinState>(&t).ok());
