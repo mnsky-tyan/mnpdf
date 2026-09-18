@@ -871,6 +871,41 @@ async function main() {
         `text=${JSON.stringify(res.text.trim())} dl=${dl.toFixed(2)} dr=${dr.toFixed(2)}`);
   }
 
+  // T22 double-click excludes trailing punctuation: a comma after the word is
+  // NOT part of the selection ("just the word")
+  if (!filter || filter === 't22') {
+    await openApp();
+    await sleep(300);
+    const w = await page.evaluate(() => {
+      for (const span of document.querySelectorAll('.pagewrap[data-i="0"] .textLayer span')) {
+        const t = span.textContent || '';
+        const m = /\b([A-Za-z]{3,}),/.exec(t); // a word directly followed by a comma
+        if (!m) continue;
+        const r = document.createRange();
+        r.setStart(span.firstChild, m.index);
+        r.setEnd(span.firstChild, m.index + m[1].length);
+        const b = r.getBoundingClientRect();
+        return { word: m[1], x: (b.left + b.right) / 2, y: (b.top + b.bottom) / 2,
+                 left: b.left, right: b.right };
+      }
+      return null;
+    });
+    if (!w) throw new Error('no comma-suffixed word found on page 1');
+    await page.mouse.dblclick(w.x, w.y);
+    await sleep(350);
+    const res = await page.evaluate(() => {
+      const rs = [...document.querySelectorAll('.selrect')].map((d) => d.getBoundingClientRect());
+      return { text: window.mnpdf.annos.currentSelection()?.text || '',
+               left: rs.length ? Math.min(...rs.map((r) => r.left)) : 0,
+               right: rs.length ? Math.max(...rs.map((r) => r.right)) : 0, n: rs.length };
+    });
+    const dl = Math.abs(res.left - w.left), dr = Math.abs(res.right - w.right);
+    await shot('t22_word_no_comma');
+    log('t22 double-click excludes trailing punctuation',
+        res.n === 1 && res.text.trim() === w.word && dl < 2 && dr < 2,
+        `want=${JSON.stringify(w.word)} got=${JSON.stringify(res.text.trim())} dl=${dl.toFixed(2)} dr=${dr.toFixed(2)}`);
+  }
+
   await browser.close();
   const failed = results.filter((r) => !r.ok);
   console.log(`\n${results.length - failed.length}/${results.length} passed`);

@@ -127,15 +127,18 @@ export function rowOffsetAtX(row, x, localOff) {
 }
 
 // offset in the merged row text -> x. localX(box, off) maps one span's own
-// text offset to x.
-export function rowXOf(row, off, localX) {
-  if (off <= 0) return row.left;
-  if (off >= row.text.length) return row.right;
-  let best = row.offs[row.offs.length - 1];
+// text offset to x. `side` resolves a boundary offset that sits exactly at a
+// span's end: 'start' (a selection's left edge) takes the NEXT span's first
+// glyph box, 'end' (a selection's right edge) takes the previous glyph's
+// right edge — pdf.js splits leave inter-span gaps, so the two differ.
+export function rowXOf(row, off, localX, side = 'end') {
+  const first = row.offs[0], last = row.offs[row.offs.length - 1];
+  if (off <= 0) return localX(first.ent, first.ent.start); // first glyph's box
+  if (off >= row.text.length) return localX(last.ent, last.ent.end);
+  let best = last;
   for (const o of row.offs) {
-    // <= so an offset at a span's end maps to that span's right edge, not
-    // the next span's left edge (they differ by the inter-span gap)
-    if (off <= o.cum + o.ent.text.length) { best = o; break; }
+    const oEnd = o.cum + o.ent.text.length;
+    if (side === 'start' ? off < oEnd : off <= oEnd) { best = o; break; }
   }
   const local = Math.max(0, Math.min(off - best.cum, best.ent.text.length));
   return localX(best.ent, best.ent.start + local);
@@ -167,8 +170,8 @@ export function buildSegments(lines, iA, offA, iF, offF) {
   for (let i = fi; i <= li; i++) {
     const line = lines[i];
     let sx = line.left, sOff = line.start, ex = line.right, eOff = line.end;
-    if (i === fi) { sx = line.xOf(topOff); sOff = topOff; }
-    if (i === li) { ex = line.xOf(botOff); eOff = botOff; }
+    if (i === fi) { sx = line.xOf(topOff, 'start'); sOff = topOff; }
+    if (i === li) { ex = line.xOf(botOff, 'end'); eOff = botOff; }
     if (sx > ex) { [sx, ex] = [ex, sx]; [sOff, eOff] = [eOff, sOff]; }
     if (ex - sx < 0.5) continue;
     segs.push({ line, sx, ex, sOff, eOff, docTop: line.top, docBottom: line.bottom });

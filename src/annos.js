@@ -147,7 +147,7 @@ function localOff(vis, x) {
 }
 function localX(vis, off) {
   if (!vis.node || vis.end <= vis.start) return vis.left;
-  if (off <= vis.start) return vis.left;
+  if (off <= vis.start) return visChars(vis)[0].left; // first glyph, not the span box
   if (off >= vis.end) return vis.right;
   return visChars(vis)[off - vis.start].left;
 }
@@ -172,7 +172,7 @@ function rowEntries(layer, st) {
     left: row.left, right: row.right,
     top: row.top + st, bottom: row.bottom + st,
     start: 0, end: row.text.length,
-    xOf: (off) => rowXOf(row, off, localX),
+    xOf: (off, side) => rowXOf(row, off, localX, side),
   }));
 }
 
@@ -220,12 +220,26 @@ function offAtLine(l, x) {
   return offsetAtX(l.vis, x);
 }
 
-function snapWord(vis, off) {
-  let i = Math.max(vis.start, Math.min(vis.end, off)) - vis.start;
+// word snap for double-click: letters/digits plus in-word apostrophes and
+// hyphens (don't, cross-environment). Trailing/leading punctuation (commas,
+// periods, brackets) is NOT part of the word — double-click selects just the
+// word. A click on pure punctuation takes the punctuation run.
+const WORD_CHAR = /[A-Za-z0-9'’‘-]/;
+const isWordChar = (c) => WORD_CHAR.test(c);
+function wordBounds(vis, off) {
   const t = vis.text;
-  while (i > 0 && !/\s/.test(t[i - 1] || ' ')) i--;
-  while (i < t.length && !/\s/.test(t[i] || ' ')) i++;
-  return vis.start + i;
+  const i = Math.max(vis.start, Math.min(vis.end, off)) - vis.start;
+  const expand = (pred) => {
+    let s = i, e = i;
+    while (s > 0 && pred(t[s - 1] || ' ')) s--;
+    while (e < t.length && pred(t[e] || ' ')) e++;
+    return [vis.start + s, vis.start + e];
+  };
+  if ((i < t.length && isWordChar(t[i])) || (i > 0 && isWordChar(t[i - 1]))) return expand(isWordChar);
+  return expand((c) => /\S/.test(c));
+}
+function snapWord(vis, off) {
+  return wordBounds(vis, off)[1];
 }
 
 // boundary segments are trimmed and the block bridged by the pure
@@ -339,12 +353,10 @@ function initManualSelection() {
       const vis = line.vis;
       let off = offsetAtX(vis, e.clientX);
       const wordMode = e.detail >= 2;
+      let sOff = off, eOff = off;
       if (wordMode) {
         // double click: the word under the press; dragging extends by words
-        let sOff = off, eOff = off;
-        const t = vis.text;
-        while (sOff > vis.start && !/\s/.test(t[sOff - 1 - vis.start] || ' ')) sOff--;
-        while (eOff < vis.end && !/\s/.test(t[eOff - vis.start] || ' ')) eOff++;
+        [sOff, eOff] = wordBounds(vis, off);
         selState = drawSelection(buildSegments([line], 0, sOff, 0, eOff), [line], 0);
         renderSelection();
         off = sOff;
