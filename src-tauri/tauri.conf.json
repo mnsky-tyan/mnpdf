@@ -19,7 +19,9 @@
         "minWidth": 520,
         "minHeight": 400,
         "decorations": false,
-        "zoomHotkeysEnabled": true
+        "zoomHotkeysEnabled": true,
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --single-process",
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --single-process"
       }
     ],
     "security": {
