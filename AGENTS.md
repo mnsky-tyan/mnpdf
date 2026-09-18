@@ -10,6 +10,8 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - GUI end-to-end: `npm run samples` first (writes public/*.pdf), `npm run dev` on port 5173, then `node scripts/guitest.mjs [t17|t19|…]` — defaults to Windows Edge; set `MNPDF_BROWSER` to another chromium binary. While a dev app occupies port 5173, point the suite at another vite with `MNPDF_GUITEST_BASE`.
 - Native Windows review from WSL: Windows node can run `scripts/guitest.mjs` (copy it to a Windows temp dir with `npm i playwright-core`) against the WSL vite server — Windows reaches it on `localhost:5173`.
 - `src/selection.js` must stay DOM-free (pure geometry); the mnpdf-drawn selection pipeline is: `annos.js allLines()` → `buildSegments()` → `drawSelection()` → `renderSelection()`.
+- Electron harness: `/tmp/pw/*.cjs` via playwright-core + nix electron, app host `/tmp/eapp` (fresh userData per launch — the app persists zoom/page per doc, a reused profile restores stale view state), `MNPDF_URL=http://localhost:5199/?file=arc.pdf`.
+- Memory checks: `/tmp/pw/mem2.cjs` reports in-page canvas/heap per scenario; process-tree working set double-counts shared pages across the WebView2 tree — read private commit instead.
 
 ## Maintaining this file
 

@@ -213,6 +213,41 @@ function renderVisible() {
   for (let i = 0; i < wraps.length; i++) {
     if (i < lo - 3 || i > hi + 3) maybeDestroy(i, selDragActive);
   }
+  scheduleBudget();
+}
+
+// hard ceiling on total page-canvas pixels: at deep zoom even the ±3-page
+// render band can hold ~0.5GB of bitmaps. Evict the farthest rendered pages
+// until the rest fits the budget. Runs debounced because renderPage sets
+// canvas sizes only after its async page fetch — checking too early would
+// read stale sizes and miss the eviction.
+const BUDGET_PX = 40_000_000; // ≈ 160MB of RGBA across all page canvases
+let budgetTimer = 0;
+function enforceBudget() {
+  const [lo, hi] = visibleRange(selDragActive ? 1600 : 400);
+  let total = 0;
+  for (const w of wraps) total += w.canvas.width * w.canvas.height;
+  if (total <= BUDGET_PX) return;
+  const far = [];
+  for (let i = 0; i < wraps.length; i++) {
+    if (i >= lo && i <= hi) continue;
+    if (!wraps[i].key) continue;
+    far.push([Math.abs(i - (lo + hi) / 2), i]);
+  }
+  far.sort((a, b) => b[0] - a[0]);
+  for (const [, i] of far) {
+    if (total <= BUDGET_PX) break;
+    const w = wraps[i];
+    total -= w.canvas.width * w.canvas.height;
+    maybeDestroy(i, selDragActive);
+  }
+}
+function scheduleBudget() {
+  if (budgetTimer) return;
+  budgetTimer = setTimeout(() => {
+    budgetTimer = 0;
+    if (S.pdf) enforceBudget();
+  }, 250);
 }
 
 const isCancel = (e) => /cancel/i.test(String(e?.name || e?.message || e));
@@ -235,8 +270,18 @@ async function renderPage(i) {
   if (w.key !== key) return;
   const total = (((page.rotate + rot) % 360) + 360) % 360;
   const vp = page.getViewport({ scale: cssScale(), rotation: total });
-  const rvp = page.getViewport({ scale: cssScale() * dpr, rotation: total });
+  let rvp = page.getViewport({ scale: cssScale() * dpr, rotation: total });
+  // cap device pixels: a deep-zoom page can ask for a hundreds-of-MB canvas
+  // (6x zoom at 200% display scaling ≈ 124M px ≈ 0.5GB RGBA). Render at a
+  // lower effective scale past the cap and let CSS upscale - softer at the
+  // extreme, but bounded.
+  const MAX_CANVAS_PX = 2 ** 25; // 33.5M px ≈ 134MB RGBA per page, pdf.js's own default
+  if (rvp.width * rvp.height > MAX_CANVAS_PX) {
+    const s = Math.sqrt(MAX_CANVAS_PX / (rvp.width * rvp.height));
+    rvp = page.getViewport({ scale: cssScale() * dpr * s, rotation: total });
+  }
   const c = w.canvas;
+  w.page = page;
   c.width = Math.max(1, Math.floor(rvp.width));
   c.height = Math.max(1, Math.floor(rvp.height));
   c.style.width = Math.floor(vp.width) + 'px';
@@ -251,6 +296,7 @@ async function renderPage(i) {
     return;
   }
   if (w.key !== key) return;
+  scheduleBudget(); // canvas size is now real - re-check the pixel budget
   // text layer (selection). Cancel any in-flight layer first — a stale layer
   // would keep appending spans into the fresh one and corrupt selection.
   try { w.tlObj?.cancel(); } catch {}
@@ -292,6 +338,10 @@ function maybeDestroy(i, keepText = false) {
   w.canvas.width = 1;
   w.canvas.height = 1;
   w.key = null;
+  // release the worker-side page caches (operator lists, glyph bitmaps);
+  // the page proxy itself stays valid in pageCache
+  try { w.page?.cleanup(); } catch {}
+  w.page = null;
 }
 
 // ---- overlays (highlights, notes, search rects live in page wraps) ----
