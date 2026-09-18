@@ -61,8 +61,12 @@ fn kv_set(app: tauri::AppHandle, key: String, value: String) -> Result<(), Strin
         .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or_default();
     map.insert(key, serde_json::Value::String(value));
-    fs::write(&path, serde_json::to_string(&map).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())
+    let json = serde_json::to_string(&map).map_err(|e| e.to_string())?;
+    // write-then-rename: a crash mid-write can never truncate kv.json and
+    // take every document's autosave sidecar down with it
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&tmp, json).map_err(|e| e.to_string())?;
+    fs::rename(&tmp, &path).map_err(|e| e.to_string())
 }
 
 // ---- window geometry (win.json, Rust-owned) ----

@@ -45,6 +45,8 @@ function menuGeneral(e) {
           { label: 'Zoom out', hint: '−', fn: cmd.zoomOut },
           { label: 'Zoom to…', fn: () => viewer.pillGotoMode('zoom') },
           { label: 'Fit width', hint: 'Ctrl+0', fn: cmd.zoomFit },
+          'sep',
+          { label: 'Autosave: save now', fn: cmd.saveNow },
         ]
       : []),
     ...windowItems(),
@@ -89,6 +91,8 @@ function menuForPage(e, i, vx, vy) {
     { label: 'Zoom out', fn: cmd.zoomOut },
     { label: 'Zoom to…', fn: () => viewer.pillGotoMode('zoom') },
     { label: 'Fit width', fn: cmd.zoomFit },
+    'sep',
+    { label: 'Autosave: save now', fn: cmd.saveNow },
     'sep',
     { label: 'Find…', hint: 'Ctrl+F', fn: () => search.open() },
     { label: 'Thumbnails', hint: 'F9', fn: () => thumbs.toggle() },

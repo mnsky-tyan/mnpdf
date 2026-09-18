@@ -54,6 +54,14 @@ async function loadDocState(path) {
   return kvGetJson('doc:' + path);
 }
 
+// immediate sidecar flush behind the right-click "Autosave: save now" —
+// autosave itself already runs debounced (700ms); this closes that window
+// on demand (e.g. right before experimenting)
+export async function saveNow() {
+  await persistDocNow();
+  toast('Autosaved');
+}
+
 // ---- open / reopen ----
 
 function validAnns(a) {

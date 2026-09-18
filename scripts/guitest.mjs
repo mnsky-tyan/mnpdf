@@ -349,6 +349,60 @@ async function main() {
         `zoom ${probe.z0.toFixed(2)} -> ${after.z1.toFixed(2)} -> ${back.z2.toFixed(2)}`);
   }
 
+  // T24 crash safety: annotations autosave to the per-document sidecar and
+  // survive a reload; the right-click menu offers an immediate flush
+  if (!filter || filter === 't24') {
+    await withRetry(2, async () => {
+      await openApp();
+      await sleep(300);
+      const geo = await page1Geo();
+      const line = await page.evaluate(() => {
+        const spans = [...document.querySelectorAll('.pagewrap[data-i="0"] .textLayer span')]
+          .map((s) => ({ text: s.textContent, r: s.getBoundingClientRect() }))
+          .filter((o) => o.r.height >= 2 && o.r.width >= 40 && /[A-Za-z]{3}/.test(o.text) &&
+                          o.r.top > 60 && o.r.bottom < 700)
+          .sort((a, b) => a.r.top - b.r.top || a.r.left - b.r.left);
+        return spans[2] || spans[0] || null;
+      });
+      if (!line) throw new Error('no text line for t24');
+      // right-click the page background: the autosave flush item is offered
+      await page.mouse.click(geo.left + geo.w * 0.5, Math.min(geo.top + 40, 700), { button: 'right' });
+      await sleep(300);
+      const labels = await page.evaluate(() =>
+        [...document.querySelectorAll('.menu-item .menu-label')].map((l) => l.textContent));
+      const idx = labels.findIndex((t) => t.includes('Autosave: save now'));
+      if (idx >= 0) {
+        await clickAt('.menu-item', idx);
+        await sleep(250);
+      }
+      const toastUp = await page.evaluate(() => {
+        const t = document.getElementById('toast');
+        return !!t && !t.classList.contains('hidden');
+      });
+      // drag a line, then right-click it and pick the first swatch: that is
+      // how a highlight is made (right-click menu -> Highlight swatches)
+      const y = line.r.top + line.r.height / 2;
+      await dragSelect(line.r.left + 3, y, line.r.right - 3, y);
+      await sleep(300);
+      await page.mouse.click(line.r.left + (line.r.right - line.r.left) / 2, y, { button: 'right' });
+      await sleep(300);
+      await clickAt('.menu-swatches .sw', 0);
+      await sleep(300);
+      const hl0 = await page.evaluate(() => window.mnpdf.S.anns.filter((a) => a.type === 'hl').length);
+      await sleep(1200); // sidecar debounce is 700ms
+      await page.reload();
+      await page.waitForTimeout(2200);
+      const restored = await page.evaluate(() => ({
+        anns: window.mnpdf.S.anns.filter((a) => a.type === 'hl').length,
+        hl: document.querySelectorAll('.hl').length,
+      }));
+      await shot('t24_autosave');
+      log('t24 autosave: highlight survives reload + menu flush exists',
+          idx >= 0 && toastUp && hl0 >= 1 && restored.anns >= 1 && restored.hl >= 1,
+          `menu=${idx >= 0} toast=${toastUp} hl=${hl0} restored anns=${restored.anns} dom=${restored.hl}`);
+    });
+  }
+
   // T7 thumbnails + rotate
   if (!filter || filter === 't7') {
     await openApp();
