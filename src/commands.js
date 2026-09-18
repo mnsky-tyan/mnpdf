@@ -2,6 +2,7 @@
 import platform from './platform.js';
 import { S, markDirty, pushOp, undo, redo, onDocChange } from './state.js';
 import * as viewer from './viewer.js';
+import * as annos from './annos.js';
 import * as thumbs from './thumbs.js';
 import * as search from './search.js';
 import { bake } from './save.js';
@@ -124,9 +125,12 @@ async function openBytes(bytes, path, name) {
   const st = path ? await loadDocState(path) : null;
   if (st) {
     if (typeof st.top === 'number') top = st.top - 1;
-    if (st.hl) S.hlColor = st.hl;
+    if (st.hl) S.hlColor = annos.HL_COLOR_MIGRATION[st.hl] || st.hl;
     if (validAnns(st.anns)) {
-      S.anns = st.anns.map((a) => (a.type === 'note' ? { ...a, type: 'pin' } : a));
+      // 'note' is the legacy pin type; vivid pre-v1.3.3 highlight colors read
+      // back as their paler palette counterparts
+      S.anns = st.anns.map((a) => (a.type === 'note' ? { ...a, type: 'pin' } : a))
+        .map((a) => (a.type === 'hl' ? { ...a, color: annos.HL_COLOR_MIGRATION[a.color] || a.color } : a));
     }
     if (validPages(st.pages)) S.pageList = st.pages;
     const bakedEdits = S.anns.filter((a) => a.type !== 'pin').length;
@@ -165,6 +169,21 @@ async function openBytes(bytes, path, name) {
 
 export function updateTitle() {
   platform.setTitle(`${S.dirty ? '• ' : ''}${S.name || 'mnpdf'}`);
+  const t = document.getElementById('titlebar-name');
+  if (t) t.textContent = `${S.dirty ? '• ' : ''}${S.name || 'mnpdf'}`;
+}
+
+// optional title bar: a real draggable strip (drag + double-click maximize);
+// hidden by default — the invisible drag strip stays the only chrome
+export function applyTitlebar(on) {
+  S.titlebar = !!on;
+  document.body.classList.toggle('titlebar', S.titlebar);
+  updateTitle();
+  platform.kvSet('titlebar', S.titlebar ? '1' : '0').catch(() => {});
+}
+
+export function toggleTitlebar() {
+  applyTitlebar(!S.titlebar);
 }
 
 export async function openPath(path) {

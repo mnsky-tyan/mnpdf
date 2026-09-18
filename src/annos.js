@@ -8,7 +8,12 @@ import { viewportFor, positionOverlays, setOverlayRenderer } from './viewer.js';
 import { buildSegments, mergeRows, rowOffsetAtX, rowXOf, spanOffsetAtX, spanXOf } from './selection.js';
 import { el } from './util.js';
 
-export const HL_COLORS = ['#ffd400', '#7ded72', '#6ec1ff', '#ff9db1', '#ffb257'];
+// pastel set — vivid primaries fought with the text under them (v1.3.3)
+export const HL_COLORS = ['#ffe680', '#c3f2bd', '#b8dcff', '#ffc9d4', '#ffd9ad'];
+// docs saved with the old vivid palette read back paler too
+export const HL_COLOR_MIGRATION = Object.fromEntries(
+  ['#ffd400', '#7ded72', '#6ec1ff', '#ff9db1', '#ffb257'].map((c, i) => [c, HL_COLORS[i]]),
+);
 
 // ---- overlay rendering (registered into viewer) ----
 

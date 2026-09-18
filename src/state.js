@@ -17,7 +17,8 @@ export const S = {
   dirty: false,
   zoom: 1,
   selAnnId: null,
-  hlColor: '#ffd400',
+  hlColor: '#ffe680',
+  titlebar: false,      // optional draggable title bar (right-click toggle)
 };
 
 const listeners = new Set();

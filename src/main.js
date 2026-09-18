@@ -13,12 +13,16 @@ import { toast } from './util.js';
 // ---------- context menus ----------
 
 function windowItems() {
-  if (platform.kind !== 'tauri') return [];
   return [
     'sep',
-    { label: 'Minimize', fn: () => platform.minimize() },
-    { label: 'Maximize / Restore', fn: () => platform.toggleMaximize() },
-    { label: 'Quit', danger: true, fn: () => platform.closeWindow() },
+    { label: S.titlebar ? 'Hide titlebar' : 'Show titlebar', fn: cmd.toggleTitlebar },
+    ...(platform.kind === 'tauri'
+      ? [
+          { label: 'Minimize', fn: () => platform.minimize() },
+          { label: 'Maximize / Restore', fn: () => platform.toggleMaximize() },
+          { label: 'Quit', danger: true, fn: () => platform.closeWindow() },
+        ]
+      : []),
   ];
 }
 
@@ -217,6 +221,7 @@ async function initCloseGuard() {
 async function boot() {
   viewer.init();
   initMenu();
+  cmd.applyTitlebar((await platform.kvGet('titlebar')) === '1');
   watchDocChanges(); // registered before annos so page rebuilds run first
   annos.init();
   search.init();

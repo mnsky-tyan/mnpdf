@@ -106,7 +106,8 @@ async function pixelStats(sel) {
     let dark = 0, yellowish = 0, n = t.width * t.height;
     for (let i = 0; i < d.length; i += 4) {
       if (d[i] < 120 && d[i + 1] < 120 && d[i + 2] < 120) dark++;
-      if (d[i] > 180 && d[i + 1] > 150 && d[i + 2] < 140) yellowish++;
+      // paler palette (v1.3.3): warm cream band — blue clearly below green
+      if (d[i] > 235 && d[i + 1] > 190 && d[i + 2] < d[i + 1] - 25) yellowish++;
     }
     return { darkFrac: +(dark / n).toFixed(4), yellowFrac: +(yellowish / n).toFixed(4) };
   }, sel);
@@ -780,6 +781,58 @@ async function main() {
     log('t19 selection bridges paragraph gaps (no white stripes)', covered && stripes.length === 0,
         `rects=${rects.length} stripes=${JSON.stringify(stripes)} ` +
         `tb=[${rects.map((r) => `${Math.round(r.t)}-${Math.round(r.b)}`).join(' ')}]`);
+  }
+
+  // T20 titlebar toggle: right-click → Show/Hide titlebar. The bar is a real
+  // drag region, the layout drops below it, the label switches with state,
+  // and the choice persists across relaunch.
+  if (!filter || filter === 't20') {
+    await openApp();
+    await sleep(300);
+    let st = await page.evaluate(() => ({
+      on: document.body.classList.contains('titlebar'),
+      bar: !!document.getElementById('titlebar'),
+      top: getComputedStyle(document.getElementById('scroller')).top,
+    }));
+    log('t20 titlebar hidden by default (frameless)', !st.on && st.bar && st.top === '0px', JSON.stringify(st));
+
+    await page.mouse.click(500, 500, { button: 'right' });
+    await sleep(250);
+    await page.locator('.menu-item', { hasText: 'Show titlebar' }).click();
+    await sleep(200);
+    st = await page.evaluate(() => ({
+      on: document.body.classList.contains('titlebar'),
+      barH: Math.round(document.getElementById('titlebar').getBoundingClientRect().height),
+      top: getComputedStyle(document.getElementById('scroller')).top,
+      name: document.getElementById('titlebar-name').textContent,
+    }));
+    log('t20 show titlebar: bar visible, layout drops, doc name shown',
+        st.on && st.barH >= 25 && st.barH <= 40 && st.top === '30px' && st.name.includes('sample'), JSON.stringify(st));
+    await shot('t20_titlebar_shown');
+
+    await page.mouse.click(500, 560, { button: 'right' });
+    await sleep(250);
+    const hideLabel = await page.locator('.menu-item', { hasText: 'Hide titlebar' }).count();
+    await page.keyboard.press('Escape');
+    await sleep(150);
+    log('t20 menu label switches to "Hide titlebar" while shown', hideLabel === 1);
+
+    // persistence: plain reload (openApp clears storage, which would wipe the pref)
+    await page.reload();
+    await page.waitForTimeout(2200);
+    const persisted = await page.evaluate(() => document.body.classList.contains('titlebar'));
+    log('t20 titlebar state persists across relaunch', persisted);
+
+    await page.mouse.click(500, 560, { button: 'right' });
+    await sleep(250);
+    await page.locator('.menu-item', { hasText: 'Hide titlebar' }).click();
+    await sleep(200);
+    const off = await page.evaluate(() => ({
+      on: document.body.classList.contains('titlebar'),
+      top: getComputedStyle(document.getElementById('scroller')).top,
+    }));
+    await shot('t20_titlebar_hidden');
+    log('t20 hide titlebar restores the frameless layout', !off.on && off.top === '0px', JSON.stringify(off));
   }
 
   await browser.close();

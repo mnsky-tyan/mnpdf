@@ -170,6 +170,40 @@ html, body {
   z-index: 34;
 }
 
+/* optional title bar — right-click → Show/Hide titlebar. Hidden by default
+   (the strip above stays the only chrome); when shown it is a real drag
+   region too, and the layout drops below it. */
+#titlebar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 30px;
+  z-index: 33;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  background: var(--glass);
+  color: var(--glass-fg);
+  border-bottom: 1px solid var(--glass-border);
+  backdrop-filter: blur(14px);
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  user-select: none;
+  -webkit-user-select: none;
+}
+body:not(.titlebar) #titlebar { display: none; }
+#titlebar-name {
+  pointer-events: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+body.titlebar #scroller { top: 30px; }
+body.titlebar #thumbs { top: 30px; }
+body.titlebar #search { top: 40px; }
+body.titlebar #empty { top: 30px; }
+
 /* ---------- pdf.js text layer (subset of official pdf_viewer.css) ---------- */
 
 .textLayer {
