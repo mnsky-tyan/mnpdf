@@ -1,0 +1,5 @@
+# Reviewer/fixer model for every pipeline step on this machine lives in the
+# global config (~/.no-mistakes/config.yaml, agent_config.pi): pi on
+# stepfun-intl-4/step-5-preview at high effort. review_agents is a global-only
+# key - a repo-level entry here is ignored, so this file intentionally sets
+# nothing.
