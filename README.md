@@ -1,95 +1,37 @@
 # mnpdf
 
-A very lightweight, local-only desktop PDF **reader + highlighter** for personal use.
-No toolbar, no sidebar, no title bar, no accounts, no network — just a clean page
-canvas and a small set of interactions that stay out of your way.
+A lightweight native Windows PDF reader with text selection, search, highlights,
+reversible saving, sticky-note pins, undo/redo, and a small private-memory
+footprint. It runs locally with Win32 and PDFium - no accounts or network
+services.
 
-Built with [Tauri 2](https://tauri.app) + [pdf.js](https://mozilla.github.io/pdf.js/) +
-[pdf-lib](https://pdf-lib.js.org). Runs entirely on your machine.
+## Release
 
-## Using it
+Download the Windows portable package from the [Releases](https://github.com/mnsky-tyan/mnpdf/releases) page. Extract `mnpdf-win-x64.zip` and run `mnpdf.exe`; keep `pdfium.dll` beside it.
 
-| Action | How |
-| --- | --- |
-| Open a PDF | Ctrl+O, right-click → *Open…*, drop a file on the window, or `mnpdf.exe path\to.pdf` |
-| Scroll | wheel / two-finger touchpad scroll |
-| Zoom | pinch (touch screen or touchpad), Ctrl+wheel, `+` / `-`, `Ctrl+0` fit width, `0` = 100% |
-| Exact zoom | right-click → *Zoom to…*, or click the **right half** of the page pill; type a percent (25–600) |
-| Go to page | Ctrl+G, or click the **left half** of the page pill |
-| Highlight text | select text (nothing pops up), then **right-click** the selection → pick a color. Highlighting over an existing highlight **replaces** it (no stacking) |
-| Copy text | select text → right-click → *Copy text* (or Ctrl+C) |
-| Delete a highlight | right-click on the highlight → *Delete highlight* |
-| Text pins | right-click anywhere on a page → *Add pin here* → type → Ctrl+Enter. A small red dot appears immediately; **hovering shows the text**, clicking the dot re-opens the editor, right-click offers Edit/Delete. On save, pins become real PDF sticky-note comments — **other people see them** in Acrobat, Edge, Chrome, Firefox (click the note icon) |
-| Undo / redo | Ctrl+Z / Ctrl+Y or right-click → *Undo* / *Redo* (covers highlights, pins, page ops) |
-| Find text | Ctrl+F (or `/`), Enter / F3 / Shift+F3 to jump matches |
-| Thumbnails | F9 or right-click → *Thumbnails* (click to jump, drag to reorder, right-click to rotate/delete) |
-| Rotate / delete / reorder pages | page or thumbnail right-click menus |
-| Save (bakes highlights into the PDF) | Ctrl+S |
-| Save As… | Ctrl+Shift+S |
-| Minimize / Maximize / Quit | right-click anywhere → bottom of the menu |
-| Move the window | drag the thin invisible strip along the top edge (double-click = maximize) |
+## Build
 
-There is no title bar. The window chrome lives entirely in the right-click menu.
+Requirements: Windows, Visual Studio 2022 Enterprise C++ tools, and the vendored
+PDFium files.
 
-The interface follows the OS light/dark theme automatically. Pages stay as printed;
-only the chrome changes.
-
-Documents open at **fit width — the paper touches the window borders side-to-side**
-(Ctrl+0 re-applies it anytime). Launching mnpdf without arguments **reopens the last
-document** at its saved zoom/page.
-
-## Where your edits live
-
-- **Highlights** are baked into the PDF when you save (permanently, like ink).
-  Highlighting over an existing highlight replaces it instead of stacking.
-- **Pins are saved as standard PDF sticky-note (Text) annotations** — so anyone
-  you share the file with can read them in a normal PDF viewer. Inside mnpdf
-  they render as hover dots; sticky notes from other tools show up here as pins
-  too. Deleting a pin in mnpdf removes its sticky note on the next save.
-- Zoom level, page, and in-progress edits are additionally mirrored in a small
-  JSON sidecar per document (app data folder), so closing accidentally loses
-  nothing. On close with unsaved highlights you get one plain **"Save changes?" —
-  Yes/No** prompt.
-
-## Deliberate limitations
-
-- After saving, highlights behave like printed ink (not re-selectable/removable).
-- Note (pin) text is mnpdf-only by design; it is never printed into the file.
-- No signatures, OCR, forms, passwords, compression, drawing tools, multimedia,
-  collaboration, cloud sync, accounts, or online services. By design.
-- Password-protected PDFs are not supported.
-
-## Building
-
-Requirements: Node 18+, Rust toolchain (MSVC), WebView2 (preinstalled on Win 10/11).
-
-```
-npm install          # also copies pdf.js worker + cmaps into public/
-npm run samples      # optional: generate public/sample.pdf for dev
-npm run dev          # browser dev mode (file IO shimmed to localStorage/downloads)
-npm run tauri dev    # desktop dev window
-npm run tauri build  # release exe + NSIS installer
+```bat
+build.bat
 ```
 
-Artifacts: `src-tauri/target/release/mnpdf.exe` and
-`src-tauri/target/release/bundle/nsis/`.
+The executable and PDFium runtime are written to `build/`. The checked-in
+PowerShell suites exercise the public UI through posted Windows messages:
 
-Automated GUI tests (needs Edge installed):
+```powershell
+powershell -ExecutionPolicy Bypass -File select-msg-test.ps1
+powershell -ExecutionPolicy Bypass -File test-suite2.ps1
+powershell -ExecutionPolicy Bypass -File test-features.ps1
+powershell -ExecutionPolicy Bypass -File test-continuous.ps1
+```
 
-```
-npm run dev          # in one terminal
-node scripts/guitest.mjs   # in another
-```
+## Use
 
-## Layout
-
-```
-src/            frontend (vanilla JS modules)
-  viewer.js     page rendering, zoom (wheel/pinch/pill), scroll, coordinates
-  annos.js      selection → highlights, hover-only pins
-  save.js       pdf-lib baking (in-place page ops, copy fallback)
-  commands.js   open/save/zoom/page actions + sidecar persistence
-  search.js / thumbs.js / menu.js / main.js
-src-tauri/      tiny Rust layer: file read/write, kv JSON store, CLI arg
-scripts/        icon + sample generators, GUI test harness
-```
+Run `mnpdf.exe path\to\file.pdf`. Right-click the page for document actions;
+select text and right-click for highlighting; right-click paper to add a pin.
+Highlights and pins are kept reversible through PDF annotations and the local
+sidecar state. Pin and highlight colors share six built-ins plus three persisted
+custom `#RRGGBB` slots.
