@@ -27,6 +27,7 @@
 #include "fpdf_edit.h"
 #include "fpdf_annot.h"
 #include "fpdf_save.h"
+#include "resource.h"
 
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "gdi32.lib")
@@ -2801,14 +2802,17 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int show) {
     FPDF_LIBRARY_CONFIG cfg = { 2, nullptr, nullptr };
     FPDF_InitLibraryWithConfig(&cfg);
 
-    WNDCLASSW wc = { 0 };
+    WNDCLASSEXW wc = { sizeof(wc) };
     wc.style = CS_DBLCLKS;
     wc.lpfnWndProc = wndProc;
     wc.hInstance = hInst;
+    wc.hIcon = LoadIconW(hInst, MAKEINTRESOURCEW(IDI_MNPDF));
+    wc.hIconSm = (HICON)LoadImageW(hInst, MAKEINTRESOURCEW(IDI_MNPDF), IMAGE_ICON,
+                                   GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 0);
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
     wc.lpszClassName = L"mnpdf";
     wc.hbrBackground = nullptr;
-    RegisterClassW(&wc);
+    RegisterClassExW(&wc);
 
     WNDCLASSW tc = { 0 };
     tc.lpfnWndProc = DefWindowProcW;
