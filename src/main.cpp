@@ -5,6 +5,7 @@
 // never rasterized whole; the engine draws the page into the viewport DIB
 // at an offset, so memory is independent of zoom and page count.
 #pragma comment(lib, "gdiplus.lib")
+#pragma comment(lib, "winhttp.lib")
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -15,6 +16,9 @@
 #include <psapi.h>
 #include <unknwn.h>          // MIDL_INTERFACE for the GDI+ headers
 #include <gdiplus.h>
+#include <winhttp.h>
+#include <atomic>
+#include <thread>
 #include <string>
 #include <vector>
 #include <cstdio>
@@ -37,7 +41,15 @@
 #pragma comment(lib, "msimg32.lib")
 
 // ---- state ----
+static const wchar_t* const kAppVersion = L"2.0.2";
+static const wchar_t* const kRepoPath = L"mnsky-tyan/mnpdf";
+static const std::wstring kLatestReleaseUrl =
+    std::wstring(L"https://github.com/") + kRepoPath + L"/releases/latest";
+static const UINT WM_MNPDF_UPDATE_RESULT = WM_APP + 1;
 static HWND gWnd = nullptr;
+static std::atomic<bool> gUpdateCheckRunning = false;
+static std::atomic<bool> gManualUpdateRequested = false;
+static std::atomic<bool> gShuttingDown = false;
 static std::wstring gPath;
 static FPDF_DOCUMENT gDoc = nullptr;
 static FPDF_PAGE gPage = nullptr;
@@ -1685,6 +1697,164 @@ static void updateTitle() {
     SetWindowTextW(gWnd, t);
 }
 
+struct UpdateResult {
+    bool manual = false;
+    bool ok = false;
+    bool newer = false;
+    std::wstring tag;
+};
+
+static UpdateResult* gPendingUpdateResult = nullptr;
+
+static std::wstring moduleDirectory() {
+    wchar_t path[MAX_PATH] = L"";
+    DWORD n = GetModuleFileNameW(nullptr, path, MAX_PATH);
+    if (!n || n >= MAX_PATH) return L"(the current mnpdf folder)";
+    std::wstring full(path, n);
+    size_t slash = full.find_last_of(L"\\/");
+    return slash == std::wstring::npos ? L"." : full.substr(0, slash);
+}
+
+static bool parseVersion(const std::wstring& text, int& major, int& minor, int& patch) {
+    const wchar_t* p = text.c_str();
+    if (*p == L'v' || *p == L'V') p++;
+    return swscanf_s(p, L"%d.%d.%d", &major, &minor, &patch) == 3;
+}
+
+static bool versionIsNewer(const std::wstring& candidate) {
+    int a = 0, b = 0, c = 0;
+    int x = 0, y = 0, z = 0;
+    if (!parseVersion(kAppVersion, a, b, c) || !parseVersion(candidate, x, y, z)) return false;
+    if (x != a) return x > a;
+    if (y != b) return y > b;
+    return z > c;
+}
+
+static std::wstring utf8ToWide(const std::string& text) {
+    if (text.empty()) return L"";
+    int n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), (int)text.size(), nullptr, 0);
+    if (n <= 0) return L"";
+    std::wstring out(n, L'\0');
+    MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), (int)text.size(), &out[0], n);
+    return out;
+}
+
+// GitHub's latest-release endpoint returns only the tag name we need. This runs
+// off the UI thread; no PDF path or document contents ever leave the process.
+static std::wstring fetchLatestReleaseTag() {
+    const std::wstring userAgent = std::wstring(L"mnpdf/") + kAppVersion;
+    const std::wstring apiPath = std::wstring(L"/repos/") + kRepoPath + L"/releases/latest";
+    HINTERNET session = WinHttpOpen(userAgent.c_str(), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+                                     WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    HINTERNET connect = nullptr;
+    HINTERNET request = nullptr;
+    std::wstring result;
+    if (session) {
+        WinHttpSetTimeouts(session, 1500, 1500, 3000, 3000);
+        connect = WinHttpConnect(session, L"api.github.com", INTERNET_DEFAULT_HTTPS_PORT, 0);
+        if (connect) {
+            request = WinHttpOpenRequest(connect, L"GET", apiPath.c_str(),
+                                         nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
+                                         WINHTTP_FLAG_SECURE);
+        }
+    }
+    bool good = session && connect && request;
+    if (good) {
+        WinHttpAddRequestHeaders(request,
+            L"Accept: application/vnd.github+json\r\n",
+            -1L, WINHTTP_ADDREQ_FLAG_ADD | WINHTTP_ADDREQ_FLAG_REPLACE);
+        good = WinHttpSendRequest(request, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+                                  WINHTTP_NO_REQUEST_DATA, 0, 0, 0)
+            && WinHttpReceiveResponse(request, nullptr);
+    }
+    DWORD status = 0;
+    DWORD statusBytes = sizeof(status);
+    if (good) {
+        good = WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                                    WINHTTP_HEADER_NAME_BY_INDEX, &status, &statusBytes,
+                                    WINHTTP_NO_HEADER_INDEX) && status == 200;
+    }
+    std::string body;
+    while (good) {
+        DWORD available = 0;
+        if (!WinHttpQueryDataAvailable(request, &available)) { good = false; break; }
+        if (!available) break;
+        if (body.size() + available > 1024 * 1024) { good = false; break; }
+        std::vector<char> chunk(available);
+        DWORD got = 0;
+        if (!WinHttpReadData(request, chunk.data(), available, &got)) { good = false; break; }
+        body.append(chunk.data(), got);
+    }
+    if (good) {
+        size_t key = body.find("\"tag_name\"");
+        size_t colon = key == std::string::npos ? std::string::npos : body.find(':', key + 10);
+        size_t first = colon == std::string::npos ? std::string::npos : body.find('"', colon + 1);
+        size_t last = first == std::string::npos ? std::string::npos : body.find('"', first + 1);
+        if (first != std::string::npos && last > first)
+            result = utf8ToWide(body.substr(first + 1, last - first - 1));
+    }
+    if (request) WinHttpCloseHandle(request);
+    if (connect) WinHttpCloseHandle(connect);
+    if (session) WinHttpCloseHandle(session);
+    return result;
+}
+
+static void showUpdateResult(const UpdateResult& result) {
+    if (!result.ok) {
+        if (result.manual)
+            MessageBoxW(gWnd, L"mnpdf could not check GitHub for updates. Try again later.",
+                        L"mnpdf updates", MB_OK | MB_ICONWARNING);
+        return;
+    }
+    if (!result.newer) {
+        if (result.manual) {
+            std::wstring text = L"mnpdf " + std::wstring(kAppVersion) + L" is up to date.";
+            MessageBoxW(gWnd, text.c_str(), L"mnpdf updates", MB_OK | MB_ICONINFORMATION);
+        }
+        return;
+    }
+    std::wstring text = L"mnpdf " + std::wstring(kAppVersion) + L" -> " + result.tag
+        + L" is available.\n\n"
+        + L"This is a portable ZIP update. Downloading it into another folder creates a second copy; it does not replace this copy.\n\n"
+        + L"To update this copy:\n"
+        + L"1. Open the official release page below.\n"
+        + L"2. Close mnpdf.\n"
+        + L"3. Extract the ZIP over:\n   " + moduleDirectory() + L"\n"
+        + L"4. Replace mnpdf.exe and pdfium.dll.\n\n"
+        + L"Your PDFs, notes, and settings are stored separately and will not be deleted.\n\n"
+        + L"Open the official release page now?";
+    if (MessageBoxW(gWnd, text.c_str(), L"mnpdf update available",
+                    MB_YESNO | MB_ICONINFORMATION) == IDYES)
+        ShellExecuteW(gWnd, L"open", kLatestReleaseUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+}
+
+static void showPendingUpdateResult() {
+    if (UpdateResult* r = gPendingUpdateResult) {
+        gPendingUpdateResult = nullptr;
+        if (!gShuttingDown.load())
+            showUpdateResult(*r);
+        delete r;
+    }
+}
+
+static void startUpdateCheck(bool manual) {
+    if (manual) gManualUpdateRequested.store(true);
+    if (gUpdateCheckRunning.exchange(true)) return;
+    HWND target = gWnd;
+    std::thread([target]() {
+        UpdateResult* result = new UpdateResult;
+        result->tag = fetchLatestReleaseTag();
+        result->ok = !result->tag.empty();
+        result->newer = result->ok && versionIsNewer(result->tag);
+        result->manual = gManualUpdateRequested.exchange(false);
+        if (gShuttingDown.load() || !IsWindow(target)
+            || !PostMessageW(target, WM_MNPDF_UPDATE_RESULT, 0, (LPARAM)result))
+            delete result;
+        gUpdateCheckRunning.store(false);
+        if (gManualUpdateRequested.exchange(false)) startUpdateCheck(true);
+    }).detach();
+}
+
 // ---- autosave: per-document reading state (zoom, fit, page) + last file ----
 
 static void appDirW(wchar_t* out, size_t n) {
@@ -2618,6 +2788,8 @@ static LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         AppendMenuW(menu, MF_STRING, 110, L"Minimize");
         AppendMenuW(menu, MF_STRING, 111, IsZoomed(h) ? L"Restore" : L"Maximize");
         AppendMenuW(menu, MF_STRING, 113, gTitlebar ? L"Hide titlebar" : L"Show titlebar");
+        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(menu, MF_STRING, 170, L"Check for updates");
         AppendMenuW(menu, MF_STRING, 112, L"Quit");
         SetForegroundWindow(h);   // TrackPopupMenu dismisses instantly without foreground
         int cmd = TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_RETURNCMD | TPM_NONOTIFY, x, y, 0, h, nullptr);
@@ -2704,6 +2876,7 @@ static LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         case 115: redoOp(); return 0;
         case 118: doSave(); return 0;
         case 119: doSaveAs(); return 0;
+        case 170: startUpdateCheck(true); return 0;
         case 130:                                   // add pin at the menu drop point
             if (gMenuPinPtPage >= 0) {
                 addPinAt(gMenuPinPtPage, gMenuPinPtX, gMenuPinPtY);
@@ -2733,6 +2906,14 @@ static LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
             if (pt2.y < 8) res = HTCAPTION;
         }
         return res;
+    }
+    case WM_MNPDF_UPDATE_RESULT: {
+        UpdateResult* result = (UpdateResult*)lp;
+        if (result) {
+            delete gPendingUpdateResult;
+            gPendingUpdateResult = result;
+        }
+        return 0;
     }
     case WM_TIMER:
         if (wp == 1 && gSaveDirty) {               // debounced autosave flush
@@ -2786,6 +2967,7 @@ static LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         DestroyWindow(h);
         return 0;
     case WM_DESTROY:
+        gShuttingDown.store(true);
         flushPageCache();
         PostQuitMessage(0);
         return 0;
@@ -2823,10 +3005,8 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int show) {
     RegisterClassW(&tc);
 
     // include the engine dll dir in the search path so the exe runs anywhere
-    wchar_t exeDir[MAX_PATH];
-    GetModuleFileNameW(nullptr, exeDir, MAX_PATH);
-    *wcsrchr(exeDir, L'\\') = 0;
-    SetDllDirectoryW(exeDir);
+    const std::wstring exeDir = moduleDirectory();
+    SetDllDirectoryW(exeDir.c_str());
 
     loadAppPref();                                 // titlebar preference
     gWnd = CreateWindowExW(0, L"mnpdf", L"mnpdf",
@@ -2862,10 +3042,17 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int show) {
     if (!opened) openDialog();
 
     ShowWindow(gWnd, show);
+    startUpdateCheck(false);                         // notify only when a newer release exists
     MSG msg;
-    while (GetMessageW(&msg, nullptr, 0, 0)) {
-        TranslateMessage(&msg);
-        DispatchMessageW(&msg);
+    for (;;) {
+        if (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+            if (msg.message == WM_QUIT) break;
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        } else {
+            showPendingUpdateResult();
+            WaitMessage();
+        }
     }
     flushPageCache();                              // releases gPage/gTextPage too
     if (gDoc) FPDF_CloseDocument(gDoc);
