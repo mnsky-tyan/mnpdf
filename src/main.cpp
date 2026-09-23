@@ -19,6 +19,7 @@
 #include <winhttp.h>
 #include <atomic>
 #include <thread>
+#include <ctime>
 #include <string>
 #include <vector>
 #include <cstdio>
@@ -42,14 +43,18 @@
 
 // ---- state ----
 static const wchar_t* const kAppVersion = L"2.0.2";
+static const wchar_t* const kGitHubRoot = L"https://github.com";
 static const wchar_t* const kRepoPath = L"mnsky-tyan/mnpdf";
 static const std::wstring kLatestReleaseUrl =
-    std::wstring(L"https://github.com/") + kRepoPath + L"/releases/latest";
+    std::wstring(kGitHubRoot) + L"/" + kRepoPath + L"/releases/latest";
 static const UINT WM_MNPDF_UPDATE_RESULT = WM_APP + 1;
+static const int kUpdateCheckIntervalMin = 60;    // self-imposed: one request per hour
 static HWND gWnd = nullptr;
 static std::atomic<bool> gUpdateCheckRunning = false;
 static std::atomic<bool> gManualUpdateRequested = false;
 static std::atomic<bool> gShuttingDown = false;
+static long long gLastUpdateCheck = 0;             // unix seconds of the last GitHub attempt
+static std::wstring gLastUpdateTag;                // tag that attempt found ("" = none succeeded yet)
 static std::wstring gPath;
 static FPDF_DOCUMENT gDoc = nullptr;
 static FPDF_PAGE gPage = nullptr;
@@ -181,6 +186,7 @@ static void markDirty() {
 }
 
 static void markSave();
+static void writeAppPref();
 
 static void pushOp(const Op& op) {
     gUndo.push_back(op);
@@ -1739,11 +1745,36 @@ static std::wstring utf8ToWide(const std::string& text) {
     return out;
 }
 
-// GitHub's latest-release endpoint returns only the tag name we need. This runs
-// off the UI thread; no PDF path or document contents ever leave the process.
+static long long nowSeconds() { return (long long)time(nullptr); }
+
+// minutes since the last attempt, or -1 when there was none (or the clock moved back)
+static int minutesSinceLastCheck() {
+    if (gLastUpdateCheck <= 0) return -1;
+    long long dt = nowSeconds() - gLastUpdateCheck;
+    if (dt < 0) return -1;
+    return (int)(dt / 60);
+}
+
+static bool updateCheckCooling() {
+    int m = minutesSinceLastCheck();
+    return m >= 0 && m < kUpdateCheckIntervalMin;
+}
+
+// one attempt (hit or miss) stamps the clock, so neither a launch nor a
+// right-click can burn more than one request per interval
+static void noteUpdateCheck(const std::wstring& tag) {
+    gLastUpdateCheck = nowSeconds();
+    if (!tag.empty()) gLastUpdateTag = tag;               // remember the newest tag we ever saw
+    writeAppPref();
+}
+
+// The tag is read off the web host, never api.github.com: that host answers
+// "API rate limit exceeded" once the IP's unauthenticated quota is spent, and that
+// quota is shared with every other unauthenticated client behind the same IP. This
+// runs off the UI thread; no PDF path or document contents ever leave the process.
 static std::wstring fetchLatestReleaseTag() {
     const std::wstring userAgent = std::wstring(L"mnpdf/") + kAppVersion;
-    const std::wstring apiPath = std::wstring(L"/repos/") + kRepoPath + L"/releases/latest";
+    const std::wstring latestPath = L"/" + std::wstring(kRepoPath) + L"/releases/latest";
     HINTERNET session = WinHttpOpen(userAgent.c_str(), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
                                      WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     HINTERNET connect = nullptr;
@@ -1751,47 +1782,43 @@ static std::wstring fetchLatestReleaseTag() {
     std::wstring result;
     if (session) {
         WinHttpSetTimeouts(session, 1500, 1500, 3000, 3000);
-        connect = WinHttpConnect(session, L"api.github.com", INTERNET_DEFAULT_HTTPS_PORT, 0);
+        connect = WinHttpConnect(session, L"github.com", INTERNET_DEFAULT_HTTPS_PORT, 0);
         if (connect) {
-            request = WinHttpOpenRequest(connect, L"GET", apiPath.c_str(),
+            request = WinHttpOpenRequest(connect, L"GET", latestPath.c_str(),
                                          nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
                                          WINHTTP_FLAG_SECURE);
         }
     }
     bool good = session && connect && request;
+    // "latest" answers with a 302 to the tagged release page, and the tag rides in
+    // that redirect target, so no body has to be parsed and no request is spent
+    // downloading the page itself. Redirects are disabled so the target can be
+    // read from the Location header instead of followed.
     if (good) {
-        WinHttpAddRequestHeaders(request,
-            L"Accept: application/vnd.github+json\r\n",
-            -1L, WINHTTP_ADDREQ_FLAG_ADD | WINHTTP_ADDREQ_FLAG_REPLACE);
+        DWORD noRedirects = WINHTTP_DISABLE_REDIRECTS;
+        WinHttpSetOption(request, WINHTTP_OPTION_DISABLE_FEATURE, &noRedirects, sizeof(noRedirects));
         good = WinHttpSendRequest(request, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
                                   WINHTTP_NO_REQUEST_DATA, 0, 0, 0)
             && WinHttpReceiveResponse(request, nullptr);
     }
-    DWORD status = 0;
-    DWORD statusBytes = sizeof(status);
     if (good) {
-        good = WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-                                    WINHTTP_HEADER_NAME_BY_INDEX, &status, &statusBytes,
-                                    WINHTTP_NO_HEADER_INDEX) && status == 200;
-    }
-    std::string body;
-    while (good) {
-        DWORD available = 0;
-        if (!WinHttpQueryDataAvailable(request, &available)) { good = false; break; }
-        if (!available) break;
-        if (body.size() + available > 1024 * 1024) { good = false; break; }
-        std::vector<char> chunk(available);
-        DWORD got = 0;
-        if (!WinHttpReadData(request, chunk.data(), available, &got)) { good = false; break; }
-        body.append(chunk.data(), got);
-    }
-    if (good) {
-        size_t key = body.find("\"tag_name\"");
-        size_t colon = key == std::string::npos ? std::string::npos : body.find(':', key + 10);
-        size_t first = colon == std::string::npos ? std::string::npos : body.find('"', colon + 1);
-        size_t last = first == std::string::npos ? std::string::npos : body.find('"', first + 1);
-        if (first != std::string::npos && last > first)
-            result = utf8ToWide(body.substr(first + 1, last - first - 1));
+        wchar_t location[1024] = L"";
+        DWORD bytes = sizeof(location);
+        bool haveLocation = WinHttpQueryHeaders(request, WINHTTP_QUERY_LOCATION,
+                                                WINHTTP_HEADER_NAME_BY_INDEX,
+                                                location, &bytes, WINHTTP_NO_HEADER_INDEX) != FALSE;
+        if (haveLocation) {
+            std::wstring target = location;
+            if (target.empty()) haveLocation = false;
+            else if (target[0] == L'/') target = std::wstring(kGitHubRoot) + target;   // site-relative
+            else if (target.rfind(kGitHubRoot, 0) != 0) haveLocation = false;          // some other host
+            if (haveLocation) {
+                const std::wstring marker = L"/releases/tag/";
+                size_t tag = target.rfind(marker);
+                result = tag == std::wstring::npos ? L"" : target.substr(tag + marker.size());
+            }
+        }
+        good = haveLocation && !result.empty();
     }
     if (request) WinHttpCloseHandle(request);
     if (connect) WinHttpCloseHandle(connect);
@@ -1799,7 +1826,14 @@ static std::wstring fetchLatestReleaseTag() {
     return result;
 }
 
-static void showUpdateResult(const UpdateResult& result) {
+static std::wstring checkedAgoNote(int minutesAgo) {
+    if (minutesAgo < 0) return L"";
+    wchar_t b[64];
+    swprintf_s(b, L"\n\n(Last checked %d minute%s ago.)", minutesAgo, minutesAgo == 1 ? L"" : L"s");
+    return b;
+}
+
+static void showUpdateResult(const UpdateResult& result, int minutesAgo = -1) {
     if (!result.ok) {
         if (result.manual)
             MessageBoxW(gWnd, L"mnpdf could not check GitHub for updates. Try again later.",
@@ -1808,13 +1842,14 @@ static void showUpdateResult(const UpdateResult& result) {
     }
     if (!result.newer) {
         if (result.manual) {
-            std::wstring text = L"mnpdf " + std::wstring(kAppVersion) + L" is up to date.";
+            std::wstring text = L"mnpdf " + std::wstring(kAppVersion) + L" is up to date."
+                              + checkedAgoNote(minutesAgo);
             MessageBoxW(gWnd, text.c_str(), L"mnpdf updates", MB_OK | MB_ICONINFORMATION);
         }
         return;
     }
     std::wstring text = L"mnpdf " + std::wstring(kAppVersion) + L" -> " + result.tag
-        + L" is available.\n\n"
+        + L" is available." + checkedAgoNote(minutesAgo) + L"\n\n"
         + L"This is a portable ZIP update. Downloading it into another folder creates a second copy; it does not replace this copy.\n\n"
         + L"To update this copy:\n"
         + L"1. Open the official release page below.\n"
@@ -1837,9 +1872,38 @@ static void showPendingUpdateResult() {
     }
 }
 
+// a click inside the cooldown window is answered from what the last attempt
+// learned, so the user still gets a true answer and no request is spent
+static void reportCachedUpdateResult() {
+    int ago = minutesSinceLastCheck();
+    if (ago < 0) ago = 0;
+    if (gLastUpdateTag.empty()) {                     // last attempt could not reach GitHub
+        int left = kUpdateCheckIntervalMin - ago;
+        if (left < 1) left = 1;
+        std::wstring text = L"mnpdf checked GitHub for updates recently and could not reach it.\n"
+                            L"Please try again in " + std::to_wstring(left) + L" minute";
+        if (left != 1) text += L"s";
+        text += L".";
+        MessageBoxW(gWnd, text.c_str(), L"mnpdf updates", MB_OK | MB_ICONWARNING);
+        return;
+    }
+    UpdateResult cached;
+    cached.manual = true;
+    cached.ok = true;
+    cached.tag = gLastUpdateTag;
+    cached.newer = versionIsNewer(cached.tag);
+    showUpdateResult(cached, ago);
+}
+
 static void startUpdateCheck(bool manual) {
     if (manual) gManualUpdateRequested.store(true);
     if (gUpdateCheckRunning.exchange(true)) return;
+    if (updateCheckCooling()) {                       // rate limit ourselves before GitHub does
+        gManualUpdateRequested.store(false);           // this click is answered from cache
+        gUpdateCheckRunning.store(false);
+        if (manual) reportCachedUpdateResult();
+        return;
+    }
     HWND target = gWnd;
     std::thread([target]() {
         UpdateResult* result = new UpdateResult;
@@ -1848,10 +1912,10 @@ static void startUpdateCheck(bool manual) {
         result->newer = result->ok && versionIsNewer(result->tag);
         result->manual = gManualUpdateRequested.exchange(false);
         if (gShuttingDown.load() || !IsWindow(target)
-            || !PostMessageW(target, WM_MNPDF_UPDATE_RESULT, 0, (LPARAM)result))
+            || !PostMessageW(target, WM_MNPDF_UPDATE_RESULT, 0, (LPARAM)result)) {
             delete result;
-        gUpdateCheckRunning.store(false);
-        if (gManualUpdateRequested.exchange(false)) startUpdateCheck(true);
+            gUpdateCheckRunning.store(false);
+        }
     }).detach();
 }
 
@@ -1927,7 +1991,8 @@ static void markSave() {
 }
 
 // app-level prefs in %APPDATA%\mnpdf\app.txt: chrome toggles, the default
-// highlight/pin colours and the custom #rrggbb slots (round-robin pointer too)
+// highlight/pin colours, the custom #rrggbb slots (round-robin pointer too)
+// and the update-check clock that keeps it to one request per interval
 static void writeAppPref() {
     wchar_t dir[MAX_PATH];
     appDirW(dir, MAX_PATH);
@@ -1940,6 +2005,13 @@ static void writeAppPref() {
                 fprintf(fp, "pal%d=%02x%02x%02x\n", c,
                         GetRValue(gPalCustom[c]), GetGValue(gPalCustom[c]), GetBValue(gPalCustom[c]));
         fprintf(fp, "palnext=%d\n", gPalNext);
+        if (gLastUpdateCheck > 0) {
+            int n = WideCharToMultiByte(CP_UTF8, 0, gLastUpdateTag.c_str(), -1, nullptr, 0, nullptr, nullptr);
+            std::vector<char> u8(n > 0 ? n : 1);
+            if (n > 0) WideCharToMultiByte(CP_UTF8, 0, gLastUpdateTag.c_str(), -1, u8.data(), n, nullptr, nullptr);
+            u8[n > 0 ? n - 1 : 0] = 0;
+            fprintf(fp, "updcheck=%lld\nupdtag=%s\n", gLastUpdateCheck, u8.data());
+        }
         fclose(fp);
     }
 }
@@ -1952,11 +2024,19 @@ static void loadAppPref() {
     char line[64];
     while (fgets(line, 64, fp)) {
         int iv;
+        long long llv;
         if (sscanf(line, "titlebar=%d", &iv) == 1) gTitlebar = iv != 0;
         else if (sscanf(line, "autosave=%d", &iv) == 1) gAutosave = iv != 0;
         else if (sscanf(line, "hlcolor=%d", &iv) == 1) gHlDefault = (iv >= 0 && iv < kPalCount) ? iv : 0;
         else if (sscanf(line, "pincolor=%d", &iv) == 1) gPinDefault = (iv >= 0 && iv < kPalCount) ? iv : 0;
         else if (sscanf(line, "palnext=%d", &iv) == 1) gPalNext = (iv >= 0 && iv < kPalCustom) ? iv : 0;
+        else if (sscanf(line, "updcheck=%lld", &llv) == 1) gLastUpdateCheck = llv > 0 ? llv : 0;
+        else if (strncmp(line, "updtag=", 7) == 0) {
+            char* v = line + 7;
+            size_t len = strlen(v);
+            while (len && (v[len - 1] == '\n' || v[len - 1] == '\r')) v[--len] = 0;
+            gLastUpdateTag = utf8ToWide(std::string(v, len));
+        }
         else if (strncmp(line, "pal", 3) == 0 && line[4] == '=') {
             unsigned int r2, g2, b2;
             if (sscanf(line + 5, "%2x%2x%2x", &r2, &g2, &b2) == 3) {
@@ -2910,6 +2990,15 @@ static LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     case WM_MNPDF_UPDATE_RESULT: {
         UpdateResult* result = (UpdateResult*)lp;
         if (result) {
+            gUpdateCheckRunning.store(false);
+            if (!gShuttingDown.load()) {
+                noteUpdateCheck(result->tag);
+                // 170 = "Check for updates". A click that arrived while the check ran is
+                // answered by posting the command rather than recursing from the worker's
+                // tail, so the cooldown decision and its dialog stay on the UI thread.
+                if (gManualUpdateRequested.exchange(false))
+                    PostMessageW(h, WM_COMMAND, MAKEWPARAM(170, 0), 0);
+            }
             delete gPendingUpdateResult;
             gPendingUpdateResult = result;
         }

@@ -209,6 +209,39 @@ else { Write-Output "PASS deleted baked highlight stays deleted" }
   $p3.CloseMainWindow() | Out-Null
 }
 
+# ---- update-check cooldown: one network attempt per hour, persisted ----
+# PowerShell's Get-Date -UFormat %s is offset by the local UTC offset, so the
+# stamp must be built the same way the app does ([[DateTimeOffset]::UtcNow)
+$appPref = Join-Path $env:APPDATA "mnpdf\app.txt"
+function StampPref([int]$SecondsAgo) {
+  $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+  Set-Content -LiteralPath $appPref -Value ("titlebar=1`nautosave=1`nhlcolor=0`npincolor=5`npalnext=0`nupdcheck={0}`nupdtag=v2.0.2`n" -f ($now - $SecondsAgo))
+  return $now
+}
+function ReadStamp() {
+  if (-not (Test-Path $appPref)) { return "" }
+  $m = Select-String -Path $appPref -Pattern '^updcheck=(\d+)' | ForEach-Object { $_.Matches[0].Groups[1].Value }
+  return $m
+}
+# inside the window: the launch must spend no request, so the stamp is untouched
+$now = StampPref 300
+$p4 = Start-Process -FilePath (Join-Path $PSScriptRoot "build\mnpdf.exe") -ArgumentList (Join-Path $PSScriptRoot "build\arc.pdf") -PassThru
+Await { $p4.MainWindowHandle -ne [IntPtr]::Zero -and (Title $p4.MainWindowHandle) -match 'mnpdf \d+/13' } 15000 | Out-Null
+Start-Sleep -Milliseconds 6000          # long enough that a check would have landed if one ran
+if ((ReadStamp) -eq ($now - 300)) { Write-Output "PASS cooldown: launch inside the window spent no request" }
+else { $failures.Add("cooldown-inside"); Write-Output "FAIL cooldown inside window re-stamped the clock: $(ReadStamp), expected $($now - 300)" }
+if (-not $p4.HasExited) { Cmd $p4.MainWindowHandle 112; Await { $p4.HasExited } 8000 | Out-Null }
+if (-not $p4.HasExited) { $p4.Kill() }
+# expired window: the launch must check again and re-stamp close to now
+$now = StampPref 7200
+$p5 = Start-Process -FilePath (Join-Path $PSScriptRoot "build\mnpdf.exe") -ArgumentList (Join-Path $PSScriptRoot "build\arc.pdf") -PassThru
+Await { $p5.MainWindowHandle -ne [IntPtr]::Zero -and (Title $p5.MainWindowHandle) -match 'mnpdf \d+/13' } 15000 | Out-Null
+$fresh = Await { $v = ReadStamp; ($v -match '^\d+$') -and ([int]$v) -gt ($now - 7000) } 25000
+if ($fresh) { Write-Output "PASS cooldown expiry: launch after an hour checked again" }
+else { $failures.Add("cooldown-expired"); Write-Output "FAIL cooldown expiry did not re-check: '$(ReadStamp)' vs $now" }
+if (-not $p5.HasExited) { Cmd $p5.MainWindowHandle 112; Await { $p5.HasExited } 8000 | Out-Null }
+if (-not $p5.HasExited) { $p5.Kill() }
+
 Write-Output ""
 if ($failures.Count) { Write-Output "RESULT: $($failures.Count) FAILURE(S)"; exit 1 }
 Write-Output "RESULT: ALL PASS"
