@@ -42,7 +42,7 @@
 #pragma comment(lib, "msimg32.lib")
 
 // ---- state ----
-static const wchar_t* const kAppVersion = L"2.0.2";
+static const wchar_t* const kAppVersion = L"2.0.3";
 static const wchar_t* const kGitHubRoot = L"https://github.com";
 static const wchar_t* const kRepoPath = L"mnsky-tyan/mnpdf";
 static const std::wstring kLatestReleaseUrl =
