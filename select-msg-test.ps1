@@ -102,7 +102,7 @@ for ($i = 0; $i -lt 20; $i++) {
   Start-Sleep -Milliseconds 100
 }
 Post $h 0x0111 ([IntPtr]130) ([IntPtr]0)                      # Add pin here
-Await { [PM]::FindWindowExW([IntPtr]::Zero, [IntPtr]::Zero, "Edit", [IntPtr]::Zero) -ne [IntPtr]::Zero } 8000 | Out-Null
+Await { [PM]::FindWindowExW([IntPtr]::Zero, [IntPtr]::Zero, "Edit", [IntPtr]::Zero) -ne [IntPtr]::Zero } 30000 | Out-Null
 $pbox = [PM]::FindWindowExW([IntPtr]::Zero, [IntPtr]::Zero, "Edit", [IntPtr]::Zero)
 if ($pbox -ne [IntPtr]::Zero) { Write-Output "PASS pin editor box opened" }
 else { $failures.Add("pin box missing"); Write-Output "FAIL pin box" }
@@ -122,7 +122,7 @@ else { $failures.Add("pin box stayed open"); Write-Output "FAIL pin close" }
 Await {                                                       # debounced autosave flush, polled
   $script:sc2 = Get-ChildItem "$env:APPDATA\mnpdf\doc-*.txt" | Sort-Object LastWriteTime | Select-Object -Last 1
   $script:sc2 -and (Get-Content $script:sc2.FullName -Raw -ErrorAction SilentlyContinue) -match 'pin=\d+,[\d.]+,[\d.]+,c\d+,hi\\nyo'
-} 8000 | Out-Null
+} 30000 | Out-Null
 $sc2 = Get-ChildItem "$env:APPDATA\mnpdf\doc-*.txt" | Sort-Object LastWriteTime | Select-Object -Last 1
 $raw2 = Get-Content $sc2.FullName -Raw
 if ($raw2 -match 'pin=\d+,[\d.]+,[\d.]+,c\d+,hi\\nyo') {
@@ -163,7 +163,7 @@ elseif ($t -match 'recommendation') { Write-Output "PASS drag select + copy: [$(
 else { $failures.Add("drag select: clipboard was '$t'"); Write-Output "FAIL drag select: '$t'" }
 # release kept the selection: highlight it through the same command the right-click menu posts
 Post $h 0x0111 ([IntPtr]135) ([IntPtr]0)                       # Highlight (default color = yellow)
-Await { (HlCount) -gt 0 } 8000 | Out-Null                    # debounced autosave flush, polled
+Await { (HlCount) -gt 0 } 30000 | Out-Null                   # debounced flush, polled (8s was a coin flip under load)
 $sc = Get-ChildItem "$env:APPDATA\mnpdf\doc-*.txt" -ErrorAction SilentlyContinue | Select-Object -First 1
 $hlLine = if ($sc) { (Get-Content $sc.FullName) | Where-Object { $_ -match '^hl=' } | Select-Object -First 1 }
 if ($hlLine) { Write-Output "PASS highlight via menu command persisted: $hlLine" }
@@ -214,7 +214,10 @@ if ($edit -eq [IntPtr]::Zero -or -not [PM]::IsWindowVisible($edit)) {
   } else { $failures.Add("counter label: '$lt0'"); Write-Output "FAIL counter: '$lt0'" }
 
   Post $edit 0x0100 ([IntPtr]0x72) ([IntPtr]0)                  # F3 -> next match
-  Await { (Title $lbl) -match '^2/\d+$' } 15000 | Out-Null       # may walk pages
+  # nextMatch() publishes the counter label first and the window title after it,
+  # so waiting on the label alone reads the intermediate state: the title still
+  # shows the old match number for a moment. Wait on what is actually asserted.
+  Await { (Title $h) -match 'recommendation 2/\d+' } 45000 | Out-Null
   $title2 = Title $h
   if ($title2 -ne $title) { Write-Output "PASS F3 walk: title='$title2'" }
   else { $failures.Add("F3 did not move: '$title2'"); Write-Output "FAIL F3: '$title2'" }
@@ -224,7 +227,7 @@ if ($edit -eq [IntPtr]::Zero -or -not [PM]::IsWindowVisible($edit)) {
   } else { $failures.Add("F3 counter: '$lt1'"); Write-Output "FAIL F3 counter: '$lt1'" }
 
   Post $edit 0x0100 ([IntPtr]0x0D) ([IntPtr]0)                  # Enter -> next match
-  Await { (Title $lbl) -match '^3/\d+$' } 15000 | Out-Null
+  Await { (Title $h) -match 'recommendation 3/\d+' } 45000 | Out-Null   # same label-then-title order
   $lt2 = Title $lbl
   if ($lt2 -match '^(\d+)/(\d+)$' -and [int]$Matches[1] -eq 3) {
     Write-Output "PASS Enter jumps to next match: '$lt2'"
@@ -241,10 +244,10 @@ if ($p.HasExited) { throw "mnpdf exited unexpectedly during the test" }
 
 # --- undo/redo keep the sidecar in sync (autosaved state matches the screen) ---
 Post $h 0x0111 ([IntPtr]114) ([IntPtr]0)                        # undo
-Await { (HlCount) -eq 0 } 8000 | Out-Null                       # debounced flush, polled
+Await { (HlCount) -eq 0 } 30000 | Out-Null                      # debounced flush, polled
 $afterUndo = HlCount
 Post $h 0x0111 ([IntPtr]115) ([IntPtr]0)                        # redo
-Await { (HlCount) -eq 1 } 8000 | Out-Null
+Await { (HlCount) -eq 1 } 30000 | Out-Null
 $afterRedo = HlCount
 if ($afterUndo -eq 0 -and $afterRedo -eq 1) { Write-Output "PASS undo/redo sidecar sync (undo=$afterUndo redo=$afterRedo)" }
 else { $failures.Add("undo/redo sync undo=$afterUndo redo=$afterRedo"); Write-Output "FAIL undo/redo sidecar sync (undo=$afterUndo redo=$afterRedo)" }
@@ -253,7 +256,7 @@ else { $failures.Add("undo/redo sync undo=$afterUndo redo=$afterRedo"); Write-Ou
 Post $h 0x0201 ([IntPtr]1) (Lparam 400 500)
 Start-Sleep -Milliseconds 60
 Post $h 0x0200 ([IntPtr]1) (Lparam 450 790)                     # hold in the bottom edge zone
-Await { (Title $h) -match 'mnpdf ([2-9]|1[0-3])/13' } 8000 | Out-Null   # timer keeps scrolling
+Await { (Title $h) -match 'mnpdf ([2-9]|1[0-3])/13' } 30000 | Out-Null   # timer keeps scrolling
 $t = Title $h
 Post $h 0x0202 ([IntPtr]0) (Lparam 450 790)
 Start-Sleep -Milliseconds 300
@@ -262,10 +265,10 @@ else { $failures.Add("edge scroll: '$t'"); Write-Output "FAIL drag edge auto-scr
 
 # --- autosave toggle: menu item flips the app pref ---
 Post $h 0x0111 ([IntPtr]109) ([IntPtr]0)                        # toggle off
-Await { (Get-Content "$env:APPDATA\mnpdf\app.txt" -Raw -ErrorAction SilentlyContinue) -match 'autosave=0' } 8000 | Out-Null
+Await { (Get-Content "$env:APPDATA\mnpdf\app.txt" -Raw -ErrorAction SilentlyContinue) -match 'autosave=0' } 30000 | Out-Null
 $app1 = Get-Content "$env:APPDATA\mnpdf\app.txt" -Raw
 Post $h 0x0111 ([IntPtr]109) ([IntPtr]0)                        # toggle back on
-Await { (Get-Content "$env:APPDATA\mnpdf\app.txt" -Raw -ErrorAction SilentlyContinue) -match 'autosave=1' } 8000 | Out-Null
+Await { (Get-Content "$env:APPDATA\mnpdf\app.txt" -Raw -ErrorAction SilentlyContinue) -match 'autosave=1' } 30000 | Out-Null
 $app2 = Get-Content "$env:APPDATA\mnpdf\app.txt" -Raw
 if ($app1 -match 'autosave=0' -and $app2 -match 'autosave=1') { Write-Output "PASS autosave toggle persists" }
 else { $failures.Add("autosave toggle: '$app1' / '$app2'"); Write-Output "FAIL autosave toggle ('$app1' / '$app2')" }
@@ -278,7 +281,7 @@ Start-Sleep -Milliseconds 200
 Post $h 0x0203 ([IntPtr]1) (Lparam 600 210)                     # double-click selects a word
 Start-Sleep -Milliseconds 300
 Post $h 0x0111 ([IntPtr]135) ([IntPtr]0)                        # Highlight (default color)
-Await { (HlCount) -gt $hlBefore } 8000 | Out-Null               # debounced flush, polled
+Await { (HlCount) -gt $hlBefore } 30000 | Out-Null               # debounced flush, polled
 $hlAfter = HlCount
 if ($hlAfter -gt $hlBefore) { Write-Output "PASS autosave still flushes after off->on cycle ($hlBefore -> $hlAfter hl lines)" }
 else { $failures.Add("autosave re-arm: $hlBefore -> $hlAfter"); Write-Output "FAIL autosave still flushes after off->on cycle ($hlBefore -> $hlAfter)" }

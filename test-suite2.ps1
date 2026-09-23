@@ -46,7 +46,11 @@ function SidecarFor([string]$pdfPath) {
   }
   $hh = ($hh * [System.Numerics.BigInteger]1099511628211) % $M   # trailing NUL,
   $hh = ($hh * [System.Numerics.BigInteger]1099511628211) % $M   # hashed as a full wchar_t
-  return Join-Path $env:APPDATA ("mnpdf\doc-" + $hh.ToString("x16") + ".txt")
+  # the app prints the hash with %016llx, i.e. always 16 hex digits, unsigned. On .NET
+  # Framework BigInteger.ToString("x") emits a spurious extra leading 0 whenever bit 63 is
+  # set (~half of all 64-bit hashes) and PadLeft never truncates, so strip that sign digit
+  # and re-pad: TrimStart("0").PadLeft(16,"0") reproduces the app's exact 16-digit name.
+  return Join-Path $env:APPDATA ("mnpdf\doc-" + $hh.ToString("x").TrimStart("0").PadLeft(16, "0") + ".txt")
 }
 
 $env:MNPDF_VERBOSE = "1"   # verbose titles for title-based assertions
@@ -189,7 +193,7 @@ if (Test-Path $scq2) { $dlBefore = ([regex]::Matches((Get-Content $scq2 -Raw), '
 # command can be delivered - a command posted while the menu is modal is swallowed
 MenuHasHl $p2.MainWindowHandle 500 300 | Out-Null     # open the menu over the mark, Esc closes it
 Cmd $p2.MainWindowHandle 117                           # delete the baked highlight
-Await { (Test-Path $scq2) -and (([regex]::Matches('' + (Get-Content $scq2 -Raw -ErrorAction SilentlyContinue), 'dl=h,')).Count) -gt $dlBefore } 10000 | Out-Null
+Await { (Test-Path $scq2) -and (([regex]::Matches('' + (Get-Content $scq2 -Raw -ErrorAction SilentlyContinue), 'dl=h,')).Count) -gt $dlBefore } 30000 | Out-Null
 $sd = if (Test-Path $scq2) { Get-Content $scq2 -Raw } else { '' }
 $dlAfter = ([regex]::Matches($sd, 'dl=h,')).Count
 if ($dlAfter -eq $dlBefore + 1) { Write-Output "PASS baked highlight deleted after reopen" }
