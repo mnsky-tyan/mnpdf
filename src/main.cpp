@@ -2225,11 +2225,14 @@ static bool openPath(const std::wstring& path) {
             FPDF_ANNOTATION a = p ? FPDFPage_GetAnnot(p, k) : nullptr;
             if (!a) continue;
             int ty = FPDFAnnot_GetSubtype(a);
-            if (ty != FPDF_ANNOT_HIGHLIGHT && ty != FPDF_ANNOT_TEXT) continue;
+            if (ty != FPDF_ANNOT_HIGHLIGHT && ty != FPDF_ANNOT_TEXT) { FPDFPage_CloseAnnot(a); continue; }
             wchar_t src[64] = L"";
             bool ours = FPDFAnnot_GetStringValue(a, "Source", (FPDF_WCHAR*)src, sizeof(src)) > 2
                         && wcsncmp(src, L"mnpdf", 5) == 0;
-            if (!ours) continue;                       // foreign note: untouched
+            // every annot must be closed exactly once, on every path: a document
+            // carrying foreign annotations (other readers' notes, form widgets)
+            // leaks one CPDF_Annot per annot per open otherwise
+            if (!ours) { FPDFPage_CloseAnnot(a); continue; }   // foreign note: untouched
             bool lifted = false;
             if (ty == FPDF_ANNOT_HIGHLIGHT && tp) {
                 unsigned R = 255, G = 230, B = 128;   // yellow, the palette's first entry
