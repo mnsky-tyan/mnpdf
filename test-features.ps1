@@ -1,3 +1,4 @@
+. "$PSScriptRoot\tests\lib.ps1"   # one definition of the window-resolution rule
 Add-Type -TypeDefinition @"
 using System;
 using System.Text;
@@ -5,7 +6,6 @@ using System.Runtime.InteropServices;
 public static class F {
   [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr c);
   [DllImport("user32.dll")] public static extern bool PostMessageW(IntPtr h, uint m, IntPtr w, IntPtr l);
-  [DllImport("user32.dll")] public static extern IntPtr FindWindowExW(IntPtr parent, IntPtr after, [MarshalAs(UnmanagedType.LPWStr)] string cls, IntPtr title);
   [DllImport("user32.dll")] public static extern int GetWindowTextW(IntPtr h, [MarshalAs(UnmanagedType.LPWStr)] StringBuilder s, int n);
   [DllImport("user32.dll")] public static extern bool MoveWindow(IntPtr h, int x, int y, int w, int h2, bool r);
 }
@@ -25,26 +25,17 @@ $", '')
 
 function Title([IntPtr]$h) { $sb = New-Object System.Text.StringBuilder 256; [void][F]::GetWindowTextW($h, $sb, 256); $sb.ToString() }
 
-# wait until a condition holds (polled) instead of sleeping a guessed length:
-# a loaded machine makes every fixed sleep a coin flip
-function Await([scriptblock]$Cond, [int]$TimeoutMs = 10000, [int]$StepMs = 100) {
-  $elapsed = 0
-  while ($elapsed -lt $TimeoutMs) {
-    if (& $Cond) { return $true }
-    Start-Sleep -Milliseconds $StepMs
-    $elapsed += $StepMs
-  }
-  return $false
-}
-
 $env:MNPDF_VERBOSE = "1"   # verbose titles for title-based assertions
-Remove-Item "$env:APPDATA\mnpdf\*" -Recurse -Force -ErrorAction SilentlyContinue   # fresh state
+# a run that must not disturb a running instance finds out FIRST: deciding after the
+# wipe would delete every per-document sidecar (page, zoom, fit and each hl= / dl= /
+# pin= / rot= line) and then exit - the state is already gone by then
 $existing = Get-Process mnpdf -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne [IntPtr]::Zero }
 if ($existing) { Write-Output "SKIP: an mnpdf instance is already running (state unknown)"; exit 0 }
-$p = Start-Process -FilePath (Join-Path $PSScriptRoot "build\mnpdf.exe") -ArgumentList (Join-Path $PSScriptRoot "build\arc.pdf") -PassThru
-Start-Sleep -Milliseconds 1500
-$p.Refresh()
-$h = $p.MainWindowHandle
+Remove-Item "$env:APPDATA\mnpdf\*" -Recurse -Force -ErrorAction SilentlyContinue   # fresh state
+# the fixture lives in tests\ because build\ is all output; work on a fresh copy
+Copy-Item (Join-Path $PSScriptRoot "tests\arc.pdf") (Join-Path $PSScriptRoot "build\arc.pdf") -Force
+$p = Launch (Join-Path $PSScriptRoot "build\mnpdf.exe") (Join-Path $PSScriptRoot "build\arc.pdf")
+$h = FindAppWindow $p.Id
 [void][F]::MoveWindow($h, 60, 60, 1100, 800, $true)
 Start-Sleep -Milliseconds 500
 
@@ -113,17 +104,15 @@ Await { $p.Refresh(); $p.HasExited } 8000 | Out-Null
 $p.Refresh()
 if ($p.HasExited) { Write-Output "PASS quit menu exited the app" }
 else { $failures.Add("quit"); Write-Output "FAIL quit: still running" }
-Start-Process -FilePath (Join-Path $PSScriptRoot "build\mnpdf.exe")    # NO arguments
-$p2 = $null
-Await {                                                    # the relaunch paints its title once ready
-  $procs = @(Get-Process mnpdf -ErrorAction SilentlyContinue)
-  $script:p2 = $procs | Where-Object { $_.MainWindowHandle -ne [IntPtr]::Zero } | Select-Object -First 1
-  $script:p2 -and (Title $script:p2.MainWindowHandle) -match 'mnpdf \d+/13'
-} 15000 | Out-Null
-$procs = @(Get-Process mnpdf -ErrorAction SilentlyContinue)
-$p2 = $procs | Where-Object { $_.MainWindowHandle -ne [IntPtr]::Zero } | Select-Object -First 1
-if (-not $p2) { $failures.Add("reopen"); Write-Output "FAIL reopen: no instance"; exit 1 }
-$t = Title $p2.MainWindowHandle
+# NO arguments (the shared Launch starts it argument-less for an empty Doc), so
+# the app reopens whatever last.txt points at - which is what this asserts.
+$p2 = Launch (Join-Path $PSScriptRoot "build\mnpdf.exe") ''
+$h2 = FindAppWindow $p2.Id
+# wait for the page the sidecar promised, not just for any title: the zoom and
+# fit restore land before the scroll-to-saved-page does, so a bare 'mnpdf N/13'
+# can be an intermediate frame (the old fixed sleep just happened to outlast it)
+[void](Await { (Title $h2) -match "mnpdf $savedPage/13" } 15000)
+$t = Title $h2
 if ($t -match "mnpdf $savedPage/13") { Write-Output "PASS reopen last doc at page $savedPage ('$t')" }
 else { $failures.Add("reopen page"); Write-Output "FAIL reopen: expected page $savedPage, got '$t'" }
 
