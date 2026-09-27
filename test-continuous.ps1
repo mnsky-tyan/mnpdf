@@ -1,5 +1,11 @@
 param([string]$Pdf)
-if (-not $Pdf) { $Pdf = Join-Path $PSScriptRoot "build\arc.pdf" }
+# the fixture lives in tests\ because build\ is all output and can be deleted
+# wholesale; every run works on a fresh copy so a mutating run cannot poison
+# the next one. Copied after the SKIP guard below, so a skipped run leaves
+# the checkout untouched.
+$useDefaultPdf = -not $Pdf
+if ($useDefaultPdf) { $Pdf = Join-Path $PSScriptRoot "build\arc.pdf" }
+. "$PSScriptRoot\tests\lib.ps1"   # one definition of the window-resolution rule
 Add-Type -TypeDefinition @"
 using System;
 using System.Text;
@@ -16,16 +22,15 @@ public static class C {
 # requires a fresh launch: fit-mode/zoom assumptions only hold on a clean state
 $procs = @(Get-Process mnpdf -ErrorAction SilentlyContinue)
 if ($procs) { Write-Output "SKIP: an mnpdf instance is already running (state unknown)"; exit 0 }
+if ($useDefaultPdf) { Copy-Item (Join-Path $PSScriptRoot "tests\arc.pdf") $Pdf -Force }
 if (-not $procs) {
   $env:MNPDF_VERBOSE = "1"   # verbose titles for title-based assertions
 Remove-Item "$env:APPDATA\mnpdf\*" -Recurse -Force -ErrorAction SilentlyContinue   # fresh state
-  Start-Process -FilePath (Join-Path $PSScriptRoot "build\mnpdf.exe") -ArgumentList $Pdf
-  Start-Sleep -Milliseconds 1500
-  $procs = @(Get-Process mnpdf -ErrorAction Stop)
+  $proc = Launch (Join-Path $PSScriptRoot "build\mnpdf.exe") $Pdf
 }
-$p = $procs | Where-Object { $_.MainWindowHandle -ne [IntPtr]::Zero } | Select-Object -First 1
-if (-not $p) { throw "no mnpdf instance with a window" }
-$h = $p.MainWindowHandle
+$p = Get-Process -Id $proc.Id -ErrorAction Stop
+$h = FindAppWindow $p.Id
+Start-Sleep -Milliseconds 500
 
 function Title {
   $sb = New-Object System.Text.StringBuilder 256
@@ -35,18 +40,6 @@ function Title {
 
 $t0 = Title
 Write-Output "start: '$t0'"
-
-# wait until a condition holds (polled) instead of sleeping a guessed length:
-# a loaded machine makes every fixed sleep a coin flip
-function Await([scriptblock]$Cond, [int]$TimeoutMs = 10000, [int]$StepMs = 100) {
-  $elapsed = 0
-  while ($elapsed -lt $TimeoutMs) {
-    if (& $Cond) { return $true }
-    Start-Sleep -Milliseconds $StepMs
-    $elapsed += $StepMs
-  }
-  return $false
-}
 
 # 1. resize wider -> fit-width must refit (zoom % changes)
 $zoom0 = if ($t0 -match '(\d+)%') { [int]$Matches[1] } else { 0 }

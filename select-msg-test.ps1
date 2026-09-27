@@ -4,7 +4,13 @@
 # select, triple-click line select and the search bar, and reads the window
 # title and clipboard as the observables.
 param([string]$Pdf)
-if (-not $Pdf) { $Pdf = Join-Path $PSScriptRoot "build\arc.pdf" }
+# the fixture lives in tests\ because build\ is all output and can be deleted
+# wholesale; every run works on a fresh copy so a mutating run cannot poison
+# the next one (no more git-checkout restore ritual). Copied after the SKIP
+# guard below, so a skipped run leaves the checkout untouched.
+$useDefaultPdf = -not $Pdf
+if ($useDefaultPdf) { $Pdf = Join-Path $PSScriptRoot "build\arc.pdf" }
+. "$PSScriptRoot\tests\lib.ps1"   # one definition of the window-resolution rule
 Add-Type -TypeDefinition @"
 using System;
 using System.Text;
@@ -15,10 +21,6 @@ public static class PM {
   [DllImport("user32.dll")] public static extern IntPtr FindWindowExW(IntPtr parent, IntPtr after, [MarshalAs(UnmanagedType.LPWStr)] string cls, IntPtr title);
   [DllImport("user32.dll")] public static extern int GetWindowTextW(IntPtr h, [MarshalAs(UnmanagedType.LPWStr)] StringBuilder s, int n);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr FindWindowW(string cls, IntPtr title);
-  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
-  [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
-  [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint a, uint b, bool attach);
-  [DllImport("user32.dll")] public static extern bool SetKeyboardState(byte[] state);
   [DllImport("user32.dll")] public static extern bool MoveWindow(IntPtr h, int x, int y, int w, int h2, bool r);
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
 }
@@ -39,17 +41,6 @@ $", '')
 
 function Post([IntPtr]$h, [uint32]$m, [IntPtr]$w, [IntPtr]$l) { [void][PM]::PostMessageW($h, $m, $w, $l) }
 
-# wait until a condition holds (polled) instead of sleeping a guessed length:
-# a loaded machine makes every fixed sleep a coin flip
-function Await([scriptblock]$Cond, [int]$TimeoutMs = 10000, [int]$StepMs = 100) {
-  $elapsed = 0
-  while ($elapsed -lt $TimeoutMs) {
-    if (& $Cond) { return $true }
-    Start-Sleep -Milliseconds $StepMs
-    $elapsed += $StepMs
-  }
-  return $false
-}
 # hl= entries currently on disk for the open doc (sidecar is rewritten whole)
 function HlCount { $sc2 = Get-ChildItem "$env:APPDATA\mnpdf\doc-*.txt" -ErrorAction SilentlyContinue | Select-Object -First 1
   if (-not $sc2) { return 0 }
@@ -78,13 +69,14 @@ function OpenSearch([IntPtr]$h) {
 # requires a fresh instance we own: the assertions assume a clean state
 $existing = Get-Process mnpdf -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne [IntPtr]::Zero }
 if ($existing) { Write-Output "SKIP: an mnpdf instance is already running (state unknown)"; exit 0 }
+if ($useDefaultPdf) { Copy-Item (Join-Path $PSScriptRoot "tests\arc.pdf") $Pdf -Force }
 $env:MNPDF_VERBOSE = "1"   # verbose titles for title-based assertions
 Remove-Item "$env:APPDATA\mnpdf\*" -Recurse -Force -ErrorAction SilentlyContinue   # fresh state
-$p = Start-Process -FilePath (Join-Path $PSScriptRoot "build\mnpdf.exe") -ArgumentList $Pdf -PassThru
-Start-Sleep -Milliseconds 1500
-$p.Refresh()
-$h = $p.MainWindowHandle
-if ($h -eq [IntPtr]::Zero) { throw "no MainWindowHandle" }
+# shared Launch (tests/lib.ps1) resolves the real window and restores it without
+# activating: these tests post clicks at client coords, so they need a visible
+# window, and the captain's own window must never come to the front
+$p = Launch (Join-Path $PSScriptRoot "build\mnpdf.exe") $Pdf
+$h = FindAppWindow $p.Id
 [void][PM]::MoveWindow($h, 60, 60, 1100, 800, $true)
 Start-Sleep -Milliseconds 400
 

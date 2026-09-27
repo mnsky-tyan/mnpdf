@@ -60,6 +60,9 @@ static FPDF_DOCUMENT gDoc = nullptr;
 static FPDF_PAGE gPage = nullptr;
 static FPDF_TEXTPAGE gTextPage = nullptr;
 static int gPageIndex = 0;
+// true from a sidecar page restore until the user actually scrolls: a restored page is
+// deliberate state, so the viewport-center rule must not second-guess it (see ensureActivePage)
+static bool gRestoredPage = false;
 static int gPageCount = 0;
 static double gPageWpt = 612, gPageHpt = 792;   // current page, points
 static double gZoom = 1.0;                       // device px per point
@@ -196,6 +199,8 @@ static void pushOp(const Op& op) {
 }
 
 static void relayoutPages();
+static void clampScroll();
+static void ensureActivePage();
 static void renderPage();
 static bool doSaveAs();
 
@@ -253,6 +258,8 @@ static void undoOp() {
         if (gRot && op.rotPage >= 0 && op.rotPage < gDocPages) {
             gRot[op.rotPage] = op.rotFrom;
             relayoutPages();
+            clampScroll();
+            ensureActivePage();
         }
         break;
     case 7:                                       // pinrecolor: the pin still wears the op's colour
@@ -293,6 +300,8 @@ static void redoOp() {
         if (gRot && op.rotPage >= 0 && op.rotPage < gDocPages) {
             gRot[op.rotPage] = op.rotTo;
             relayoutPages();
+            clampScroll();
+            ensureActivePage();
         }
         break;
     case 7:                                       // pinrecolor: the pin undo repainted, else that colour
@@ -372,6 +381,9 @@ static int docHpx() { return gPrefixPt ? (int)(gPrefixPt[gDocPages] * gZoom) + g
 // rotate, delete); keeps the current top of the viewport anchored
 static void relayoutPages() {
     if (!gPrefixPt || !gDocPages) return;
+    // every yTopPx() shifts, so the scroll a sidecar restore derived from page
+    // sizes is stale: the active page has to be re-derived from the viewport again
+    gRestoredPage = false;
     double acc = 0;
     gMaxPageW = 0;
     for (int i = 0; i < gDocPages; i++) {
@@ -1399,6 +1411,7 @@ static void rotatePage(int page, int dir) {              // dir: +1 CW, -1 CCW
     op.rotTo = gRot[page];
     relayoutPages();
     clampScroll();
+    ensureActivePage();          // every yTopPx moved: re-derive the active page
     pushOp(op);
     renderPage();
 }
@@ -1570,7 +1583,7 @@ static bool loadPage(int index) {
 }
 
 static void ensureActivePage() {
-    if (!gDoc) return;
+    if (!gDoc || gRestoredPage) return;   // a restored page owns gPageIndex until the user scrolls
     int cy = gScrollY + gClientH / 2;
     for (int i = 0; i < gDocPages; i++) {
         if (cy < yTopPx(i) + pageHpx(i)) {
@@ -1611,6 +1624,7 @@ static void rebuildSurface() {
 }
 
 static void renderPage() {
+    updateTitle();   // first: the title must survive the early returns below
     if (!gPdfBitmap || !gDoc) return;
     FPDFBitmap_FillRect(gPdfBitmap, 0, 0, gClientW, gClientH, 0xFF202020);   // letterbox
     int top = gScrollY, bottom = gScrollY + gClientH;
@@ -1644,14 +1658,19 @@ static void renderPage() {
     drawMatches();
     drawSelection();
     if (gEditPin >= 0 && gPinBox) sizePinBoxToText();   // a refit must not strand the editor
-    updateTitle();
     InvalidateRect(gWnd, nullptr, FALSE);
 }
 
 // zoom mode: fit-width refits on every resize until a manual zoom turns it off
 static void applyFitWidth() {
     int cw = clientW() - 2 * MARGIN;
-    if (cw > 0 && gMaxPageW > 0) gZoom = clampZoom(cw / gMaxPageW);
+    if (cw <= 0 || gMaxPageW <= 0) return;
+    double nz = clampZoom(cw / gMaxPageW);
+    if (nz == gZoom) return;                     // same fit, so no page moved
+    gZoom = nz;
+    // a refit rescales every page, so a scroll anchored to page offsets is now
+    // stale: put the restored page back under the viewport top
+    if (gRestoredPage) gScrollY = yTopPx(gPageIndex) - MARGIN;
 }
 
 static void fitWidth() {
@@ -1667,6 +1686,7 @@ static void fitWidth() {
 static void zoomAt(double factor, int cx, int cy) {
     double nz = clampZoom(gZoom * factor);
     if (nz == gZoom) return;
+    gRestoredPage = false;      // a manual zoom is a new view, not a restored one
     gFitWidth = false;
     double oldH = docHpx(), oldW = docWpx() + 2 * MARGIN;
     gZoom = nz;
@@ -1682,7 +1702,7 @@ static bool gVerboseTitle = false;               // debug harnesses: page/zoom/R
 
 static void updateTitle() {
     wchar_t t[256];
-    if (gVerboseTitle) {
+    if (gVerboseTitle && gDoc) {
         PROCESS_MEMORY_COUNTERS_EX pmc = { sizeof(pmc) };
         double mb = 0;
         if (GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pmc, sizeof(pmc)))
@@ -2156,6 +2176,7 @@ static void restoreSidecar(const std::wstring& path) {
     if (page >= 1 && page <= gDocPages) {
         loadPage(page - 1);
         gScrollY = yTopPx(page - 1) - MARGIN;      // page top at the viewport top
+        gRestoredPage = true;                      // wins over the center rule until a scroll
     }
 }
 
@@ -2281,6 +2302,7 @@ static bool openPath(const std::wstring& path) {
     relayoutPages();
     gPageWpt = 612; gPageHpt = 792;
     gScrollX = gScrollY = 0;
+    gRestoredPage = false;   // a fresh open starts from page 1, not from the previous document's restore
     gFitWidth = true;
     applyFitWidth();
     loadPage(0);
@@ -2624,6 +2646,7 @@ static LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         }
         placeSearchBar();
         hidePinTip(h);                            // the refit moved the tip's anchor
+        updateTitle();                           // every size message, SIZE_MINIMIZED included
         return 0;
     case WM_MOVE:                                 // both note boxes are owned popups:
         if (gEditPin >= 0 && gPinBox) sizePinBoxToText();   // they do not follow the window
@@ -2773,6 +2796,7 @@ static LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
             zoomAt(delta > 0 ? 1.1 : 1 / 1.1, pt.x, pt.y);
         } else {
             gScrollY -= (int)(delta / 120.0 * 3 * 40.0);   // pure scroll; pages are stacked
+            gRestoredPage = false;                 // from here the center rule applies again
             clampScroll();
             ensureActivePage();
             markSave();
@@ -2784,10 +2808,10 @@ static LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         int page = clientH() * 9 / 10;
         bool ctrl = GetKeyState(VK_CONTROL) & 0x8000;
         bool scrolled = false;
-        if (wp == VK_NEXT || wp == ' ') { gScrollY += page; clampScroll(); ensureActivePage(); scrolled = true; }
-        else if (wp == VK_PRIOR) { gScrollY -= page; clampScroll(); ensureActivePage(); scrolled = true; }
-        else if (wp == VK_DOWN)  { gScrollY += 60; clampScroll(); ensureActivePage(); scrolled = true; }
-        else if (wp == VK_UP)    { gScrollY -= 60; clampScroll(); ensureActivePage(); scrolled = true; }
+        if (wp == VK_NEXT || wp == ' ') { gScrollY += page; gRestoredPage = false; clampScroll(); ensureActivePage(); scrolled = true; }
+        else if (wp == VK_PRIOR) { gScrollY -= page; gRestoredPage = false; clampScroll(); ensureActivePage(); scrolled = true; }
+        else if (wp == VK_DOWN)  { gScrollY += 60; gRestoredPage = false; clampScroll(); ensureActivePage(); scrolled = true; }
+        else if (wp == VK_UP)    { gScrollY -= 60; gRestoredPage = false; clampScroll(); ensureActivePage(); scrolled = true; }
         else if (wp == VK_LEFT)  { gScrollX -= 60; clampScroll(); scrolled = true; }
         else if (wp == VK_RIGHT) { gScrollX += 60; clampScroll(); scrolled = true; }
         else if (wp == '0' && ctrl) fitWidth();
@@ -3032,6 +3056,7 @@ static LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
             if (ph < 64) ph = gClientH > 64 ? gClientH : 64;
             double step = ph * 0.017 * frac;            // ~1.8 s per page at the window edge
             gScrollY += gEdgeScroll * (int)step;
+            gRestoredPage = false;
             clampScroll();
             ensureActivePage();
             markSave();
@@ -3101,12 +3126,20 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int show) {
     SetDllDirectoryW(exeDir.c_str());
 
     loadAppPref();                                 // titlebar preference
-    gWnd = CreateWindowExW(0, L"mnpdf", L"mnpdf",
-                           WS_CLIPCHILDREN | WS_OVERLAPPEDWINDOW | WS_VISIBLE & (gTitlebar ? ~0u : ~WS_CAPTION),
+    // both read before the window exists: WM_CREATE and the first WM_SIZE
+    // (WS_VISIBLE is in the style) both run inside CreateWindowExW, so a title
+    // computed during them must already see these two
+    const bool background = _wgetenv(L"MNPDF_BACKGROUND") != nullptr;
+    gVerboseTitle = _wgetenv(L"MNPDF_VERBOSE") != nullptr;   // debug harness opt-in
+    // MNPDF_BACKGROUND=1: gate/test runs must not steal focus. Mask WS_VISIBLE
+    // out of the create style so the first appearance is already minimized
+    // and inactive - a later ShowWindow cannot undo an initial flash.
+    DWORD winStyle = WS_CLIPCHILDREN | WS_OVERLAPPEDWINDOW | WS_VISIBLE & (gTitlebar ? ~0u : ~WS_CAPTION);
+    if (background) winStyle &= ~(DWORD)WS_VISIBLE;
+    gWnd = CreateWindowExW(0, L"mnpdf", L"mnpdf", winStyle,
                            CW_USEDEFAULT, CW_USEDEFAULT, 1100, 800,
                            nullptr, nullptr, hInst, nullptr);
 
-    gVerboseTitle = _wgetenv(L"MNPDF_VERBOSE") != nullptr;   // debug harness opt-in
     int argc = 0;
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     bool opened = false;
@@ -3133,7 +3166,11 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int show) {
     if (argv) LocalFree(argv);
     if (!opened) openDialog();
 
-    ShowWindow(gWnd, show);
+    // The title needs no WinMain-side call: WM_SIZE drives updateTitle on every
+    // size message, SIZE_MINIMIZED included, and renderPage calls it first.
+    // The window still exists: MainWindowHandle resolves, posted messages land,
+    // and title reads work - it is only ever minimized and inactive.
+    ShowWindow(gWnd, background ? SW_SHOWMINNOACTIVE : show);
     startUpdateCheck(false);                         // notify only when a newer release exists
     MSG msg;
     for (;;) {
