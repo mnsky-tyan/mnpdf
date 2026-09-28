@@ -26,6 +26,10 @@ $", '')
 function Title([IntPtr]$h) { $sb = New-Object System.Text.StringBuilder 256; [void][F]::GetWindowTextW($h, $sb, 256); $sb.ToString() }
 
 $env:MNPDF_VERBOSE = "1"   # verbose titles for title-based assertions
+# The real print dialog is modal and a posted-message harness cannot click it,
+# so this suite drives the raster path the print dialog feeds and never opens
+# one. The app reads this at print time, so it must be set before it launches.
+$env:MNPDF_PRINT_PROBE = Join-Path $env:TEMP "mnpdf-print-probe.txt"
 # a run that must not disturb a running instance finds out FIRST: deciding after the
 # wipe would delete every per-document sidecar (page, zoom, fit and each hl= / dl= /
 # pin= / rot= line) and then exit - the state is already gone by then
@@ -115,6 +119,69 @@ $h2 = FindAppWindow $p2.Id
 $t = Title $h2
 if ($t -match "mnpdf $savedPage/13") { Write-Output "PASS reopen last doc at page $savedPage ('$t')" }
 else { $failures.Add("reopen page"); Write-Output "FAIL reopen: expected page $savedPage, got '$t'" }
+
+# --- T5: print renders clean (no annotations) and never moves the view ---
+# The real print dialog is modal, and a posted-message harness cannot click it,
+# so the probe renders the raster path for real and skips the dialog. It writes
+# the clean checksum, the same page's annotated checksum, the ink count and the
+# page's own annotation count, which is what separates "a page rendered" from
+# "the print path dropped the annotations".
+$probe = Join-Path $env:TEMP "mnpdf-print-probe.txt"
+Remove-Item $probe -ErrorAction SilentlyContinue
+$tBefore = Title $h2
+[F]::PostMessageW($h2, 0x0111, [IntPtr]137, [IntPtr]0) | Out-Null          # WM_COMMAND: Print
+# wait for the CONTENT, never just the file's existence: a poll that lands
+# mid-write reads a 0-byte file, PowerShell casts $null to 0, and the run fails
+# for a reason that has nothing to do with the code
+[void](Await { (Get-Content $probe -Raw -ErrorAction SilentlyContinue) -match '^pages=\d+' } 15000)
+function Probe([string]$Path) {
+  $txt = Get-Content $Path -Raw
+  $kv = @{}
+  # split into key=value tokens: a regex like '.*annots=(\d+)' also matches inside
+  # 'inkannots=', so fields are parsed by name, never by substring
+  foreach ($tok in ($txt -split '\s+')) {
+    if ($tok -match '^([A-Za-z]+)=(.*)$') { $kv[$Matches[1]] = $Matches[2] }
+  }
+  @{ pages = [int]$kv['pages']; w = [int]$kv['w']; h = [int]$kv['h']; ink = [long]$kv['ink'];
+     annots = [int]$kv['annots']; inkannots = [int]$kv['inkannots'];
+     clean = [string]$kv['clean']; annot = [string]$kv['annot'] }
+}
+function CheckPrintProbe([string]$Doc, [int]$Pages) {
+  if (-not (Test-Path $probe)) { $failures.Add("print probe $Doc"); Write-Output "FAIL print - no probe output from $Doc"; return }
+  $pr = Probe $probe
+  if ($pr.pages -ne $Pages -or $pr.w -le 0 -or $pr.h -le 0) {
+    $failures.Add("print raster $Doc"); Write-Output "FAIL print raster on $Doc - pages=$($pr.pages) w=$($pr.w) h=$($pr.h)"
+  } elseif ($pr.ink -le 0) {
+    $failures.Add("print ink $Doc"); Write-Output "FAIL print - clean page had no ink on $Doc"
+  } elseif ($pr.inkannots -gt 0 -and $pr.clean -eq $pr.annot) {
+    $failures.Add("print clean $Doc")
+    Write-Output "FAIL print clean on $Doc - page has $($pr.inkannots) ink-drawing annotations but clean=$($pr.clean) equals annot=$($pr.annot) - the print path did NOT drop them"
+  } elseif ($pr.inkannots -eq 0 -and $pr.clean -ne $pr.annot) {
+    $failures.Add("print clean $Doc")
+    Write-Output "FAIL print clean on $Doc - no ink annotations yet clean<>annot"
+  } else {
+    Write-Output "PASS print renders clean ($($pr.pages) pages, $($pr.w)x$($pr.h), $($pr.annots) annots/$($pr.inkannots) with ink, ink=$($pr.ink))"
+  }
+}
+CheckPrintProbe 'arc.pdf' 13
+$t = Title $h2
+if ($t -eq $tBefore) { Write-Output "PASS print left the view untouched on arc.pdf" }
+else { $failures.Add("print view"); Write-Output "FAIL print moved the view on arc.pdf - '$tBefore' -> '$t'" }
+# the same contract on a page that really carries visible annotation ink: the
+# shipped fixture arc.pdf has only Link annotations, which pdfium paints no ink
+# for, so clean==annot there is correct and asserts nothing
+$pa = Launch (Join-Path $PSScriptRoot "build\mnpdf.exe") (Join-Path $PSScriptRoot "tests\arc-annot.pdf")
+$ha = FindAppWindow $pa.Id
+[void](Await { (Title $ha) -match 'mnpdf 1/1' } 15000)
+$taBefore = Title $ha
+Remove-Item $probe -ErrorAction SilentlyContinue
+[F]::PostMessageW($ha, 0x0111, [IntPtr]137, [IntPtr]0) | Out-Null
+[void](Await { (Get-Content $probe -Raw -ErrorAction SilentlyContinue) -match '^pages=\d+' } 15000)
+CheckPrintProbe 'arc-annot.pdf' 1
+$ta = Title $ha
+if ($ta -eq $taBefore) { Write-Output "PASS print left the view untouched on arc-annot.pdf" }
+else { $failures.Add("print view"); Write-Output "FAIL print moved the view on arc-annot.pdf - '$taBefore' -> '$ta'" }
+$pa | Stop-Process -Force
 
 Write-Output ""
 if ($failures.Count) { Write-Output "RESULT: $($failures.Count) FAILURE(S)"; exit 1 }

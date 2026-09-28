@@ -3,18 +3,21 @@
 // per-page match highlights, page-walking match navigation.
 // RAM discipline: the only bitmap ever allocated is screen-sized. Pages are
 // never rasterized whole; the engine draws the page into the viewport DIB
-// at an offset, so memory is independent of zoom and page count.
+// at an offset, so memory is independent of zoom and page count. The single
+// exception is the print path, which allocates one page-sized raster per
+// printed page under kPrintPixelBudget, and nothing else does.
 #pragma comment(lib, "gdiplus.lib")
 #pragma comment(lib, "winhttp.lib")
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+#include <unknwn.h>          // MIDL_INTERFACE for GDI+; also defines STDMETHOD, which
+                           // commdlg.h needs or it silently skips PRINTDLGEXW
 #include <commdlg.h>
 #include <shellapi.h>
 #include <windowsx.h>
 #include <psapi.h>
-#include <unknwn.h>          // MIDL_INTERFACE for the GDI+ headers
 #include <gdiplus.h>
 #include <winhttp.h>
 #include <atomic>
@@ -26,6 +29,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cwchar>
+#include <cmath>
 
 #include "fpdfview.h"
 #include "fpdf_text.h"
@@ -42,7 +46,7 @@
 #pragma comment(lib, "msimg32.lib")
 
 // ---- state ----
-static const wchar_t* const kAppVersion = L"2.0.3";
+static const wchar_t* const kAppVersion = L"2.1.0";
 static const wchar_t* const kGitHubRoot = L"https://github.com";
 static const wchar_t* const kRepoPath = L"mnsky-tyan/mnpdf";
 static const std::wstring kLatestReleaseUrl =
@@ -1698,6 +1702,236 @@ static void zoomAt(double factor, int cx, int cy) {
     renderPage();
 }
 
+// ---- print: standard Windows print dialog, pages rendered clean (no
+// annotations and no mnpdf marks). Printing is a VIEW operation: it never
+// writes to the file, never marks the document dirty, never enters the undo
+// stack and never moves the viewport, so a print cannot corrupt user state.
+
+// The only transient the print path is allowed: one page raster, 64 MB at 4
+// bytes per pixel, freed the moment that page is blitted.
+static const double kPrintPixelBudget = 16.0 * 1000.0 * 1000.0;
+
+// Rasterize one page at the given pixel size. The box is the same the display
+// path uses (rotWpt/rotHpt, same rotation state), so a print always reflects
+// what is on screen. flags default to 0 on purpose: FPDF_ANNOT would pull in the
+// document's own baked annotations and FPDF_LCD_TEXT the screen-only subpixel
+// hinting, which prints as colour fringing - the print omits both, so the probe
+// renders the same page a second time with FPDF_ANNOT to prove the ink really
+// is dropped.
+static BYTE* rasterizePage(int page, int w, int h, int* strideOut, int flags = 0) {
+    if (w <= 0 || h <= 0) return nullptr;
+    FPDF_PAGE p = FPDF_LoadPage(gDoc, page);
+    if (!p) return nullptr;
+    int stride = w * 4;
+    BYTE* buf = (BYTE*)calloc(1, (size_t)stride * h);
+    if (!buf) { FPDF_ClosePage(p); return nullptr; }
+    for (int y = 0; y < h; y++) memset(buf + (size_t)y * stride, 0xFF, (size_t)stride);
+    FPDF_BITMAP bm = FPDFBitmap_CreateEx(w, h, FPDFBitmap_BGRA, buf, stride);
+    if (bm) {
+        FPDF_RenderPageBitmap(bm, p, 0, 0, w, h, gRot[page], flags);
+        FPDFBitmap_Destroy(bm);
+    }
+    FPDF_ClosePage(p);
+    *strideOut = stride;
+    return buf;
+}
+
+static void freeRaster(BYTE* buf) { if (buf) free(buf); }
+
+// ---- test hook ------------------------------------------------------------
+// A posted-message harness cannot click a modal print dialog, so the probe
+// renders the raster path for real and skips the dialog entirely. It also
+// renders the same page WITH annotations and writes both checksums, which is
+// what proves the print path drops ink rather than merely succeeding.
+static unsigned long checksumOf(const BYTE* buf, size_t n) {
+    unsigned long sum = 5381;
+    for (size_t i = 0; i < n; i++) sum = ((sum << 5) + sum) ^ buf[i];
+    return sum;
+}
+
+static void printProbe() {
+    if (!gDoc || gDocPages <= 0) return;
+    int w = rotWpt(0) * 2, h = rotHpt(0) * 2;   // ~144 dpi in points
+    int stride = 0, dirtyStride = 0;
+    BYTE* clean = rasterizePage(0, w, h, &stride);
+    if (!clean) return;
+    // annotated twin: identical box, FPDF_ANNOT alone, so the two checksums
+    // differ for exactly the one flag the intent is about
+    BYTE* dirty = rasterizePage(0, w, h, &dirtyStride, FPDF_ANNOT);
+    if (wchar_t* out = _wgetenv(L"MNPDF_PRINT_PROBE")) {
+        // write a private temp name and move it into place, so the file only
+        // ever exists complete: a reader polling for its existence must never
+        // land between the create and the last fwrite and read a 0-byte file
+        std::wstring tmp = std::wstring(out) + L"." + std::to_wstring(GetCurrentProcessId()) + L".tmp";
+        FILE* f = _wfopen(tmp.c_str(), L"wb");
+        if (f) {
+            // ink present in the clean page: proves a page really rasterized
+            long ink = 0;
+            for (long i = 0; i < (long)stride * h; i++)
+                if (clean[i] < 0xF0) ink++;
+            int annots = 0, inkAnnots = 0;
+            FPDF_PAGE p = FPDF_LoadPage(gDoc, 0);
+            if (p) {
+                annots = FPDFPage_GetAnnotCount(p);
+                // Link and Popup annotations carry no ink, so a page full of
+                // them renders identically with FPDF_ANNOT on. Only an
+                // ink-drawing subtype can make clean and annot differ, which
+                // is what the test compares.
+                for (int i = 0; i < annots; i++) {
+                    FPDF_ANNOTATION a = FPDFPage_GetAnnot(p, i);
+                    if (!a) continue;
+                    int st = FPDFAnnot_GetSubtype(a);
+                    if (st != FPDF_ANNOT_LINK && st != FPDF_ANNOT_POPUP) inkAnnots++;
+                    FPDFPage_CloseAnnot(a);
+                }
+                FPDF_ClosePage(p);
+            }
+            // ASCII on purpose: a wide-mode probe file arrives as UTF-16 with
+            // no BOM, which the suites cannot parse
+            fprintf(f, "pages=%d w=%d h=%d ink=%ld annots=%d inkannots=%d clean=%lu annot=%lu\n",
+                    gDocPages, w, h, ink, annots, inkAnnots,
+                    checksumOf(clean, (size_t)stride * h),
+                    dirty ? checksumOf(dirty, (size_t)dirtyStride * h) : 0UL);
+            fclose(f);
+            MoveFileExW(tmp.c_str(), out, MOVEFILE_REPLACE_EXISTING);
+        }
+    }
+    freeRaster(dirty);
+    freeRaster(clean);
+}
+
+// ---- the print itself -----------------------------------------------------
+static void doPrint() {
+    if (!gDoc || gDocPages <= 0) return;                      // nothing to print
+    if (_wgetenv(L"MNPDF_PRINT_PROBE")) { printProbe(); return; }
+
+    PRINTDLGEXW pd = {};
+    pd.lStructSize = sizeof(pd);
+    pd.hwndOwner = gWnd;
+    // the app prints whole pages only: neither the Selection nor the Current Page
+    // radio is implemented, so both are disabled and the range selector is a
+    // plain All-or-Pages choice. Copies and collation are the app's own job, so
+    // PD_USEDEVMODECOPIESANDCOLLATE stays unset and nCopies carries the truth.
+    pd.Flags = PD_RETURNDC | PD_NOSELECTION | PD_NOCURRENTPAGE;
+    if (gDocPages < 2) pd.Flags |= PD_NOPAGENUMS;            // nothing to range over
+    // the range control is only usable when the dialog knows the document's
+    // real page span: left at 0/0 comdlg32 disables the Pages radio and the
+    // From/To boxes outright
+    pd.nMinPage = 1;
+    pd.nMaxPage = gDocPages;
+    pd.nStartPage = START_PAGE_GENERAL;                      // "All" pre-selected
+    std::vector<PRINTPAGERANGE> ranges(gDocPages);           // one entry per page at most
+    pd.lpPageRanges = ranges.data();
+    pd.nMaxPageRanges = gDocPages;
+    HRESULT hr = PrintDlgExW(&pd);
+    // PrintDlgEx returns S_OK for every non-error outcome and reports the
+    // outcome in dwResultAction, so Cancel and Apply are caught here
+    if (hr != S_OK || pd.dwResultAction != PD_RESULT_PRINT) {
+        if (pd.hDC) DeleteDC(pd.hDC);
+        GlobalFree(pd.hDevNames);
+        GlobalFree(pd.hDevMode);
+        return;
+    }
+    HDC dc = pd.hDC;
+    if (!dc) { GlobalFree(pd.hDevNames); GlobalFree(pd.hDevMode); return; }
+
+    // which pages the user actually asked for; anything out of range is clamped
+    std::vector<int> pages;
+    std::vector<bool> seen(gDocPages);                       // overlapping ranges print a page once
+    if (pd.nPageRanges > 0 && pd.lpPageRanges) {
+        for (DWORD r = 0; r < pd.nPageRanges; r++) {
+            int a = pd.lpPageRanges[r].nFromPage, b = pd.lpPageRanges[r].nToPage;
+            if (a < 1) a = 1;
+            if (b > gDocPages) b = gDocPages;
+            if (a > b) continue;
+            for (int p = a; p <= b; p++)
+                if (!seen[p - 1]) { seen[p - 1] = true; pages.push_back(p - 1); }
+        }
+    }
+    if (pages.empty())
+        for (int i = 0; i < gDocPages; i++) pages.push_back(i);
+
+    // the printable rectangle in device units, not the whole sheet
+    int offX = GetDeviceCaps(dc, PHYSICALOFFSETX), offY = GetDeviceCaps(dc, PHYSICALOFFSETY);
+    int resX = GetDeviceCaps(dc, HORZRES),          resY = GetDeviceCaps(dc, VERTRES);
+    int pw = resX > 0 ? resX : 1, ph = resY > 0 ? resY : 1;
+
+    wchar_t title[MAX_PATH + 32] = L"mnpdf";
+    size_t slash = gPath.find_last_of(L"\\/");
+    if (!gPath.empty() && slash != std::wstring::npos)
+        _snwprintf_s(title, _countof(title), _TRUNCATE, L"%s - mnpdf", gPath.c_str() + slash + 1);
+
+    DOCINFOW di = {};
+    di.cbSize = sizeof(di);
+    di.lpszDocName = title;
+    // "Print to file" needs FILE: so the subsystem prompts for the output name;
+    // without it the job goes to the port the user just declined
+    if (pd.Flags & PD_PRINTTOFILE) di.lpszOutput = L"FILE:";
+    SetStretchBltMode(dc, HALFTONE);
+    SetBrushOrgEx(dc, 0, 0, nullptr);
+    // collated emits the whole page set once per copy, non-collated every copy
+    // of a page before the next one; the flat index keeps it to one page bitmap
+    // at a time with no second copy of the page list
+    DWORD copies = pd.nCopies > 0 ? pd.nCopies : 1;
+    bool collate = (pd.Flags & PD_COLLATE) != 0;
+    size_t sheets = (size_t)copies * pages.size();
+    bool job = StartDocW(dc, &di) > 0;
+    for (size_t s = 0; s < sheets && job; s++) {
+        int pg = collate ? pages[s % pages.size()] : pages[s / copies];
+        if (StartPage(dc) <= 0) { job = false; break; }
+        // one page bitmap at a time, freed right after it is blitted. The source
+        // is a fixed 300 dpi target, never the printer's own LOGPIXELS: a
+        // 612x792 page becomes 2550x3300x4 (~34 MB), 1:1 on a 300 dpi printer
+        // and a 2x upscale on 600 dpi, while rendering at the device resolution
+        // would cost ~135 MB at 600 dpi and ~540 MB at 1200 dpi. The budget
+        // caps that transient whatever the page size: Letter at 300 dpi (8.4 MP)
+        // is untouched, an A0 poster's ~139 MP is reduced by
+        // sqrt(budget/pixels) to about 100 dpi, still legible and still bounded.
+        int sw = (int)(rotWpt(pg) * 300.0 / 72.0 + 0.5), sh = (int)(rotHpt(pg) * 300.0 / 72.0 + 0.5);
+        double px = (double)sw * sh;
+        if (px > kPrintPixelBudget) {
+            double shrink = sqrt(kPrintPixelBudget / px);
+            sw = (int)(sw * shrink); sh = (int)(sh * shrink);
+        }
+        if (sw < 1) sw = 1;
+        if (sh < 1) sh = 1;
+        int stride = 0;
+        BYTE* buf = rasterizePage(pg, sw, sh, &stride);
+        // a page that could not be rasterized fails the job instead of emitting
+        // a blank sheet, so the print subsystem reports it
+        if (!buf) { job = false; break; }
+        // fit inside the printable area, preserve the page's own aspect,
+        // centre it: a landscape page on portrait paper letterboxes
+        // rather than clipping
+        double scale = (double)pw / sw;
+        if ((double)ph / sh < scale) scale = (double)ph / sh;
+        int dw = (int)(sw * scale), dh = (int)(sh * scale);
+        if (dw < 1) dw = 1;
+        if (dh < 1) dh = 1;
+        int dx = offX + (pw - dw) / 2, dy = offY + (ph - dh) / 2;
+        BITMAPINFO bi = {};
+        bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        bi.bmiHeader.biWidth = sw;
+        bi.bmiHeader.biHeight = -sh;                 // top-down, as written
+        bi.bmiHeader.biPlanes = 1;
+        bi.bmiHeader.biBitCount = 32;
+        bi.bmiHeader.biCompression = BI_RGB;
+        int blitted = StretchDIBits(dc, dx, dy, dw, dh, 0, 0, sw, sh, buf, &bi, DIB_RGB_COLORS, SRCCOPY);
+        freeRaster(buf);
+        // a rejected blit fails the job exactly like an unallocatable raster:
+        // the sheet would otherwise go out blank with the job reporting success.
+        // Only GDI_ERROR counts - some drivers return 0 for the scan-line
+        // count, and a <= 0 test would abort healthy prints.
+        if (blitted == GDI_ERROR) { job = false; break; }
+        if (EndPage(dc) <= 0) { job = false; break; }
+    }
+    if (job) EndDoc(dc);
+    else AbortDoc(dc);
+    DeleteDC(dc);
+    GlobalFree(pd.hDevNames);
+    GlobalFree(pd.hDevMode);
+}
+
 static bool gVerboseTitle = false;               // debug harnesses: page/zoom/RAM in the title
 
 static void updateTitle() {
@@ -2821,6 +3055,7 @@ static LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         else if (wp == VK_F3 && !gSearchOpen) toggleSearch(true);
         else if (wp == VK_F3) nextMatch((GetKeyState(VK_SHIFT) & 0x8000) ? -1 : 1);
         else if (wp == 'S' && ctrl) { (GetKeyState(VK_SHIFT) & 0x8000) ? doSaveAs() : doSave(); }
+        else if (wp == 'P' && ctrl && gDoc) doPrint();
         else if (wp == 'Z' && ctrl) { (GetKeyState(VK_SHIFT) & 0x8000) ? redoOp() : undoOp(); }
         else if (wp == 'Y' && ctrl) redoOp();
         else if ((wp == VK_ADD || wp == VK_OEM_PLUS)) zoomAt(1.2, clientW() / 2, clientH() / 2);
@@ -2878,6 +3113,7 @@ static LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         AppendMenuW(menu, MF_STRING, 107, L"Open...\tCtrl+O");
         AppendMenuW(menu, gDoc && gDirty ? MF_STRING : MF_GRAYED, 118, L"Save\tCtrl+S");
         AppendMenuW(menu, gDoc && gDirty ? MF_STRING : MF_GRAYED, 119, L"Save As...\tCtrl+Shift+S");
+        AppendMenuW(menu, gDoc ? MF_STRING : MF_GRAYED, 137, L"Print...\tCtrl+P");
         AppendMenuW(menu, MF_STRING | (gAutosave ? MF_CHECKED : 0), 109, L"Autosave");
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(menu, gUndo.empty() ? MF_GRAYED : MF_STRING, 114, L"Undo\tCtrl+Z");
@@ -2983,6 +3219,7 @@ static LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         case 115: redoOp(); return 0;
         case 118: doSave(); return 0;
         case 119: doSaveAs(); return 0;
+        case 137: doPrint(); return 0;
         case 170: startUpdateCheck(true); return 0;
         case 130:                                   // add pin at the menu drop point
             if (gMenuPinPtPage >= 0) {
