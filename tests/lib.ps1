@@ -110,8 +110,8 @@ function Launch([string]$Exe, [string]$Doc) {
 # answer is deterministic and offline (a completed check remembered from minutes
 # ago, or a stale clock that must be re-stamped). That file also holds the
 # captain's real titlebar / autosave / hlcolor / pincolor / palnext / updcheck /
-# updtag preferences, so a run must put it back exactly as it found it - on every
-# path, including a hard kill.
+# updtag preferences and the frame geometry winx/winy/winw/winh/winmax, so a run
+# must put it back exactly as it found it - on every path, including a hard kill.
 
 $script:prefSentinel = 'test-forged=1'
 
@@ -121,11 +121,11 @@ function AppPref-Forged {
 }
 
 # leftover forge = the in-file sentinel, OR the durable marker. The in-file
-# sentinel is not durable: the app's own writeAppPref rewrites app.txt from
-# scratch (only its own keys - src/main.cpp:1996), so a launch after an expired
-# cooldown erases the sentinel while the forged defaults live on. A run killed in
-# that window leaves a file no content check can tell from real prefs, so the
-# forge also drops a marker file next to it (the app never touches that name):
+# sentinel is not durable: the app rewrites app.txt from its own keys only
+# (src/main.cpp writeAppPref), so a launch after an expired cooldown erases
+# the sentinel while the forged defaults live on. A run killed in that window
+# leaves a file no content check can tell from real prefs, so the forge also
+# drops a marker file next to it (the app never touches that name):
 # its presence means the real app.txt is currently a forge and must be discarded,
 # never adopted as user prefs.
 function AppPref-LeftoverForge {

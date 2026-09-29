@@ -174,6 +174,9 @@ static int gTipPin = -1;                         // pin the pending tip belongs 
 static DWORD gPinBoxBorn = 0;                    // when the editor opened (activation grace)
 
 static bool gTitlebar = true;                    // OS caption strip shown
+static int gWinX = CW_USEDEFAULT, gWinY = CW_USEDEFAULT;   // last placement
+static int gWinW = 1100, gWinH = 800;
+static bool gWinMax = false;                     // was maximized at last quit
 
 // ---- undo/redo: value-based ops (no ids needed; values re-apply exactly) ----
 struct Op {
@@ -2244,9 +2247,18 @@ static void markSave() {
     if (gAutosave) gSaveDirty = true;              // flushed by the WM_TIMER tick
 }
 
-// app-level prefs in %APPDATA%\mnpdf\app.txt: chrome toggles, the default
-// highlight/pin colours, the custom #rrggbb slots (round-robin pointer too)
-// and the update-check clock that keeps it to one request per interval
+// app-level prefs in %APPDATA%\mnpdf\app.txt: chrome toggles (titlebar, autosave),
+// the default highlight/pin colours, the custom #rrggbb slots (round-robin pointer
+// too), the update-check clock that keeps it to one request per interval, and the
+// frame geometry winx/winy/winw/winh/winmax the next launch recreates the window
+// with. Every call records the rect as it stands at that moment, so the WM_CLOSE
+// write is the one that survives a quit. The rect is read from GetWindowPlacement's
+// rcNormalPosition rather than GetWindowRect, because that is the rect the user left
+// the window in, whatever state the window is in - maximized, GetWindowRect reports
+// the monitor rect the system grew the window to, and minimized the iconic
+// placeholder at -32000,-32000 - and the same call carries the maximized flag as
+// showCmd == SW_SHOWMAXIMIZED or WPF_RESTORETOMAXIMIZED, so a window minimized from
+// a maximized one still comes back maximized.
 static void writeAppPref() {
     wchar_t dir[MAX_PATH];
     appDirW(dir, MAX_PATH);
@@ -2254,6 +2266,18 @@ static void writeAppPref() {
     if (fp) {
         fprintf(fp, "titlebar=%d\nautosave=%d\nhlcolor=%d\npincolor=%d\n",
                 gTitlebar ? 1 : 0, gAutosave ? 1 : 0, gHlDefault, gPinDefault);
+        RECT wr = { 0, 0, 0, 0 };
+        WINDOWPLACEMENT wp2 = { sizeof(wp2) };
+        if (gWnd && GetWindowPlacement(gWnd, &wp2)) {
+            wr = wp2.rcNormalPosition;
+            if ((wr.right - wr.left) > 0 && (wr.bottom - wr.top) > 0) {
+                const bool winmax = wp2.showCmd == SW_SHOWMAXIMIZED ||
+                                    (wp2.flags & WPF_RESTORETOMAXIMIZED);
+                fprintf(fp, "winx=%ld\nwiny=%ld\nwinw=%ld\nwinh=%ld\nwinmax=%d\n",
+                        (long)wr.left, (long)wr.top, (long)(wr.right - wr.left), (long)(wr.bottom - wr.top),
+                        winmax ? 1 : 0);
+            }
+        }
         for (int c = 0; c < kPalCustom; c++)
             if (gPalCustom[c] != CLR_INVALID)
                 fprintf(fp, "pal%d=%02x%02x%02x\n", c,
@@ -2281,6 +2305,13 @@ static void loadAppPref() {
         long long llv;
         if (sscanf(line, "titlebar=%d", &iv) == 1) gTitlebar = iv != 0;
         else if (sscanf(line, "autosave=%d", &iv) == 1) gAutosave = iv != 0;
+        // geometry is bounded the same way the colour keys below are: a value
+        // a window cannot have leaves the field at its default
+        else if (sscanf(line, "winx=%d", &iv) == 1) { if (iv >= -100000 && iv <= 100000) gWinX = iv; }
+        else if (sscanf(line, "winy=%d", &iv) == 1) { if (iv >= -100000 && iv <= 100000) gWinY = iv; }
+        else if (sscanf(line, "winw=%d", &iv) == 1) { if (iv > 0 && iv <= 32767) gWinW = iv; }
+        else if (sscanf(line, "winh=%d", &iv) == 1) { if (iv > 0 && iv <= 32767) gWinH = iv; }
+        else if (sscanf(line, "winmax=%d", &iv) == 1) gWinMax = iv != 0;
         else if (sscanf(line, "hlcolor=%d", &iv) == 1) gHlDefault = (iv >= 0 && iv < kPalCount) ? iv : 0;
         else if (sscanf(line, "pincolor=%d", &iv) == 1) gPinDefault = (iv >= 0 && iv < kPalCount) ? iv : 0;
         else if (sscanf(line, "palnext=%d", &iv) == 1) gPalNext = (iv >= 0 && iv < kPalCustom) ? iv : 0;
@@ -2886,6 +2917,16 @@ static LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         if (gEditPin >= 0 && gPinBox) sizePinBoxToText();   // they do not follow the window
         hidePinTip(h);
         return 0;
+    case WM_NCACTIVATE:
+        // WS_CAPTION stays in the style (see the note at CreateWindowExW: the
+        // system puts it back even when the create style omits it), so on
+        // every activation change DefWindowProc repaints the non-client area
+        // with the stock system caption - the ghost title bar that appears
+        // whenever another window takes focus while mnpdf's own is hidden.
+        // lParam = -1 tells it the frame does not need repainting; the client
+        // area already covers the whole window, so there is no frame to paint.
+        if (!gTitlebar) return DefWindowProcW(h, m, wp, (LPARAM)-1);
+        break;
     case WM_NCCALCSIZE:
         // with the caption gone DWM still paints its accent-coloured resize
         // border (the light blue hint); let the client cover the whole window
@@ -3243,13 +3284,46 @@ static LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         return 0;
     }
     case WM_NCHITTEST: {
-        LRESULT res = DefWindowProcW(h, m, wp, lp);
-        if (!gTitlebar && res == HTCLIENT) {        // captionless: top strip drags
-            POINT pt2 = { GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
-            ScreenToClient(h, &pt2);
-            if (pt2.y < 8) res = HTCAPTION;
+        // With the caption hidden the client covers the whole window (see
+        // WM_NCCALCSIZE), so DefWindowProc finds no non-client margin anywhere
+        // and returns HTCLIENT for every pixel - the frame can then never be
+        // dragged. The eight edge zones are computed here instead, over a band
+        // as thick as the frame the style still reserves.
+        if (!gTitlebar) {
+            const int dpi = GetDpiForWindow(h);
+            // GetSystemMetrics is not per-monitor aware and already reports the
+            // primary monitor's scale, so the window DPI is not scaled in again
+            int frame = GetSystemMetricsForDpi(SM_CXSIZEFRAME, dpi) +
+                        GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
+            if (frame < 4) frame = 4;
+            POINT pt = { GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
+            ScreenToClient(h, &pt);   // outside the maximized state WM_NCCALCSIZE gives the client the whole window
+            HWND kid = ChildWindowFromPointEx(h, pt, CWP_SKIPINVISIBLE);
+            if (kid && kid != h) return HTCLIENT;   // the control under the cursor owns the click
+            // The caption is gone, so the top strip is the only way to move the
+            // window. The strip is the app's own 8 design pixels at this dpi,
+            // which is at least as thick as the corrected frame band, so the
+            // whole top edge is caption and resize comes from the other three
+            // edges and the four corners.
+            int capStrip = MulDiv(8, dpi, USER_DEFAULT_SCREEN_DPI);
+            if (capStrip < 4) capStrip = 4;
+            if (pt.y < capStrip) return HTCAPTION;
+            RECT cr;
+            GetClientRect(h, &cr);
+            const int x = pt.x, y = pt.y;
+            const int w = cr.right - cr.left, bh = cr.bottom - cr.top;
+            const bool L = x < frame, R = x >= w - frame, T = y < frame, B = y >= bh - frame;
+            if (L && T) return HTTOPLEFT;
+            if (R && T) return HTTOPRIGHT;
+            if (L && B) return HTBOTTOMLEFT;
+            if (R && B) return HTBOTTOMRIGHT;
+            if (L) return HTLEFT;
+            if (R) return HTRIGHT;
+            if (T) return HTTOP;
+            if (B) return HTBOTTOM;
+            return HTCLIENT;
         }
-        return res;
+        return DefWindowProcW(h, m, wp, lp);
     }
     case WM_MNPDF_UPDATE_RESULT: {
         UpdateResult* result = (UpdateResult*)lp;
@@ -3318,6 +3392,7 @@ static LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         } else {
             writeSidecarNow();                     // sidecar always keeps the reading position
         }
+        writeAppPref();                            // the last rect read here is the one restored
         DestroyWindow(h);
         return 0;
     case WM_DESTROY:
@@ -3362,7 +3437,7 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int show) {
     const std::wstring exeDir = moduleDirectory();
     SetDllDirectoryW(exeDir.c_str());
 
-    loadAppPref();                                 // titlebar preference
+    loadAppPref();   // titlebar preference, and the saved frame geometry + winmax flag
     // both read before the window exists: WM_CREATE and the first WM_SIZE
     // (WS_VISIBLE is in the style) both run inside CreateWindowExW, so a title
     // computed during them must already see these two
@@ -3371,10 +3446,44 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int show) {
     // MNPDF_BACKGROUND=1: gate/test runs must not steal focus. Mask WS_VISIBLE
     // out of the create style so the first appearance is already minimized
     // and inactive - a later ShowWindow cannot undo an initial flash.
-    DWORD winStyle = WS_CLIPCHILDREN | WS_OVERLAPPEDWINDOW | WS_VISIBLE & (gTitlebar ? ~0u : ~WS_CAPTION);
+    // Restore the frame where the last session left it in three cases.
+    // (1) A rect no monitor can see any more - a screen was unplugged, or the
+    //     resolution dropped - falls back to the default placement instead of
+    //     opening where the user cannot reach it.
+    // (2) A rect that only partly fits keeps its saved width and height and has
+    //     just its top-left moved into that monitor's work area, so the caption
+    //     strip and a resize border stay reachable: a window larger than the
+    //     screen it lands on is ordinary and the user can resize it down. That
+    //     size is honored only up to what the landing monitor's work area shows:
+    //     Windows caps a created window at that work area plus a little slack, a
+    //     platform limit the app cannot lift, and because every quit records the
+    //     rect as the window actually stands, a size that could not be shown here
+    //     is not preserved for a future larger monitor.
+    // (3) A rect that fits is restored verbatim.
+    int startX = CW_USEDEFAULT, startY = CW_USEDEFAULT, startW = gWinW, startH = gWinH;
+    if (gWinX != CW_USEDEFAULT && gWinY != CW_USEDEFAULT) {
+        RECT sr = { gWinX, gWinY, gWinX + gWinW, gWinY + gWinH };
+        MONITORINFO mi = { sizeof(mi) };
+        HMONITOR hm = MonitorFromRect(&sr, MONITOR_DEFAULTTONULL);
+        if (hm && GetMonitorInfoW(hm, &mi)) {
+            startW = sr.right - sr.left;          // the size the user left it in
+            startH = sr.bottom - sr.top;
+            startX = clampBox(sr.left, startW, mi.rcWork.left, mi.rcWork.right);
+            startY = clampBox(sr.top, startH, mi.rcWork.top, mi.rcWork.bottom);
+        }
+    }
+
+    // WS_CAPTION is deliberately left in the style even when the preference
+    // says hidden. Passing a captionless style to CreateWindowExW does not
+    // stick: with WS_MINIMIZEBOX/WS_MAXIMIZEBOX present the system ORs
+    // WS_CAPTION back in before the window exists (verified by reading
+    // GWL_STYLE immediately after CreateWindowExW - the cleared bits are
+    // already set again). The caption is hidden by WM_NCCALCSIZE below, which
+    // gives the client area the whole window so there is nothing left to draw.
+    DWORD winStyle = WS_CLIPCHILDREN | WS_OVERLAPPEDWINDOW | WS_VISIBLE;
     if (background) winStyle &= ~(DWORD)WS_VISIBLE;
     gWnd = CreateWindowExW(0, L"mnpdf", L"mnpdf", winStyle,
-                           CW_USEDEFAULT, CW_USEDEFAULT, 1100, 800,
+                           startX, startY, startW, startH,
                            nullptr, nullptr, hInst, nullptr);
 
     int argc = 0;
@@ -3407,7 +3516,8 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int show) {
     // size message, SIZE_MINIMIZED included, and renderPage calls it first.
     // The window still exists: MainWindowHandle resolves, posted messages land,
     // and title reads work - it is only ever minimized and inactive.
-    ShowWindow(gWnd, background ? SW_SHOWMINNOACTIVE : show);
+    ShowWindow(gWnd, background ? SW_SHOWMINNOACTIVE
+                                : (gWinMax ? SW_SHOWMAXIMIZED : show));
     startUpdateCheck(false);                         // notify only when a newer release exists
     MSG msg;
     for (;;) {

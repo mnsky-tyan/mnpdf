@@ -96,20 +96,20 @@ if ($existing) { Write-Output "SKIP: an mnpdf instance is already running (state
 # the next manual check announce a version that does not exist.
 #
 # Two limits that follow from the forge: the watchdog dies with the shell's process
-# tree, and the app never writes app.txt on quit, so a tree kill can still leave the
-# forged file on disk. The forgery therefore carries a sentinel; whenever one is
-# found the file is known leftover test state, never the captain's prefs, so it is
-# not adopted as the backup and is stripped instead - a forged value can never be
-# promoted into "the user's real prefs".
+# tree, so a tree kill can still leave the forged file on disk. The forgery
+# therefore carries a sentinel; whenever one is found the file is known leftover
+# test state, never the captain's prefs, so it is not adopted as the backup and
+# is stripped instead - a forged value can never be promoted into "the user's
+# real prefs".
 #
-# One hole the sentinel alone cannot cover: the app's OWN writeAppPref rewrites
-# app.txt from scratch ("wb", only its own keys - src/main.cpp:1996), so once the
-# start-up update check or a prefs command runs, the in-file sentinel is erased
-# while the forged defaults survive. A run killed in that window leaves a file that
-# no content check can tell from real prefs. The forge therefore ALSO drops a
-# durable marker file next to app.txt (the app never touches it): its presence
-# means the real app.txt is currently a forge, so it is discarded rather than
-# adopted, on every run start and every restore path.
+# One hole the sentinel alone cannot cover: the app rewrites app.txt from its own
+# keys only (src/main.cpp writeAppPref), so once the start-up update check, a
+# prefs command, or the WM_CLOSE write it makes as it quits runs, the in-file
+# sentinel is erased while the forged defaults survive. A run killed in that
+# window leaves a file that no content check can tell from real prefs. The
+# forge therefore ALSO drops a durable marker file next to app.txt (the app
+# never touches it): its presence means the real app.txt is currently a forge, so
+# it is discarded rather than adopted, on every run start and every restore path.
 # (tests/lib.ps1 owns all of that machinery: sentinel, marker, backup, watchdog.)
 Init-PrefForge $appPref 'release'
 function Run-Case([string]$Name, [string]$Tag, [string]$WantTitle, [string[]]$WantSnips, [int]$DismissId) {
