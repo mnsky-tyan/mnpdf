@@ -34,7 +34,9 @@ the search bar.
 
 **Marks.** Right-click to highlight selected text or to add a pin with a
 note. Highlights and pins share one palette of six presets plus up to three
-custom `#rrggbb` colours you enter yourself. Everything is individually
+custom `#rrggbb` colours you enter yourself: the entry box opens with the `#`
+in place, an entry that is not a colour is explained straight away, and Clear
+custom colours hands the slots back. Everything is individually
 undoable (`Ctrl+Z` / `Ctrl+Y`) and redoable, and delete is an undoable
 operation rather than a loss of information.
 
