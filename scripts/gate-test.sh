@@ -105,11 +105,18 @@ fi
 
 run_dir=$(mktemp -d "$PWD/build/gate-run.XXXXXX")
 printf 'GATE: logs and isolated preferences: %s\n' "$run_dir"
-for s in select-msg-test test-features test-suite2 test-continuous test-release; do
+# A suite that types into a window of the app cannot run hidden: a minimised
+# owner can never give its colour popup the keyboard, and keystrokes posted at
+# it are simply not delivered. Everything else stays minimised.
+foreground_suites=' test-colors '
+for s in select-msg-test test-features test-suite2 test-continuous test-release test-colors; do
   state="$run_dir/$s"
   mkdir -p "$state/appdata" "$state/temp"
   export MNPDF_GATE_STATE="$(wslpath -w "$state")"
   export MNPDF_GATE_SUITE="${WINPWD}\\${s}.ps1"
+  # the app only checks that the variable exists, so a foreground suite needs it
+  # gone, not set to 0
+  if [[ "$foreground_suites" == *" $s "* ]]; then unset MNPDF_BACKGROUND; fi
   printf '=== %s\n' "$s"
   rc=0
   # Invoke the suite directly, not Start-Process -Wait (which waits for all
@@ -128,6 +135,7 @@ for s in select-msg-test test-features test-suite2 test-continuous test-release;
     exit $LASTEXITCODE
   ' 2>&1 | tee "$state/output.log" ) 2>/dev/null || rc=$?
   cleanup_instances
+  export MNPDF_BACKGROUND=1          # back to hidden for the next suite
   if (( rc != 0 )) || grep -Eq '^(FAIL|SKIP:|RESULT: [0-9]+ FAILURE)' "$state/output.log" ||
       ! grep -q '^PASS ' "$state/output.log"; then
     printf 'GATE: %s FAILED (exit %s); stopping before another suite launches.\n' "$s" "$rc" >&2

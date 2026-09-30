@@ -6,8 +6,9 @@
 commands:
   test: bash scripts/gate-test.sh
 
-# This repository has no CI at all - no .github directory, no workflow - so no
-# pull_request check can ever register. Without this the ci step waits out the
-# global ci_timeout (168h) on checks that cannot exist. Trusted only from the
-# default branch, so it must reach main, not just this branch.
-no_ci: true
+# CI runs on GitHub (see .github/workflows/ci.yml), so a pull request always
+# registers a real check: the same six suites, on a Windows runner, with a
+# freshly built binary and per-suite isolated preferences. commands.test above
+# is the WSL convenience wrapper; both build the binary before the suites run.
+# These settings are trusted only from the default branch, so this has to reach
+# main and not just a feature branch.

@@ -1,5 +1,7 @@
 # mnpdf
 
+[![ci](https://github.com/mnsky-tyan/mnpdf/actions/workflows/ci.yml/badge.svg)](https://github.com/mnsky-tyan/mnpdf/actions/workflows/ci.yml)
+
 A small, fast, native PDF reader for Windows. One executable plus PDFium, no
 installer, no runtime, no framework.
 
@@ -9,7 +11,7 @@ individually, and the file you opened is never rewritten unless you ask.
 
 ## Download
 
-Portable ZIP: [**mnpdf-win-x64-v2.1.2.zip**](https://github.com/mnsky-tyan/mnpdf/releases/latest)
+Portable ZIP: the [**latest release**](https://github.com/mnsky-tyan/mnpdf/releases/latest)
 (`mnpdf.exe`, `pdfium.dll`, `README.txt`, `PDFIUM-LICENSE.txt`).
 
 Extract it anywhere and run `mnpdf.exe`. Keep `pdfium.dll` next to the
@@ -101,10 +103,33 @@ build.bat
 It needs the Visual Studio developer command prompt paths, which the script
 sets up itself with `VsDevCmd.bat -arch=x64`. Output lands in `build/`.
 
-Tests are PowerShell suites driven by `scripts/gate-test.sh`, which runs each
-one against the freshly built binary with its own isolated preferences and
-temp directory. Run the release-contract check on its own with
-`test-release.ps1`.
+## Tests
+
+Six PowerShell suites drive the real application: they launch the built
+binary, send it the same messages a reader's mouse and keyboard generate, and
+assert on the app's own state files, its window and (for a custom colour) the
+pixels it paints.
+
+```
+bash scripts/gate-test.sh     # from WSL: builds, then runs all six suites
+```
+
+Each suite gets its own `APPDATA` and `TEMP`, so nothing written by one can
+reach the next. Every suite but `test-colors.ps1` keeps its window minimised:
+the colour suite really types into the app's colour box, and a minimised owner
+can never give that popup the keyboard.
+
+On a plain Windows machine - and in CI - there is no `wslpath`, so
+`scripts/test-ci.ps1` is the same build and the same six suites with no WSL in
+the way. It is what `.github/workflows/ci.yml` runs on a Windows runner, so
+every push and pull request carries a real check.
+
+```
+powershell -ExecutionPolicy Bypass -File scripts\test-ci.ps1
+```
+
+`test-release.ps1` on its own is the release contract: the binary's version,
+the README's first line and the four files a release ZIP must contain.
 
 ## Repository layout
 
@@ -114,9 +139,12 @@ mnpdf.rc              icon and version resources
 resource.h
 third_party/pdfium/   PDFium headers, import library, DLL and license
 tests/lib.ps1         shared test harness (window lookup, launch, waiting)
-test-*.ps1            feature suites
+test-*.ps1            feature suites (select-msg, features, suite2,
+                      continuous, release, colors)
 test-release.ps1      ZIP contract: version agreement with README.txt, file list
-scripts/gate-test.sh  runs the build and every suite
+scripts/gate-test.sh  WSL entry point: build and all six suites
+scripts/test-ci.ps1   Windows/CI entry point: the same build and suites
+.github/workflows/ci.yml  runs test-ci.ps1 on a Windows runner
 ```
 
 ## Release contract
