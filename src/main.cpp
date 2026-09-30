@@ -46,7 +46,7 @@
 #pragma comment(lib, "msimg32.lib")
 
 // ---- state ----
-static const wchar_t* const kAppVersion = L"2.1.1";
+static const wchar_t* const kAppVersion = L"2.1.2";
 static const wchar_t* const kGitHubRoot = L"https://github.com";
 static const wchar_t* const kRepoPath = L"mnsky-tyan/mnpdf";
 static const std::wstring kLatestReleaseUrl =
@@ -3511,6 +3511,25 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int show) {
     }
     if (argv) LocalFree(argv);
     if (!opened) openDialog();
+
+    // A launch with the titlebar preference hidden must clear WS_CAPTION from the
+    // live style, not rely on the style passed to CreateWindowExW: with
+    // WS_MINIMIZEBOX/WS_MAXIMIZEBOX present the system ORs WS_CAPTION back in
+    // during creation (confirmed by reading GWL_STYLE immediately after the
+    // call), so the create-time mask never survives.
+    // Hidden is therefore applied the same way the Hide titlebar menu applies
+    // it - by writing the style and re-running the frame calculation - because
+    // WM_NCCALCSIZE alone does not hide it on the first recalc: a plain launch
+    // with titlebar=0 draws the caption (the client is 58 px short of the
+    // window at 192 dpi) and it only disappears after a later frame recalc such
+    // as a minimize/restore. Setting the style bit off before the first show
+    // leaves nothing for the frame calc to carve.
+    if (!gTitlebar) {
+        LONG st = (LONG)GetWindowLongPtrW(gWnd, GWL_STYLE);
+        SetWindowLongPtrW(gWnd, GWL_STYLE, (LONG_PTR)(st & ~(LONG)WS_CAPTION));
+        SetWindowPos(gWnd, nullptr, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+    }
 
     // The title needs no WinMain-side call: WM_SIZE drives updateTitle on every
     // size message, SIZE_MINIMIZED included, and renderPage calls it first.
