@@ -15,7 +15,7 @@ $psExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.e
 
 # the colour suite types into a window of the app: a minimised owner can never
 # give its colour popup the keyboard, so that one runs in the foreground
-$suites = @('select-msg-test', 'test-features', 'test-suite2', 'test-continuous', 'test-release', 'test-colors')
+$suites = @('select-msg-test', 'test-features', 'test-suite2', 'test-continuous', 'test-release', 'test-captionless', 'test-colors')
 $foreground = @('test-colors')
 
 Write-Output '=== build'

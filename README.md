@@ -105,13 +105,13 @@ sets up itself with `VsDevCmd.bat -arch=x64`. Output lands in `build/`.
 
 ## Tests
 
-Six PowerShell suites drive the real application: they launch the built
+Seven PowerShell suites drive the real application: they launch the built
 binary, send it the same messages a reader's mouse and keyboard generate, and
-assert on the app's own state files, its window and (for a custom colour) the
-pixels it paints.
+assert on the app's own state files, its window, its frame and (for a custom
+colour) the pixels it paints.
 
 ```
-bash scripts/gate-test.sh     # from WSL: builds, then runs all six suites
+bash scripts/gate-test.sh     # from WSL: builds, then runs all seven suites
 ```
 
 Each suite gets its own `APPDATA` and `TEMP`, so nothing written by one can
@@ -120,7 +120,7 @@ the colour suite really types into the app's colour box, and a minimised owner
 can never give that popup the keyboard.
 
 On a plain Windows machine - and in CI - there is no `wslpath`, so
-`scripts/test-ci.ps1` is the same build and the same six suites with no WSL in
+`scripts/test-ci.ps1` is the same build and the same seven suites with no WSL in
 the way. It is what `.github/workflows/ci.yml` runs on a Windows runner, so
 every push and pull request carries a real check.
 
@@ -140,9 +140,9 @@ resource.h
 third_party/pdfium/   PDFium headers, import library, DLL and license
 tests/lib.ps1         shared test harness (window lookup, launch, waiting)
 test-*.ps1            feature suites (select-msg, features, suite2,
-                      continuous, release, colors)
+                      continuous, release, captionless, colors)
 test-release.ps1      ZIP contract: version agreement with README.txt, file list
-scripts/gate-test.sh  WSL entry point: build and all six suites
+scripts/gate-test.sh  WSL entry point: build and all seven suites
 scripts/test-ci.ps1   Windows/CI entry point: the same build and suites
 .github/workflows/ci.yml  runs test-ci.ps1 on a Windows runner
 ```
