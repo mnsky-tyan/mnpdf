@@ -46,7 +46,7 @@
 #pragma comment(lib, "msimg32.lib")
 
 // ---- state ----
-static const wchar_t* const kAppVersion = L"2.1.2";
+static const wchar_t* const kAppVersion = L"2.1.3";
 static const wchar_t* const kGitHubRoot = L"https://github.com";
 static const wchar_t* const kRepoPath = L"mnsky-tyan/mnpdf";
 static const std::wstring kLatestReleaseUrl =
@@ -2762,6 +2762,7 @@ static HMENU colorSubmenu(int current, int presetBase, int customBase, int custo
         any = true;
     }
     if (any) AppendMenuW(sub, MF_SEPARATOR, 0, nullptr);
+    if (any) AppendMenuW(sub, MF_STRING, 180, L"Clear custom colours");
     AppendMenuW(sub, MF_STRING, customId, L"Custom...");
     return sub;
 }
@@ -2773,9 +2774,53 @@ static HMENU colorSubmenu(int current, int presetBase, int customBase, int custo
 static HWND gColorBox = nullptr;
 static WNDPROC gColorBoxBase = nullptr;
 static DWORD gColorBoxBorn = 0;
+// the error popup steals activation from the box; this keeps the box's
+// focus-loss close from firing underneath it
+static bool gColorErrBusy = false;
+
+static void closeColorBox();
+static bool parseHexColor(const std::wstring& in, COLORREF& out);
+static void applyCustomColor(COLORREF c);
 
 static void closeColorBox() {
     if (gColorBox) { HWND b = gColorBox; gColorBox = nullptr; DestroyWindow(b); }
+}
+
+// read what is in the box and, if it names a colour, keep it: a reader who typed
+// a colour and then clicked away asked for that colour, so dropping it would
+// mean the app silently refusing to provide it
+static void commitColorBox() {
+    if (!gColorBox) return;
+    wchar_t buf[16];
+    int n = GetWindowTextLengthW(gColorBox);
+    if (n > 15) n = 15;
+    GetWindowTextW(gColorBox, buf, n + 1);
+    COLORREF c;
+    bool keep = parseHexColor(buf, c);
+    closeColorBox();
+    if (keep) applyCustomColor(c);
+}
+
+// a committed entry that is not a colour: say what is wrong now, while the text
+// is still on screen in front of the reader, and leave the box open to retype
+static void showColorError(HWND box, const wchar_t* text) {
+    gColorErrBusy = true;
+    wchar_t shown[24];
+    int n = (int)wcslen(text);
+    if (n > 20) n = 20;
+    wmemcpy(shown, text, (size_t)n);
+    shown[n] = 0;
+    wchar_t msg[220];
+    _snwprintf_s(msg, _TRUNCATE,
+                 L"\"%s\" is not a colour.\n\n"
+                 L"Type six hex digits, with or without the #:\n\n"
+                 L"    #ff4d00\n    ff4d00\n    FF4D00",
+                 shown);
+    MessageBoxW(box, msg, L"mnpdf", MB_OK | MB_ICONWARNING | MB_SETFOREGROUND);
+    gColorErrBusy = false;
+    SetForegroundWindow(box);
+    SetFocus(box);
+    SendMessageW(box, EM_SETSEL, 0, -1);      // select all: retyping replaces it
 }
 
 // "#a1b2c3", "a1b2c3" and "A1B2C3" all mean the same colour
@@ -2799,6 +2844,34 @@ static bool parseHexColor(const std::wstring& in, COLORREF& out) {
 }
 
 // file an entered colour and hand it to whatever asked for it
+static bool anyCustomColor() {
+    for (int c = 0; c < kPalCustom; c++) if (gPalCustom[c] != CLR_INVALID) return true;
+    return false;
+}
+
+// hand every custom slot back: with only three slots a reader who wants a
+// different set has to be able to start from empty. A mark still pointing at a
+// cleared slot takes the preset for its kind, so it stays visible and keeps its
+// undo history rather than turning yellow-coincidence garbage.
+static void clearCustomColors() {
+    bool had = anyCustomColor();
+    for (int c = 0; c < kPalCustom; c++) gPalCustom[c] = CLR_INVALID;
+    for (int c = 0; c < kPalCustom; c++) releaseHiHl(kPalPreset + c);
+    if (!had) return;
+    // a default that named a cleared slot would draw the fallback colour anyway,
+    // so point the defaults at the preset for their kind from the start
+    if (gHlDefault >= kPalPreset) gHlDefault = 0;
+    if (gPinDefault >= kPalPreset) gPinDefault = kPalPreset - 1;
+    int hlBack = gHlDefault;
+    int pinBack = gPinDefault;
+    for (Hl& hl : gHls) if (hl.color >= kPalPreset) hl.color = hlBack;
+    for (Pin& pn : gPins) if (pn.color >= kPalPreset) pn.color = pinBack;
+    gPalNext = 0;
+    writeAppPref();
+    markSave();
+    renderPage();
+}
+
 static void applyCustomColor(COLORREF c) {
     int slot = -1;
     for (int k = 0; k < kPalCustom; k++)
@@ -2833,7 +2906,9 @@ static void startColorEntry() {
     int bx = wr.left + (cw - bw) / 2, by = wr.top + (ch - bh) / 2;
     bx = clampBox(bx, bw, wr.left + 4, wr.right - 4);
     by = clampBox(by, bh, wr.top + 4, wr.bottom - 4);
-    gColorBox = CreateWindowExW(WS_EX_TOOLWINDOW, L"EDIT", L"",
+    // the '#' is already in the box, so the reader is told the shape of the
+    // answer instead of having to guess whether the # belongs there
+    gColorBox = CreateWindowExW(WS_EX_TOOLWINDOW, L"EDIT", L"#",
                                 WS_POPUP | WS_BORDER | ES_AUTOHSCROLL, bx, by, bw, bh,
                                 gWnd, nullptr,
                                 (HINSTANCE)GetWindowLongPtrW(gWnd, GWLP_HINSTANCE), nullptr);
@@ -2843,40 +2918,56 @@ static void startColorEntry() {
     SendMessageW(gColorBox, EM_LIMITTEXT, 7, 0);
     gColorBoxBase = (WNDPROC)SetWindowLongPtrW(gColorBox, GWLP_WNDPROC, (LONG_PTR)colorBoxProc);
     ShowWindow(gColorBox, SW_SHOW);
+    SendMessageW(gColorBox, EM_SETSEL, 1, 1);   // caret just past the '#'
     SetForegroundWindow(gColorBox);
     SetFocus(gColorBox);
 }
 
 static LRESULT CALLBACK colorBoxProc(HWND b, UINT m, WPARAM wp, LPARAM lp) {
     switch (m) {
+    case WM_CHAR:
+        // only hex digits ever get in, so the box cannot hold a mistake that went
+        // past the reader; backspace and editing keys still pass
+        if (wp >= 0x20 && wp != L'#') {
+            bool hex = (wp >= L'0' && wp <= L'9') || (wp >= L'a' && wp <= L'f')
+                    || (wp >= L'A' && wp <= L'F');
+            if (!hex) { MessageBeep(0); return 0; }
+        }
+        break;
     case WM_KEYDOWN:
         if (wp == VK_ESCAPE) { closeColorBox(); return 0; }
         if (wp == VK_RETURN) {
+            wchar_t buf[16];
             int n = GetWindowTextLengthW(b);
-            std::vector<wchar_t> buf(n + 1);
-            GetWindowTextW(b, buf.data(), n + 1);
+            if (n > 15) n = 15;
+            GetWindowTextW(b, buf, n + 1);
             COLORREF c;
-            if (parseHexColor(buf.data(), c)) {
+            if (parseHexColor(buf, c)) {
                 closeColorBox();                   // gone before the mark repaints
                 applyCustomColor(c);
             } else {
-                MessageBeep(MB_OK);                // not a colour: keep asking
+                showColorError(b, buf);            // keep asking, box stays open
             }
             return 0;
         }
         break;
     case WM_PAINT: {
         LRESULT r = CallWindowProcW(gColorBoxBase, b, m, wp, lp);
-        if (GetWindowTextLengthW(b) == 0) {        // an empty box says what it wants
+        int len = GetWindowTextLengthW(b);
+        if (len <= 1) {                            // only the seed '#': show the rest
             HDC hdc = GetDC(b);
             if (hdc) {
                 RECT rc;
                 GetClientRect(b, &rc);
                 InflateRect(&rc, -3, -2);
+                int ox = 0;                        // leave room for the '#'
+                SIZE sz;
+                if (GetTextExtentPoint32W(hdc, L"#", 1, &sz)) ox = sz.cx + 3;
+                rc.left += ox;
                 HFONT old = (HFONT)SelectObject(hdc, GetStockObject(DEFAULT_GUI_FONT));
                 COLORREF oldCol = SetTextColor(hdc, RGB(150, 150, 150));
                 int oldBk = SetBkMode(hdc, TRANSPARENT);
-                DrawTextW(hdc, L"#rrggbb", -1, &rc, DT_TOP | DT_LEFT | DT_NOCLIP | DT_SINGLELINE);
+                DrawTextW(hdc, L"rrggbb", -1, &rc, DT_TOP | DT_LEFT | DT_NOCLIP | DT_SINGLELINE);
                 SetBkMode(hdc, oldBk);
                 SetTextColor(hdc, oldCol);
                 SelectObject(hdc, old);
@@ -2886,11 +2977,13 @@ static LRESULT CALLBACK colorBoxProc(HWND b, UINT m, WPARAM wp, LPARAM lp) {
         return r;
     }
     case WM_KILLFOCUS:
-        if (GetTickCount() - gColorBoxBorn > 400) closeColorBox();
+        if (gColorErrBusy) return 0;
+        if (GetTickCount() - gColorBoxBorn > 400) commitColorBox();
         return 0;
     case WM_ACTIVATE:
-        if (LOWORD(wp) == WA_INACTIVE && GetTickCount() - gColorBoxBorn > 400) {
-            closeColorBox(); return 0;
+        if (LOWORD(wp) == WA_INACTIVE) {
+            if (gColorErrBusy) return 0;
+            if (GetTickCount() - gColorBoxBorn > 400) commitColorBox();
         }
         break;
     }
@@ -3241,6 +3334,14 @@ static LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         case 159: gColorTarget = 1; startColorEntry(); return 0;   // recolor a pin
         case 149: gColorTarget = 2; startColorEntry(); return 0;   // default highlight
         case 169: gColorTarget = 3; startColorEntry(); return 0;   // default pin
+        case 180:                                   // hand the three custom slots back
+            if (!anyCustomColor()) return 0;
+            if (MessageBoxW(h, L"Clear your custom colours?\n\n"
+                               L"Marks that use one fall back to the preset for that "
+                               L"kind - a highlight to yellow, a pin to red.",
+                            L"mnpdf", MB_YESNO | MB_ICONQUESTION) != IDYES) return 0;
+            clearCustomColors();
+            return 0;
         case 109:                                  // toggle autosave
             gAutosave = !gAutosave;
             writeAppPref();

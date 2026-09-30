@@ -1,4 +1,4 @@
-mnpdf v2.1.2 - Windows x64 portable release
+mnpdf v2.1.3 - Windows x64 portable release
 
 Run mnpdf.exe. Keep pdfium.dll in the same folder.
 
@@ -16,8 +16,9 @@ Ctrl+0, and drag the scroll bars to move in both directions.
 Highlight selected text (right click, Highlight, then a colour) and drop
 pins with a note attached (right click, Add pin here). Six preset colours
 are shared by highlights and pins, plus up to three of your own #rrggbb
-values - enter them once and they sit beside the presets. Undo anything
-with Ctrl+Z and Ctrl+Y.
+values - the box opens with the # already in it, a wrong entry is explained
+at once, and Clear custom colours hands the slots back. Undo anything with
+Ctrl+Z and Ctrl+Y.
 
 Annotations never stack on top of each other and never block the page: a
 pin's editor stays inside the window, and clicking anywhere else closes it.
