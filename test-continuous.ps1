@@ -15,6 +15,7 @@ public static class C {
   [DllImport("user32.dll")] public static extern bool PostMessageW(IntPtr h, uint m, IntPtr w, IntPtr l);
   [DllImport("user32.dll")] public static extern int GetWindowTextW(IntPtr h, [MarshalAs(UnmanagedType.LPWStr)] StringBuilder s, int n);
   [DllImport("user32.dll")] public static extern bool MoveWindow(IntPtr h, int x, int y, int w, int h2, bool r);
+  [DllImport("user32.dll")] public static extern int GetSystemMetrics(int i);
 }
 "@
 [void][C]::SetProcessDpiAwarenessContext([IntPtr](-4))
@@ -41,9 +42,18 @@ function Title {
 $t0 = Title
 Write-Output "start: '$t0'"
 
-# 1. resize wider -> fit-width must refit (zoom % changes)
+# 1. resize -> fit-width must refit (zoom % changes)
 $zoom0 = if ($t0 -match '(\d+)%') { [int]$Matches[1] } else { 0 }
-[void][C]::MoveWindow($h, 60, 60, 1500, 900, $true)
+# The target must be a size this screen can actually show, not one taken from
+# another machine: Windows caps a window at the work area (plus the invisible
+# frame sliver), so a hard-coded 1500x900 on a runner whose work area is smaller
+# comes out exactly the size the created window was already capped at, the
+# client width never moves, and fit-width correctly keeps its zoom - CI reported
+# that as "resize refit: zoom stayed 165%" on the 1024x768 runner. Half the work
+# area always fits, and always differs from a window capped at the whole of it.
+$rw = [Math]::Max(320, [int]([C]::GetSystemMetrics(78) / 2))    # SM_CXMAXIMIZED: the primary work area
+$rh = [Math]::Max(240, [int]([C]::GetSystemMetrics(79) / 2))    # SM_CYMAXIMIZED
+[void][C]::MoveWindow($h, 60, 60, $rw, $rh, $true)
 Await { (Title) -match '(\d+)%' -and [int]$Matches[1] -ne $zoom0 } 8000 | Out-Null
 $t1 = Title
 $zoom1 = if ($t1 -match '(\d+)%') { [int]$Matches[1] } else { 0 }
