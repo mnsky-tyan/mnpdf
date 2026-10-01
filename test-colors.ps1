@@ -384,10 +384,10 @@ try {
   $box = OpenColorBox $proc.Id $wnd 149
   if ($box -eq [IntPtr]::Zero) { Fail 'the colour box opens' } else {
     $t = BoxText $box
-    # the box holds the keyboard while it is up, and this machine talks to the
-    # front window while a suite runs: a stray keystroke lands after the seed,
-    # so what is checked is that the box opens already telling the reader the
-    # shape of the answer, not that nobody else typed
+    # the box holds the keyboard while it is up, and the desktop talks to
+    # the front window while a suite runs: a stray keystroke lands after the
+    # seed, so what is checked is that the box opens already telling the reader
+    # the shape of the answer, not that nobody else typed
     if ($t.StartsWith('#')) { Pass 'the colour box opens with the # already in it' }
     else { Fail ('the colour box opens with the # already in it (got "{0}")' -f $t) }
   }

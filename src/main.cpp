@@ -1935,7 +1935,7 @@ static void doPrint() {
     GlobalFree(pd.hDevMode);
 }
 
-static bool gVerboseTitle = false;               // debug harnesses: page/zoom/RAM in the title
+static bool gVerboseTitle = false;               // MNPDF_VERBOSE: page/zoom/RAM in the title
 
 static void updateTitle() {
     wchar_t t[256];
@@ -3543,7 +3543,7 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int show) {
     // (WS_VISIBLE is in the style) both run inside CreateWindowExW, so a title
     // computed during them must already see these two
     const bool background = _wgetenv(L"MNPDF_BACKGROUND") != nullptr;
-    gVerboseTitle = _wgetenv(L"MNPDF_VERBOSE") != nullptr;   // debug harness opt-in
+    gVerboseTitle = _wgetenv(L"MNPDF_VERBOSE") != nullptr;   // test-suite opt-in: richer window title
     // MNPDF_BACKGROUND=1: gate/test runs must not steal focus. Mask WS_VISIBLE
     // out of the create style so the first appearance is already minimized
     // and inactive - a later ShowWindow cannot undo an initial flash.
