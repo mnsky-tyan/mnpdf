@@ -33,6 +33,7 @@ public static class CAP {
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
   [DllImport("user32.dll")] public static extern bool PostMessageW(IntPtr h, uint m, IntPtr w, IntPtr l);
   [DllImport("user32.dll")] public static extern IntPtr SendMessageW(IntPtr h, uint m, IntPtr w, IntPtr l);
+  [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
   [DllImport("user32.dll")] public static extern int GetSystemMetricsForDpi(int i, uint dpi);
   [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr c);
@@ -88,6 +89,17 @@ function FrameTop([IntPtr]$Wnd) {
   $d = [CAP]::GetDpiForWindow($Wnd)
   return [int][CAP]::GetSystemMetricsForDpi(33, $d) + [int][CAP]::GetSystemMetricsForDpi(92, $d)
 }
+function Rep([IntPtr]$Wnd, [string]$Tag) {
+  $c = New-Object CAP+RECT; $w = New-Object CAP+RECT
+  [void][CAP]::GetClientRect($Wnd, [ref]$c); [void][CAP]::GetWindowRect($Wnd, [ref]$w)
+  Write-Output ("{0}: window {1}x{2} at ({3},{4})  client {5}x{6}  iconic={7}" -f $Tag, ($w.R-$w.L), ($w.B-$w.T), $w.L, $w.T, ($c.R-$c.L), ($c.B-$c.T), [CAP]::IsIconic($Wnd))
+}
+# The frame this suite asserts on only exists while the window is really shown:
+# a window still minimizing offers a client rect of 0x0 and a window rect that is
+# Windows' parked position, neither of which the app ever shows a reader.
+function SettledRect([IntPtr]$Wnd) {
+  [void](Await { -not [CAP]::IsIconic($Wnd) -and (ClientSize $Wnd)[1] -gt 200 } 15000)
+}
 function Toggle([IntPtr]$Wnd) {
   [void][CAP]::PostMessageW($Wnd, 0x0111, [IntPtr]$CMD_TOGGLE, [IntPtr]::Zero)
   Start-Sleep -Milliseconds 500
@@ -107,14 +119,20 @@ try {
 
   $p = Launch $exe $doc
   $h = FindAppWindow $p.Id
+  SettledRect $h
   [void](Await { (Title $h) -match 'arc\.pdf' } 20000)
 
   # ---- 1. a captioned launch carves the caption out ------------------------
   $gapCap = CaptionGap $h
   if ($gapCap -gt 0) { Pass ("captioned launch leaves {0} px of non-client at the top" -f $gapCap) }
   else { Fail 'captioned launch' "no caption to hide (gap=0)" }
-  $htCapTop  = HitAt $h 30 4                       # the frame sliver above the caption
-  $htCapDrag = HitAt $h 30 ((FrameTop $h) + 4)     # inside the caption, below the frame sliver
+  $cwCap, $chCap = ClientSize $h
+  $htCapTop  = HitAt $h 30 4                        # the frame sliver above the caption
+  $htCapDrag = HitAt $h ([int]($cwCap / 2)) ((FrameTop $h) + 4)   # inside the caption, but
+  #                     horizontally centred: the system-menu icon on the left and the
+  #                     caption buttons on the right answer with their own hit codes
+  #                     (HTSYSMENU, HTMINBUTTON...), which is a fact about the window,
+  #                     not about the caption being draggable
   if ($htCapDrag -eq 2) { Pass 'a captioned window drags from its caption' }
   else { Fail 'caption drag' "expected HTCAPTION(2), got $htCapDrag" }
   if ($htCapTop -eq 12) { Pass 'a captioned window resizes from the top frame sliver' }
@@ -164,6 +182,7 @@ try {
   QuitAndWait $p
   $p2 = Launch $exe $doc
   $h2 = FindAppWindow $p2.Id
+  SettledRect $h2
   [void](Await { (Title $h2) -match 'arc\.pdf' } 20000)
   $gapRel = CaptionGap $h2
   if ($gapRel -eq 0) { Pass 'a relaunch with the titlebar hidden comes up caption-less' }
