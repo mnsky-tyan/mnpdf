@@ -46,6 +46,11 @@ public static class CAP {
 # measured in instead of relying on Windows virtualising them
 [void][CAP]::SetProcessDpiAwarenessContext([IntPtr](-4))
 
+# the title is this suite's only proof that a document is open: the app puts its
+# page count there only in this mode (src/main.cpp updateTitle), and it does so
+# from renderPage, i.e. once gDoc holds the fixture
+$env:MNPDF_VERBOSE = "1"
+
 $failures = New-Object System.Collections.Generic.List[string]
 $doc = Join-Path $PSScriptRoot 'tests\arc.pdf'
 $exe = $env:MNPDF_GATE_EXE
@@ -89,11 +94,6 @@ function FrameTop([IntPtr]$Wnd) {
   $d = [CAP]::GetDpiForWindow($Wnd)
   return [int][CAP]::GetSystemMetricsForDpi(33, $d) + [int][CAP]::GetSystemMetricsForDpi(92, $d)
 }
-function Rep([IntPtr]$Wnd, [string]$Tag) {
-  $c = New-Object CAP+RECT; $w = New-Object CAP+RECT
-  [void][CAP]::GetClientRect($Wnd, [ref]$c); [void][CAP]::GetWindowRect($Wnd, [ref]$w)
-  Write-Output ("{0}: window {1}x{2} at ({3},{4})  client {5}x{6}  iconic={7}" -f $Tag, ($w.R-$w.L), ($w.B-$w.T), $w.L, $w.T, ($c.R-$c.L), ($c.B-$c.T), [CAP]::IsIconic($Wnd))
-}
 # The frame this suite asserts on only exists while the window is really shown:
 # a window still minimizing offers a client rect of 0x0 and a window rect that is
 # Windows' parked position, neither of which the app ever shows a reader.
@@ -120,13 +120,13 @@ try {
   $p = Launch $exe $doc
   $h = FindAppWindow $p.Id
   SettledRect $h
-  [void](Await { (Title $h) -match 'arc\.pdf' } 20000)
+  [void](Await { (Title $h) -match 'mnpdf \d+/\d+' } 20000)
 
   # ---- 1. a captioned launch carves the caption out ------------------------
   $gapCap = CaptionGap $h
   if ($gapCap -gt 0) { Pass ("captioned launch leaves {0} px of non-client at the top" -f $gapCap) }
   else { Fail 'captioned launch' "no caption to hide (gap=0)" }
-  $cwCap, $chCap = ClientSize $h
+  $cwCap = (ClientSize $h)[0]
   $htCapTop  = HitAt $h 30 4                        # the frame sliver above the caption
   $htCapDrag = HitAt $h ([int]($cwCap / 2)) ((FrameTop $h) + 4)   # inside the caption, but
   #                     horizontally centred: the system-menu icon on the left and the
@@ -183,7 +183,7 @@ try {
   $p2 = Launch $exe $doc
   $h2 = FindAppWindow $p2.Id
   SettledRect $h2
-  [void](Await { (Title $h2) -match 'arc\.pdf' } 20000)
+  [void](Await { (Title $h2) -match 'mnpdf \d+/\d+' } 20000)
   $gapRel = CaptionGap $h2
   if ($gapRel -eq 0) { Pass 'a relaunch with the titlebar hidden comes up caption-less' }
   else { Fail 'relaunch captionless' "the caption came back (gap=$gapRel)" }
@@ -200,9 +200,12 @@ try {
 }
 finally {
   Restore-AppPref
-  Get-Process -Name mnpdf -ErrorAction SilentlyContinue |
-    Where-Object { $_.Path -and $_.Path -like "$PSScriptRoot\build\*" } |
-    Stop-Process -Force -ErrorAction SilentlyContinue
+  # only ever the two instances this suite started: the gate guarantees no other
+  # instance is running, and an instance the captain opened himself must never
+  # be force-killed, because a force kill skips the app's graceful exit
+  foreach ($proc in @($p, $p2)) {
+    if ($proc -and -not $proc.HasExited) { $proc | Stop-Process -Force -ErrorAction SilentlyContinue }
+  }
 }
 
 Write-Output ""
