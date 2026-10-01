@@ -1,7 +1,7 @@
 # The suites, on a plain Windows machine. scripts/gate-test.sh is the WSL
 # wrapper: it adds a drive-letter guard, a checkout lock and worktree
 # isolation, and it is what the local gate calls. This runner is what CI (and
-# any Windows shell without WSL) calls, so both entry points run the same six
+# any Windows shell without WSL) calls, so both entry points run the same seven
 # suites against the same isolated preferences and a freshly built binary.
 #
 # Every suite gets its own APPDATA and TEMP, so a suite that writes preferences
@@ -15,7 +15,7 @@ $psExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.e
 
 # the colour suite types into a window of the app: a minimised owner can never
 # give its colour popup the keyboard, so that one runs in the foreground
-$suites = @('select-msg-test', 'test-features', 'test-suite2', 'test-continuous', 'test-release', 'test-colors')
+$suites = @('select-msg-test', 'test-features', 'test-suite2', 'test-continuous', 'test-release', 'test-captionless', 'test-colors')
 $foreground = @('test-colors')
 
 Write-Output '=== build'
@@ -51,7 +51,7 @@ function Stop-TestInstances {
 $failed = New-Object System.Collections.Generic.List[string]
 try {
   $script:realTemp = $env:TEMP
-foreach ($s in $suites) {
+  foreach ($s in $suites) {
     # $state is built from the real TEMP, captured before the first suite
     # rewrote it: the isolated environment must not nest inside a previous one
     $state = Join-Path $script:realTemp ("mnpdf-ci-" + [Guid]::NewGuid().ToString('n'))

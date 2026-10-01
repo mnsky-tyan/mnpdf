@@ -109,7 +109,7 @@ printf 'GATE: logs and isolated preferences: %s\n' "$run_dir"
 # owner can never give its colour popup the keyboard, and keystrokes posted at
 # it are simply not delivered. Everything else stays minimised.
 foreground_suites=' test-colors '
-for s in select-msg-test test-features test-suite2 test-continuous test-release test-colors; do
+for s in select-msg-test test-features test-suite2 test-continuous test-release test-captionless test-colors; do
   state="$run_dir/$s"
   mkdir -p "$state/appdata" "$state/temp"
   export MNPDF_GATE_STATE="$(wslpath -w "$state")"

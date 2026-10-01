@@ -9,7 +9,7 @@ of the app lives in `README.txt` (shipped) and `README.md` (repository page).
 
 - Two entry points, one set of suites. `scripts/gate-test.sh` (WSL: adds a
   drive-letter guard, a checkout lock, isolated per-suite state) and
-  `scripts/test-ci.ps1` (plain Windows: the same build and the same six
+  `scripts/test-ci.ps1` (plain Windows: the same build and the same seven
   suites, no `wslpath`). The GitHub workflow runs the latter on a Windows
   runner, so a pull request always has a real check.
 - `origin` is `https://github.com/mnsky-tyan/mnpdf.git`, because `no-mistakes`

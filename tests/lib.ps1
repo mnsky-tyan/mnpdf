@@ -34,6 +34,7 @@ public static class MN {
   [DllImport("user32.dll")] public static extern bool GetWindowPlacement(IntPtr h, ref WPL p);
   [DllImport("user32.dll")] public static extern bool SetWindowPlacement(IntPtr h, ref WPL p);
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
 }
 "@
 
@@ -100,7 +101,18 @@ function Launch([string]$Exe, [string]$Doc) {
   if (-not (Await { (FindAppWindow $proc.Id) -ne [IntPtr]::Zero } 20000)) { throw "no mnpdf app window ($Exe $Doc)" }
   $w = FindAppWindow $proc.Id
   if (-not (Await { [MN]::IsWindowVisible($w) } 20000)) { throw "app window never shown" }
+  # A minimized window still answers IsWindowVisible, so the wait above can pass
+  # while the app is still about to run its own first ShowWindow - which for a
+  # backgrounded launch minimizes it again. Measured in that window: window
+  # 314x50 at -32000,-32000, client 0x0, iconic=True (Windows keeps the minimized
+  # rect as the window size, so a suite that trusts a rect there measures a frame
+  # no reader ever sees). Restore, then let the settle poll above confirm the
+  # window is really back before the suite measures it.
   ShowNoActivate $w
+  for ($settle = 0; $settle -lt 10 -and [MN]::IsIconic($w); $settle++) {
+    Start-Sleep -Milliseconds 200
+    ShowNoActivate $w
+  }
   return $proc
 }
 

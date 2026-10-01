@@ -7,7 +7,7 @@ commands:
   test: bash scripts/gate-test.sh
 
 # CI runs on GitHub (see .github/workflows/ci.yml), so a pull request always
-# registers a real check: the same six suites, on a Windows runner, with a
+# registers a real check: the same seven suites, on a Windows runner, with a
 # freshly built binary and per-suite isolated preferences. commands.test above
 # is the WSL convenience wrapper; both build the binary before the suites run.
 # These settings are trusted only from the default branch, so this has to reach

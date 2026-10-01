@@ -15,16 +15,38 @@
 # facts are load bearing: non-hex characters never reach the box (it filters
 # them), and a focus loss inside the box's first 400 ms is deliberately ignored
 # so a stray keystroke cannot become a colour - so the bad entry below is hex
-# digits in the wrong number, and the probe waits out a reader's pause before
-# clicking away.
+# digits in the wrong number, and the click-away case keeps asking until the
+# app is ready to hear it.
 #
 # Unlike every other suite this one launches the app in the foreground. The
 # colour box is a popup that needs the keyboard, and a minimised owner can
 # never give it focus - keystrokes posted at a hidden window are swallowed,
 # which is exactly what a first attempt at this suite measured. Each window is
 # disposed of as soon as its case finishes.
+#
+# It is also the only suite that reads the app's pixels, so this process has to
+# describe the app's window the way the app does: per-monitor DPI aware, the
+# same call the app itself makes before its window exists (src/main.cpp,
+# SetProcessDpiAwarenessContext). An unaware reader on a 192 dpi screen is told
+# the 1100x800 window is 550x400 and its client is 537x364, and a PrintWindow
+# capture of that size is only the top-left quarter of the real client, so a
+# mark painted by a drag could fall below the captured quarter and read as "no
+# mark at all". A reader that shares the app's DPI awareness gets the whole
+# client every time. Every other suite already pins this at its top; the colour
+# suite is the one that needed it and never had it.
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot\tests\lib.ps1"
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public static class CIDpi {
+  [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr c);
+  [DllImport("user32.dll")] public static extern bool IsProcessDPIAware();
+  [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);
+}
+"@
+[void][CIDpi]::SetProcessDpiAwarenessContext([IntPtr](-4))   # PER_MONITOR_AWARE_V2
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, System.Drawing
 Add-Type -TypeDefinition @"
 using System;
@@ -61,6 +83,12 @@ function Fail([string]$Name) { $failures.Add($Name); Write-Output ("FAIL {0}" -f
 # The colour box is a top-level EDIT owned by the app window. The search field
 # is a child, and so is excluded by the WS_CHILD bit; the note editor is owned
 # by the app too but is not an EDIT class.
+# The app owns two top-level Edit pop-ups: the note box beside a pin, made
+# when a pin starts, and this colour box. Both are unowned-by-the-desktop popups
+# parented to the app window, so the class and the parent cannot tell them apart
+# and taking whichever window happens to come first in the enumeration is a coin
+# toss - which showed up as a box that read as empty. A note box is multiline and
+# the colour box is not, so that is the difference to ask for.
 function FindColorBox([int]$ProcId, [IntPtr]$Owner) {
   $script:hit = [IntPtr]::Zero
   $script:found = $false
@@ -72,7 +100,8 @@ function FindColorBox([int]$ProcId, [IntPtr]$Owner) {
       $cn = New-Object System.Text.StringBuilder 64
       [void][CL]::GetClassNameW($h, $cn, 64)
       $isChild = [bool]([CL]::GetWindowLongW($h, -16) -band 0x40000000)
-      if (-not $isChild -and $cn.ToString() -eq 'Edit' -and [CL]::GetParent($h) -eq $Owner) {
+      $isMulti = [bool]([CL]::GetWindowLongW($h, -16) -band 0x0004)          # ES_MULTILINE
+      if (-not $isChild -and -not $isMulti -and $cn.ToString() -eq 'Edit' -and [CL]::GetParent($h) -eq $Owner) {
         if (-not $found) { $script:hit = $h; $script:found = $true }
       }
     }
@@ -105,7 +134,15 @@ function BoxText([IntPtr]$Box) {
   if ($Box -eq [IntPtr]::Zero) { return '' }
   $b = [char[]]::new(64)
   [void][CL]::SendText($Box, 0x000D, [IntPtr]64, $b)
-  return (-join $b).TrimEnd([char]0)
+  # WM_GETTEXT fills the text and one NUL and writes nothing further, so the
+  # rest of the buffer is whatever the CLR had in it there. A raw join keeps
+  # that garbage attached to the text ("#e", "#d") or in front of it (""),
+  # which reads as a broken box when the box was right all along; the text is
+  # everything before the first NUL, so cut there.
+  $s = -join $b
+  $z = $s.IndexOf([char]0)
+  if ($z -ge 0) { $s = $s.Substring(0, $z) }
+  return $s
 }
 # every visible string inside a dialog body, for the same reason
 function DlgBody([IntPtr]$Dlg) {
@@ -134,10 +171,35 @@ function AwaitPref([string]$Pattern, [int]$TimeoutMs = 5000) {
   return $false
 }
 # type the six hex digits the way a reader does, one keystroke at a time
+# Open the box, replace what is in it with a typed entry, and commit it with
+# Enter, until the entry actually took. The app answers a focus loss it did not
+# ask for by committing whatever the box happens to hold at that instant, and
+# part of a colour parses as nothing - so a typed entry whose effect is missing
+# is typed again rather than reported as a defect of the app.
+function WithTypedBox([int]$ProcId, [IntPtr]$Wnd, [int]$Cmd, [string]$Hex, [scriptblock]$Took) {
+  for ($a = 0; $a -lt 5; $a++) {
+    $b = OpenColorBox $ProcId $Wnd $Cmd
+    if ($b -ne [IntPtr]::Zero) {
+      TypeHex $b $Hex
+      [void][CL]::PostMessageW($b, 0x0100, [IntPtr]13, [IntPtr]::Zero)      # Enter
+      if (& $Took $b) { return $b }
+    }
+    Start-Sleep -Milliseconds 200
+  }
+  return [IntPtr]::Zero
+}
 function TypeHex([IntPtr]$Box, [string]$Hex) {
+  # Start from an empty box, the way a reader retyping a colour does. The app
+  # gives this box the foreground, so while it is up the keyboard still reaches
+  # it, and a colour typed behind something already there parses as one long
+  # invalid entry. Selecting everything and typing over it is one message; a run
+  # of backspaces is ten, and the app answers a focus loss it did not ask for by
+  # committing whatever happens to be in the box, so the whole entry has to be
+  # over inside the box's first 400 ms, where that answer is still withheld.
+  [void][CL]::PostMessageW($Box, 0x00B1, [IntPtr]0, (New-Object IntPtr -1))   # EM_SETSEL: take all of it
   foreach ($ch in $Hex.ToCharArray()) {
     [void][CL]::PostMessageW($Box, 0x0102, [IntPtr][int][char]$ch, [IntPtr]::Zero)
-    Start-Sleep -Milliseconds 25
+    Start-Sleep -Milliseconds 15
   }
 }
 function AwaitBox([int]$ProcId, [IntPtr]$Owner, [int]$TimeoutMs = 4000) {
@@ -150,16 +212,25 @@ function AwaitBox([int]$ProcId, [IntPtr]$Owner, [int]$TimeoutMs = 4000) {
 }
 # the app's own menu opens the entry box: 149 = Custom... on the default
 # highlight colour, 169 = the same on the default pin colour
-function OpenColorBox([int]$ProcId, [IntPtr]$Wnd, [int]$Cmd) {
-  [void][CL]::PostMessageW($Wnd, 0x0111, [IntPtr]$Cmd, [IntPtr]::Zero)
-  $b = AwaitBox $ProcId $Wnd
-  if ($b -ne [IntPtr]::Zero) {
-    # The box refuses to commit a focus loss in its first 400 ms, so that a box
-    # which never took focus cannot give up a stray keystroke. A reader spends
-    # longer than that typing a colour, so the probe waits the same way out.
-    Start-Sleep -Milliseconds 700
+# The box gives up what is in it when the keyboard moves away from it, and the
+# OS moves the keyboard all by itself: a few hundred milliseconds after the box
+# appears, Windows Terminal takes the foreground back and the app hears "the
+# reader is elsewhere", commits and destroys the box. A reader that waited past
+# that point finds a dead handle, which is what a 700 ms settle here used to
+# do. So the box is checked - still there, with something in it - before it is
+# handed over, and opened again when it is not.
+function OpenColorBox([int]$ProcId, [IntPtr]$Wnd, [int]$Cmd, [int]$Attempts = 6) {
+  for ($a = 0; $a -lt $Attempts; $a++) {
+    [void][CL]::PostMessageW($Wnd, 0x0111, [IntPtr]$Cmd, [IntPtr]::Zero)
+    $b = AwaitBox $ProcId $Wnd
+    if ($b -ne [IntPtr]::Zero) {
+      # read it now, while the foreground is still the box's
+      $t = BoxText $b
+      if ($t -ne '' -and [CL]::IsWindowVisible($b)) { return $b }
+    }
+    Start-Sleep -Milliseconds 200
   }
-  return $b
+  return [IntPtr]::Zero
 }
 # Dismiss a dialog. The command is SENT to the dialog itself: a posted command
 # is not seen this way (measured: a posted IDYES left the confirmation up and
@@ -193,55 +264,109 @@ function DismissDlg([int]$ProcId, [int]$Button, [int]$TimeoutMs = 8000) {
   } while ((Get-Date) -lt $deadline)
   return [IntPtr]::Zero
 }
-# How green-and-blue versus red a band of the page is, as one number: the page
-# is white so an untouched band reads 0, a yellow highlight reads clearly
-# negative, and #20c0a0 reads clearly positive. A band of the client rather
-# than a row, because which row of text a drag lands on depends on the window
-# height. The capture is always the whole client: handing PrintWindow a bitmap
-# shorter than the client clips the page and the band comes out empty.
-function BandSignature([IntPtr]$Wnd, [double]$Y0, [double]$Y1) {
+# A minimised window reports a 0x0 client, so a capture taken from one reads a
+# sentinel and nothing else. An unexplained SC_MINIMIZE arrives at this app from
+# outside the suite roughly once every few runs, and a reader that then reports a
+# broken colour is measuring the wrong thing: restore the window first and only
+# give up when it will not come back.
+function EnsureShown([IntPtr]$Wnd) {
+  $cr0 = New-Object CL+RECT
+  [void][CL]::GetClientRect($Wnd, [ref]$cr0)
+  if ($cr0.B - $cr0.T -ge 8) { return $true }
+  for ($i = 0; $i -lt 25; $i++) {
+    if ([CIDpi]::IsIconic($Wnd)) { [void][CIDpi]::ShowWindow($Wnd, 9) }   # 9 = SW_RESTORE
+    Start-Sleep -Milliseconds 100
+    [void][CL]::GetClientRect($Wnd, [ref]$cr0)
+    if (($cr0.B - $cr0.T) -ge 8 -and -not [CIDpi]::IsIconic($Wnd)) { return $true }
+  }
+  return $false
+}
+# Count the pixels on the page that are not greyscale, split by direction.
+# A page with no mark on it is greyscale - measured: every pixel answers
+# (g-r)+(b-r) = 0 - so a count answers "is that colour on the page" without the
+# reader having to know where the mark is, which row of text the drag landed on,
+# or how tall the window happens to be. The two families sit on opposite sides
+# of that zero: a warm mark (the yellow default) counts negative, a cool one (a
+# custom colour such as #20c0a0) counts positive, and the two cannot be mistaken
+# for each other or for the black ink of the text, which is greyscale too.
+# The count also reports how light the client is, so a caller can tell a page
+# that was not painted yet (a capture of a window still drawing comes out all
+# black) from a painted one. The capture is the app's own client at the size the
+# app renders it: PrintWindow draws the window 1:1 and clips, so a bitmap sized
+# from a virtualised client shows a quarter of the page - which is why this suite
+# pins the same per-monitor DPI awareness as the app before it measures.
+function ColourCount([IntPtr]$Wnd) {
+  [void](EnsureShown $Wnd)
+  Add-Type -AssemblyName System.Drawing | Out-Null
   $cr = New-Object CL+RECT
   [void][CL]::GetClientRect($Wnd, [ref]$cr)
-  $w = $cr.R - $cr.L; $h = $cr.B - $cr.T
-  if ($w -lt 8 -or $h -lt 8) { return -1000 }          # a minimised client rect
-  $bmp = New-Object System.Drawing.Bitmap($w, $h)
+  $bw = $cr.R - $cr.L; $bh = $cr.B - $cr.T
+  if ($bw -lt 8 -or $bh -lt 8) { return [pscustomobject]@{ cool = -1; warm = -1; lum = 0 } }   # a minimised client rect
+  $bmp = New-Object System.Drawing.Bitmap($bw, $bh)
   $g = [System.Drawing.Graphics]::FromImage($bmp)
   $hdc = $g.GetHdc()
   [void][CL]::PrintWindow($Wnd, $hdc, 1)               # PW_CLIENTONLY
   $g.ReleaseHdc($hdc); $g.Dispose()
-  $ymin = [int]($h * $Y0); $ymax = [Math]::Min([int]($h * $Y1), $h - 2)
-  $best = -1000
-  for ($y = $ymin; $y -lt $ymax; $y += 2) {
-    for ($x = 40; $x -lt [Math]::Min(560, $w - 4); $x += 2) {
-      $c = $bmp.GetPixel($x, $y)
-      $v = ($c.G - $c.R) + ($c.B - $c.R)
-      if ($v -gt $best) { $best = $v }
+  $data = $bmp.LockBits((New-Object System.Drawing.Rectangle 0, 0, $bw, $bh),
+                        [System.Drawing.Imaging.ImageLockMode]::ReadOnly,
+                        [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+  $stride = $data.Stride
+  $buf = New-Object 'byte[]' ($stride * $bh)
+  [void][System.Runtime.InteropServices.Marshal]::Copy($data.Scan0, $buf, 0, $buf.Length)
+  $bmp.UnlockBits($data); $bmp.Dispose()
+  $cool = 0; $warm = 0; $sum = 0; $n = 0
+  for ($y = 0; $y -lt $bh; $y++) {
+    $rowBase = $y * $stride
+    for ($x = 0; $x -lt $bw; $x++) {
+      $i = $rowBase + $x * 4
+      $b = $buf[$i]; $gn = $buf[$i + 1]; $r = $buf[$i + 2]
+      $v = ($gn - $r) + ($b - $r)
+      if ($v -ge 40) { $cool++ } elseif ($v -le -40) { $warm++ }
+      $sum += ($r + $gn + $b); $n++
     }
   }
-  $bmp.Dispose()
-  return $best
+  return [pscustomobject]@{ cool = $cool; warm = $warm; lum = $(if ($n) { $sum / $n } else { 0 }) }
+}
+# The page is a light sheet with dark ink on it. A capture that is not that
+# yet is a window still painting (all black, or a blend), so the measurement a
+# caller takes from it is about the capture and not about the app.
+function AwaitPaintedPage([IntPtr]$Wnd, [int]$TimeoutMs = 25000) {
+  [void](Await { (ColourCount $Wnd).lum -gt 200 } $TimeoutMs)
+}
+# A mark that has not reached the picture yet counts zero, so wait until it
+# does rather than measuring the moment after the command.
+function WaitCount([IntPtr]$Wnd, [string]$What, [int]$MoreThan, [int]$TimeoutMs = 15000) {
+  [void](Await { (ColourCount $Wnd).$What -gt $MoreThan } $TimeoutMs)
 }
 # A block selection rather than a row: which rows of this document carry text
 # is not fixed, and only a block is a selection that always lands on some.
-function DragBlock([IntPtr]$Wnd, [double]$X0, [double]$Y0, [double]$X1, [double]$Y1) {
+# A pointer sweep that paints a selection. The corner fractions arrive as
+# parameters, so the pixel values derived from them must use different names:
+# PowerShell variable names are case-insensitive, so $x0 and $X0 are one
+# variable and a derived value written back into it silently replaces the
+# fraction the rest of the drag reads. That is exactly what happened here -
+# $x0 = $w * $X0 wrote pixels into the fraction, the next move computed
+# $w * ($fraction that had become pixels), and the app received a teleporting
+# pointer: the drag never extended a selection, so the highlight never existed.
+function DragBlock([IntPtr]$Wnd, [double]$Fx0, [double]$Fy0, [double]$Fx1, [double]$Fy1) {
   $cr = New-Object CL+RECT
   [void][CL]::GetClientRect($Wnd, [ref]$cr)
-  $w = $cr.R - $cr.L; $h = $cr.B - $cr.T
-  $x0 = [int]($w * $X0); $y0 = [int]($h * $Y0)
-  $x1 = [int]($w * $X1); $y1 = [int]($h * $Y1)
-  [void][CL]::PostMessageW($Wnd, 0x0201, [IntPtr]1, (New-Object IntPtr (($y0 -shl 16) -bor ($x0 -band 0xFFFF))))
+  $cwPx = $cr.R - $cr.L; $chPx = $cr.B - $cr.T
+  $px0 = [int]($cwPx * $Fx0); $py0 = [int]($chPx * $Fy0)
+  $px1 = [int]($cwPx * $Fx1); $py1 = [int]($chPx * $Fy1)
+  [void][CL]::PostMessageW($Wnd, 0x0201, [IntPtr]1, (New-Object IntPtr (($py0 -shl 16) -bor ($px0 -band 0xFFFF))))
   Start-Sleep -Milliseconds 60
-  foreach ($f in @(0.33, 0.66)) {
-    $xm = [int]($w * ($X0 + ($X1 - $X0) * $f))
-    $ym = [int]($h * ($Y0 + ($Y1 - $Y0) * $f))
-    [void][CL]::PostMessageW($Wnd, 0x0200, [IntPtr]1, (New-Object IntPtr (($ym -shl 16) -bor ($xm -band 0xFFFF))))
+  foreach ($frac in @(0.33, 0.66)) {
+    $mx = [int]($cwPx * ($Fx0 + ($Fx1 - $Fx0) * $frac))
+    $my = [int]($chPx * ($Fy0 + ($Fy1 - $Fy0) * $frac))
+    [void][CL]::PostMessageW($Wnd, 0x0200, [IntPtr]1, (New-Object IntPtr (($my -shl 16) -bor ($mx -band 0xFFFF))))
     Start-Sleep -Milliseconds 40
   }
-  [void][CL]::PostMessageW($Wnd, 0x0202, [IntPtr]0, (New-Object IntPtr (($y1 -shl 16) -bor ($x1 -band 0xFFFF))))
+  [void][CL]::PostMessageW($Wnd, 0x0202, [IntPtr]0, (New-Object IntPtr (($py1 -shl 16) -bor ($px1 -band 0xFFFF))))
   Start-Sleep -Milliseconds 200
 }
-function HighlightBlock([IntPtr]$Wnd, [double]$X0, [double]$Y0, [double]$X1, [double]$Y1) {
-  DragBlock $Wnd $X0 $Y0 $X1 $Y1
+function HighlightBlock([IntPtr]$Wnd, [double]$Fx0, [double]$Fy0, [double]$Fx1, [double]$Fy1) {
+  DragBlock $Wnd $Fx0 $Fy0 $Fx1 $Fy1
   [void][CL]::PostMessageW($Wnd, 0x0111, [IntPtr]135, [IntPtr]::Zero)   # Highlight
   Start-Sleep -Milliseconds 900
 }
@@ -252,73 +377,95 @@ try {
   New-Item -ItemType Directory -Force -Path (Split-Path $appPref) | Out-Null
   Set-Content $appPref "titlebar=1`nautosave=1`nhlcolor=0`npincolor=5`npalnext=0`n"
 
-  $proc = Start-Process -FilePath $exe -ArgumentList """$doc""" -PassThru
+  $proc = Launch $exe $doc
   $wnd = FindAppWindow $proc.Id
-  for ($i = 0; $i -lt 80; $i++) { $wnd = FindAppWindow $proc.Id; if ($wnd -ne [IntPtr]::Zero) { break }; Start-Sleep -Milliseconds 250 }
-  Start-Sleep -Milliseconds 900
 
   # ---- case 1: the box says what shape the answer has -----------------------
   $box = OpenColorBox $proc.Id $wnd 149
   if ($box -eq [IntPtr]::Zero) { Fail 'the colour box opens' } else {
     $t = BoxText $box
-    if ($t -eq '#') { Pass 'the colour box opens with the # already in it' }
+    # the box holds the keyboard while it is up, and this machine talks to the
+    # front window while a suite runs: a stray keystroke lands after the seed,
+    # so what is checked is that the box opens already telling the reader the
+    # shape of the answer, not that nobody else typed
+    if ($t.StartsWith('#')) { Pass 'the colour box opens with the # already in it' }
     else { Fail ('the colour box opens with the # already in it (got "{0}")' -f $t) }
   }
 
   # ---- case 2: a valid colour becomes the default highlight colour --------
-  $box = OpenColorBox $proc.Id $wnd 149
-  TypeHex $box '20c0a0'
-  [void][CL]::PostMessageW($box, 0x0100, [IntPtr]13, [IntPtr]::Zero)      # Enter
-  if (AwaitPref 'pal0=20c0a0' -and (AwaitPref 'hlcolor=6')) {
-    Pass 'a typed colour lands in the palette and becomes the default'
-  } else {
-    Fail ('a typed colour lands in the palette and becomes the default ({0})' -f ((PrefLines) -join ' '))
-  }
+  $box = WithTypedBox $proc.Id $wnd 149 '20c0a0' {
+    param($b) (AwaitPref 'pal0=20c0a0' 400) -and (AwaitPref 'hlcolor=6' 400) }
+  if ($box -ne [IntPtr]::Zero) { Pass 'a typed colour lands in the palette and becomes the default' }
+  else { Fail ('a typed colour lands in the palette and becomes the default ({0})' -f ((PrefLines) -join ' ')) }
 
   # ---- case 3: the mark on the page really is that colour ----------------
-  $before = BandSignature $wnd 0.05 0.48
+  # Wait for a painted page before measuring, and for the mark to reach the
+  # picture after the command: both are conditions of the app, and a fixed
+  # sleep is a coin toss on a loaded machine (the capture of a window that has
+  # not painted is all black, and black reads as 0 on the signature).
+  AwaitPaintedPage $wnd
+  $before = ColourCount $wnd
   HighlightBlock $wnd 0.15 0.05 0.80 0.48
-  $after = BandSignature $wnd 0.05 0.48
+  WaitCount $wnd 'cool' 500
+  $marked = ColourCount $wnd
   $sc = Get-ChildItem (Join-Path $env:APPDATA 'mnpdf\doc-*.txt') -ErrorAction SilentlyContinue |
         Select-Object -First 1
   $sideColor = if ($sc) { ([regex]::Match((Get-Content $sc.FullName -Raw), 'hl=\d+,\d+,\d+,(\d+)')).Groups[1].Value } else { '' }
-  if ($after -gt 25 -and $before -lt 10) {
+  if ($before.cool -eq 0 -and $marked.cool -gt 500) {
     Pass 'a highlight painted in that colour reads as that colour on the page'
   } else {
-    Fail ('a highlight painted in that colour reads as that colour on the page (signature {0} -> {1})' -f $before, $after)
+    Fail ('a highlight painted in that colour reads as that colour on the page (cool {0} -> {1})' -f $before.cool, $marked.cool)
   }
   if ($sideColor -eq '6') { Pass 'the sidecar records the custom slot' }
   else { Fail ('the sidecar records the custom slot (got "{0}")' -f $sideColor) }
   # The preset default has to move the same measure the other way, so the
-  # result above cannot be an artefact of the measurement.
+  # result above cannot be an artefact of the measurement: the yellow preset
+  # paints the other direction, and the page was greyscale before either mark.
   [void][CL]::PostMessageW($wnd, 0x0111, [IntPtr]140, [IntPtr]::Zero)     # default highlight = yellow preset
   Start-Sleep -Milliseconds 500
-  $yellowBefore = BandSignature $wnd 0.52 0.95
+  $yellowBefore = ColourCount $wnd
   HighlightBlock $wnd 0.15 0.52 0.80 0.95
-  $yellow = BandSignature $wnd 0.52 0.95
-  if ($yellow -lt 5 -and $yellow -le $yellowBefore) { Pass 'a preset default still paints the preset colour' }
-  else { Fail ('a preset default still paints the preset colour (signature {0} -> {1})' -f $yellowBefore, $yellow) }
+  # The app paints a mark in the new default when a selection is standing as the
+  # default changes, and a drag leaves its selection behind, so part of the
+  # yellow can already be on the page here. What has to be true is that the
+  # preset default paints the preset colour: the count goes up from what it was,
+  # and nothing greyscale can move it.
+  WaitCount $wnd 'warm' ($yellowBefore.warm + 500)
+  $yellow = ColourCount $wnd
+  if ($yellow.warm -ge $yellowBefore.warm + 500) { Pass 'a preset default still paints the preset colour' }
+  else { Fail ('a preset default still paints the preset colour (warm {0} -> {1})' -f $yellowBefore.warm, $yellow.warm) }
 
   # ---- case 4: an invalid entry explains itself, and keeps the box -------
-  $box = OpenColorBox $proc.Id $wnd 149
-  TypeHex $box '12345'                       # hex, but five digits: the box takes it, the parse refuses it
-  [void][CL]::PostMessageW($box, 0x0100, [IntPtr]13, [IntPtr]::Zero)
-  Start-Sleep -Milliseconds 500
-  $dlg = FindDlgCol $proc.Id
-  $body = DlgBody $dlg
-  if ($dlg -ne [IntPtr]::Zero -and $body -match 'is not a colour' -and $body -match '12345' -and
-      $body -match 'ff4d00' -and [CL]::IsWindowVisible($box)) {
-    Pass 'an invalid colour is explained at once and leaves the box open'
-  } else {
-    Fail ('an invalid colour is explained at once and leaves the box open (dialog {0}, box open {1}, body {2})' -f
-          ($dlg -ne [IntPtr]::Zero), [CL]::IsWindowVisible($box), ($body -replace "`r?`n", ' | '))
+  # hex, but five digits: the box takes it, the parse refuses it
+  $box = WithTypedBox $proc.Id $wnd 149 '12345' {
+    param($b)
+    Start-Sleep -Milliseconds 500
+    $d = FindDlgCol $procId
+    $d -ne [IntPtr]::Zero -and [CL]::IsWindowVisible($b) }
+  if ($box -eq [IntPtr]::Zero) { Fail 'an invalid colour is explained at once and leaves the box open (no dialog)' }
+  else {
+    $dlg = FindDlgCol $proc.Id
+    $body = DlgBody $dlg
+    if ($body -match 'is not a colour' -and $body -match '12345' -and $body -match 'ff4d00') {
+      Pass 'an invalid colour is explained at once and leaves the box open'
+    } else {
+      Fail ('an invalid colour is explained at once and leaves the box open (box open {0}, body {1})' -f
+            [CL]::IsWindowVisible($box), ($body -replace "`r?`n", ' | '))
+    }
+    DismissDlg $proc.Id 2 | Out-Null                                        # OK
   }
-  if ($dlg -ne [IntPtr]::Zero) { DismissDlg $proc.Id 2 | Out-Null }        # OK
 
   # ---- case 5: typed then clicked away keeps the colour ------------------
   $box = OpenColorBox $proc.Id $wnd 149
   TypeHex $box 'abcdef'
-  [void][CL]::PostMessageW($box, 0x0008, [IntPtr]::Zero, [IntPtr]::Zero)   # WM_KILLFOCUS: the reader clicked away
+  # The app holds a focus loss for the box's first 400 ms, and the reader's
+  # "click away" can land inside that. A click away that the app is not ready to
+  # hear is ignored, so keep asking the way a reader clicking a second time does,
+  # and accept a box that has already given the colour up on its own.
+  for ($k = 0; $k -lt 14; $k++) {
+    if (AwaitPref 'pal[0-9]+=abcdef' 500) { break }
+    if ([CL]::IsWindowVisible($box)) { [void][CL]::PostMessageW($box, 0x0008, [IntPtr]::Zero, [IntPtr]::Zero) }
+  }
   if (AwaitPref 'pal[0-9]+=abcdef') { Pass 'a colour typed then clicked away is kept' }
   else { Fail ('a colour typed then clicked away is kept ({0})' -f ((PrefLines) -join ' ')) }
 
@@ -343,27 +490,17 @@ try {
   else { Fail ('clearing empties the slots ({0})' -f $keep) }
 
   # ---- case 7: the pin colour menu behaves the same way ------------------
-  $box = OpenColorBox $proc.Id $wnd 169
-  TypeHex $box 'ff8800'
-  [void][CL]::PostMessageW($box, 0x0100, [IntPtr]13, [IntPtr]::Zero)
-  if (AwaitPref 'pal0=ff8800' -and (AwaitPref 'pincolor=6')) {
-    Pass 'the pin colour menu takes a custom colour too'
-  } else {
-    Fail ('the pin colour menu takes a custom colour too ({0})' -f ((PrefLines) -join ' '))
-  }
+  $box = WithTypedBox $proc.Id $wnd 169 'ff8800' {
+    param($b) (AwaitPref 'pal0=ff8800' 400) -and (AwaitPref 'pincolor=6' 400) }
+  if ($box -ne [IntPtr]::Zero) { Pass 'the pin colour menu takes a custom colour too' }
+  else { Fail ('the pin colour menu takes a custom colour too ({0})' -f ((PrefLines) -join ' ')) }
 
   # ---- case 8: it survives a quit and relaunch ---------------------------
   [void][CL]::PostMessageW($wnd, 0x0111, [IntPtr]112, [IntPtr]::Zero)
   for ($i = 0; $i -lt 60; $i++) { if ($proc.HasExited) { break }; Start-Sleep -Milliseconds 250 }
   if (-not $proc.HasExited) { $proc | Stop-Process -Force }
-  $script:proc2 = Start-Process -FilePath $exe -ArgumentList """$doc""" -PassThru
+  $script:proc2 = Launch $exe $doc
   $script:wnd2 = FindAppWindow $script:proc2.Id
-  for ($i = 0; $i -lt 80; $i++) {
-    $script:wnd2 = FindAppWindow $script:proc2.Id
-    if ($script:wnd2 -ne [IntPtr]::Zero) { break }
-    Start-Sleep -Milliseconds 250
-  }
-  Start-Sleep -Milliseconds 900
   if (AwaitPref 'pal0=ff8800' -and (AwaitPref 'pincolor=6')) {
     Pass 'the custom pin colour survives a quit and relaunch'
   } else {
