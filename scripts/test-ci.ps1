@@ -51,7 +51,7 @@ function Stop-TestInstances {
 $failed = New-Object System.Collections.Generic.List[string]
 try {
   $script:realTemp = $env:TEMP
-foreach ($s in $suites) {
+  foreach ($s in $suites) {
     # $state is built from the real TEMP, captured before the first suite
     # rewrote it: the isolated environment must not nest inside a previous one
     $state = Join-Path $script:realTemp ("mnpdf-ci-" + [Guid]::NewGuid().ToString('n'))
