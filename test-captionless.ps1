@@ -35,9 +35,15 @@ public static class CAP {
   [DllImport("user32.dll")] public static extern IntPtr SendMessageW(IntPtr h, uint m, IntPtr w, IntPtr l);
   [DllImport("user32.dll")] public static extern int GetSystemMetricsForDpi(int i, uint dpi);
   [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr c);
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
 }
 "@
+
+# the app is per-monitor aware (src/main.cpp wWinMain), so this process must be
+# too: hit-test probes then land in the same pixels the app's own zones are
+# measured in instead of relying on Windows virtualising them
+[void][CAP]::SetProcessDpiAwarenessContext([IntPtr](-4))
 
 $failures = New-Object System.Collections.Generic.List[string]
 $doc = Join-Path $PSScriptRoot 'tests\arc.pdf'
@@ -75,6 +81,13 @@ function HitAt([IntPtr]$Wnd, [int]$Dx, [int]$Dy) {
   $l = New-Object IntPtr ((($w.T + $Dy) -shl 16) -bor (($w.L + $Dx) -band 0xFFFF))
   return [CAP]::SendMessageW($Wnd, 0x0084, [IntPtr]::Zero, $l).ToInt32()
 }
+# the resize sliver above the caption, in pixels: the same two window metrics
+# the app uses for its frame band (src/main.cpp WM_NCHITTEST), taken at this
+# window's own dpi, so the caption probe below it holds on any monitor scale
+function FrameTop([IntPtr]$Wnd) {
+  $d = [CAP]::GetDpiForWindow($Wnd)
+  return [int][CAP]::GetSystemMetricsForDpi(33, $d) + [int][CAP]::GetSystemMetricsForDpi(92, $d)
+}
 function Toggle([IntPtr]$Wnd) {
   [void][CAP]::PostMessageW($Wnd, 0x0111, [IntPtr]$CMD_TOGGLE, [IntPtr]::Zero)
   Start-Sleep -Milliseconds 500
@@ -88,7 +101,9 @@ function QuitAndWait($Proc) {
 Init-PrefForge $appPref 'captionless'
 try {
   New-Item -ItemType Directory -Force -Path (Split-Path -Parent $appPref) | Out-Null
-  Set-Content -LiteralPath $appPref ("titlebar=1`nautosave=1`nhlcolor=0`npincolor=5`npalnext=0`n" + $script:prefSentinel + "`n")
+  # the update clock is stamped inside its cooldown, so no launch here spends a
+  # GitHub request and an update result never rewrites app.txt under the reader
+  Set-Content -LiteralPath $appPref ("titlebar=1`nautosave=1`nhlcolor=0`npincolor=5`npalnext=0`nupdcheck={0}`nupdtag=v2.1.3`n{1}`n" -f ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - 300), $script:prefSentinel)
 
   $p = Launch $exe $doc
   $h = FindAppWindow $p.Id
@@ -98,8 +113,8 @@ try {
   $gapCap = CaptionGap $h
   if ($gapCap -gt 0) { Pass ("captioned launch leaves {0} px of non-client at the top" -f $gapCap) }
   else { Fail 'captioned launch' "no caption to hide (gap=0)" }
-  $htCapTop  = HitAt $h 30 4      # the frame sliver above the caption
-  $htCapDrag = HitAt $h 30 10     # inside the caption, below the frame sliver
+  $htCapTop  = HitAt $h 30 4                       # the frame sliver above the caption
+  $htCapDrag = HitAt $h 30 ((FrameTop $h) + 4)     # inside the caption, below the frame sliver
   if ($htCapDrag -eq 2) { Pass 'a captioned window drags from its caption' }
   else { Fail 'caption drag' "expected HTCAPTION(2), got $htCapDrag" }
   if ($htCapTop -eq 12) { Pass 'a captioned window resizes from the top frame sliver' }
@@ -118,10 +133,10 @@ try {
   else { Fail 'titlebar pref' 'app.txt does not say titlebar=0 after the toggle' }
 
   # ---- 3. the caption-less window stays workable ---------------------------
-  # The strip is 8 design pixels, and this process runs DPI-virtualised on
-  # a 192 dpi screen, so its physical thickness here is 8 px rather than 16 -
-  # the two probe points below sit well inside and well outside either
-  # reading, which is what makes the assertion a claim about the strip rather
+  # This process is per-monitor aware, so these probes are in the same pixels
+  # the app measures them with. The strip is its 8 design pixels at this dpi,
+  # and the two probe points sit well inside and well outside it on every
+  # scale, which is what keeps the assertion a claim about the strip rather
   # than about the scaling mode.
   $ht = HitAt $h 30 2
   if ($ht -eq 2) { Pass 'the top strip still moves the window' }

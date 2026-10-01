@@ -1,7 +1,7 @@
 # The suites, on a plain Windows machine. scripts/gate-test.sh is the WSL
 # wrapper: it adds a drive-letter guard, a checkout lock and worktree
 # isolation, and it is what the local gate calls. This runner is what CI (and
-# any Windows shell without WSL) calls, so both entry points run the same six
+# any Windows shell without WSL) calls, so both entry points run the same seven
 # suites against the same isolated preferences and a freshly built binary.
 #
 # Every suite gets its own APPDATA and TEMP, so a suite that writes preferences
