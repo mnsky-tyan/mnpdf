@@ -74,7 +74,7 @@ $env:MNPDF_VERBOSE = "1"   # verbose titles for title-based assertions
 Remove-Item "$env:APPDATA\mnpdf\*" -Recurse -Force -ErrorAction SilentlyContinue   # fresh state
 # shared Launch (tests/lib.ps1) resolves the real window and restores it without
 # activating: these tests post clicks at client coords, so they need a visible
-# window, and the captain's own window must never come to the front
+# window, and a window the user already has open must never come to the front
 $p = Launch (Join-Path $PSScriptRoot "build\mnpdf.exe") $Pdf
 $h = FindAppWindow $p.Id
 [void][PM]::MoveWindow($h, 60, 60, 1100, 800, $true)

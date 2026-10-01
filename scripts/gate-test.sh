@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Run the Windows suites on a local drive, with isolated preferences and bounded
-# waits. commands.test supplies a baseline; it does not replace the Test agent.
+# waits. This is the WSL entry point; scripts/test-ci.ps1 is the same thing on
+# plain Windows, which is what .github/workflows/ci.yml runs.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -10,7 +11,7 @@ PS=/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe
 CMD=/mnt/c/Windows/System32/cmd.exe
 WINPWD=$(wslpath -w "$PWD")
 if [[ ! "$WINPWD" =~ ^[A-Za-z]: ]]; then
-  printf '%s\n' 'GATE: refusing a WSL/network-path launch. Configure this checkout in global worktree_roots on a local Windows drive.' >&2
+  printf '%s\n' 'GATE: refusing a WSL/network-path launch. Put this checkout on a local Windows drive.' >&2
   exit 1
 fi
 

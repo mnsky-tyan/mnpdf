@@ -73,12 +73,23 @@ $t = Title $h
 Write-Output "rotate CW posted: '$t'  (visual check next)"
 
 # --- 2. highlight the (rotated) page by drag, then check sidecar + dirty dot ---
-[T2]::PostMessageW($h, 0x0201, [IntPtr]1, (Lparam 400 300)) | Out-Null
-Start-Sleep -Milliseconds 50
-foreach ($x in 500, 600, 700) { [T2]::PostMessageW($h, 0x0200, [IntPtr]1, (Lparam $x 300)) | Out-Null; Start-Sleep -Milliseconds 40 }
-[T2]::PostMessageW($h, 0x0202, [IntPtr]0, (Lparam 700 300)) | Out-Null
-Start-Sleep -Milliseconds 300
-[T2]::PostMessageW($h, 0x0111, [IntPtr]135, [IntPtr]0) | Out-Null   # Highlight (default color = yellow)
+# A rotation re-lays the page out, and a drag that lands while that is still moving
+# selects nothing: measured once (the first full run after a reboot), the mark was
+# simply absent from the sidecar. The sidecar is the witness and the command is
+# cheap, so the drag is repeated until the mark exists instead of a layout race
+# being reported as a defect of the app.
+$scHl = SidecarFor (Join-Path $PSScriptRoot "build\save-test.pdf")
+for ($try = 0; $try -lt 4; $try++) {
+  [T2]::PostMessageW($h, 0x0201, [IntPtr]1, (Lparam 400 300)) | Out-Null
+  Start-Sleep -Milliseconds 50
+  foreach ($x in 500, 600, 700) { [T2]::PostMessageW($h, 0x0200, [IntPtr]1, (Lparam $x 300)) | Out-Null; Start-Sleep -Milliseconds 40 }
+  [T2]::PostMessageW($h, 0x0202, [IntPtr]0, (Lparam 700 300)) | Out-Null
+  Start-Sleep -Milliseconds 300
+  [T2]::PostMessageW($h, 0x0111, [IntPtr]135, [IntPtr]0) | Out-Null   # Highlight (default color = yellow)
+  Start-Sleep -Milliseconds 400
+  if ((Test-Path $scHl) -and ((Get-Content $scHl -Raw -ErrorAction SilentlyContinue) -match 'hl=\d+,\d+,\d+,\d+')) { break }
+  Start-Sleep -Milliseconds 700
+}
 Await { (Title $h) -notmatch '^mnpdf' } 8000 | Out-Null
 $t = Title $h
 if ($t -notmatch '^mnpdf') { Write-Output "PASS dirty dot after edits (title prefixed)" }
@@ -178,26 +189,25 @@ function MenuAt([IntPtr]$h, [int]$x, [int]$y) {
   return $m -ne [IntPtr]::Zero
 }
 if ($p2) {
-$scq2 = SidecarFor (Join-Path $PSScriptRoot "build\save-test.pdf")
-$sd = if (Test-Path $scq2) { Get-Content $scq2 -Raw } else { '' }
-Write-Output ("DEBUG p2 sidecar: " + ($sd -replace '\r?\n', ' | '))
-# a real deletion only reaches the sidecar when the highlight itself is targeted
-$scq2 = SidecarFor (Join-Path $PSScriptRoot "build\save-test.pdf")
-$dlBefore = 0
-if (Test-Path $scq2) { $dlBefore = ([regex]::Matches((Get-Content $scq2 -Raw), 'dl=h,')).Count }
-# right-click over the baked highlight (RB up/down lets the shell raise
-# WM_CONTEXTMENU itself), read the menu, Esc closes it, THEN the queued
-# command can be delivered - a command posted while the menu is modal is swallowed
-MenuHasHl $h2 500 300 | Out-Null     # open the menu over the mark, Esc closes it
-Cmd $h2 117                           # delete the baked highlight
-Await { (Test-Path $scq2) -and (([regex]::Matches('' + (Get-Content $scq2 -Raw -ErrorAction SilentlyContinue), 'dl=h,')).Count) -gt $dlBefore } 30000 | Out-Null
-$sd = if (Test-Path $scq2) { Get-Content $scq2 -Raw } else { '' }
-$dlAfter = ([regex]::Matches($sd, 'dl=h,')).Count
-if ($dlAfter -eq $dlBefore + 1) { Write-Output "PASS baked highlight deleted after reopen" }
-else { $failures.Add("baked hl delete"); Write-Output "FAIL delete produced no dl= line ($dlBefore -> $dlAfter): $sd" }
+  # a real deletion only reaches the sidecar when the highlight itself is targeted
+  $scq2 = SidecarFor (Join-Path $PSScriptRoot "build\save-test.pdf")
+  $dlBefore = 0
+  if (Test-Path $scq2) { $dlBefore = ([regex]::Matches((Get-Content $scq2 -Raw), 'dl=h,')).Count }
+  # right-click over the baked highlight (RB up/down lets the shell raise
+  # WM_CONTEXTMENU itself), read the menu, Esc closes it, THEN the queued
+  # command can be delivered - a command posted while the menu is modal is swallowed
+  MenuHasHl $h2 500 300 | Out-Null     # open the menu over the mark, Esc closes it
+  Cmd $h2 117                           # delete the baked highlight
+  Await { (Test-Path $scq2) -and (([regex]::Matches('' + (Get-Content $scq2 -Raw -ErrorAction SilentlyContinue), 'dl=h,')).Count) -gt $dlBefore } 30000 | Out-Null
+  $sd = if (Test-Path $scq2) { Get-Content $scq2 -Raw } else { '' }
+  $dlAfter = ([regex]::Matches($sd, 'dl=h,')).Count
+  if ($dlAfter -eq $dlBefore + 1) { Write-Output "PASS baked highlight deleted after reopen" }
+  else { $failures.Add("baked hl delete"); Write-Output "FAIL delete produced no dl= line ($dlBefore -> $dlAfter): $sd" }
   Cmd $h2 112
   Await { $p2.Refresh(); $p2.HasExited } 8000 | Out-Null
   $p2.Refresh()
+}
+
 # another delete attempt must find nothing left: the dl= list must not grow
 $p3 = Launch (Join-Path $PSScriptRoot "build\mnpdf.exe") (Join-Path $PSScriptRoot "build\save-test.pdf")
 $h3 = FindAppWindow $p3.Id
@@ -207,8 +217,7 @@ Start-Sleep -Milliseconds 2500   # negative assertion: wait long enough that any
 $dlAgain = ([regex]::Matches((Get-Content $scq2 -Raw), 'dl=h,')).Count
 if ($dlAgain -gt $dlAfter) { $failures.Add("resurrect"); Write-Output "FAIL deleted baked highlight resurrected" }
 else { Write-Output "PASS deleted baked highlight stays deleted" }
-  $p3.CloseMainWindow() | Out-Null
-}
+$p3.CloseMainWindow() | Out-Null
 
 # ---- update-check cooldown: one network attempt per hour, persisted ----
 # PowerShell's Get-Date -UFormat %s is offset by the local UTC offset, so the

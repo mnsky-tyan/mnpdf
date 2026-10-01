@@ -65,7 +65,7 @@ function DialogBody([IntPtr]$Dlg) {
 # close ONLY the process this test launched: a graceful WM_CLOSE so the app's
 # debounced sidecar flush and its final app-pref write run, force-killing only
 # as a last resort and only ever a child we started - never an instance the
-# captain may have open (which would lose that window's graceful-exit work)
+# user may have open (which would lose that window's graceful-exit work)
 function Stop-OwnedApp($p) {
   if (-not $p) { return }
   try { $p.Refresh() } catch { return }
@@ -98,7 +98,7 @@ if ($existing) { Write-Output "SKIP: an mnpdf instance is already running (state
 # Two limits that follow from the forge: the watchdog dies with the shell's process
 # tree, so a tree kill can still leave the forged file on disk. The forgery
 # therefore carries a sentinel; whenever one is found the file is known leftover
-# test state, never the captain's prefs, so it is not adopted as the backup and
+# test state, never the user's prefs, so it is not adopted as the backup and
 # is stripped instead - a forged value can never be promoted into "the user's
 # real prefs".
 #

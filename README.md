@@ -115,9 +115,18 @@ bash scripts/gate-test.sh     # from WSL: builds, then runs all seven suites
 ```
 
 Each suite gets its own `APPDATA` and `TEMP`, so nothing written by one can
-reach the next. Every suite but `test-colors.ps1` keeps its window minimised:
-the colour suite really types into the app's colour box, and a minimised owner
-can never give that popup the keyboard.
+reach the next. Three environment variables are the seams between the suites
+and the app; none of them does anything unless it is set:
+
+| | |
+|---|---|
+| `MNPDF_BACKGROUND` | start minimised, without stealing the foreground - every suite but `test-colors.ps1` |
+| `MNPDF_VERBOSE` | put the document name and page in the window title |
+| `MNPDF_PRINT_PROBE` | at print time, write raster statistics to the given file instead of opening the modal dialog |
+
+Every suite but `test-colors.ps1` keeps its window minimised: the colour suite
+really types into the app's colour box, and a minimised owner can never give
+that popup the keyboard.
 
 On a plain Windows machine - and in CI - there is no `wslpath`, so
 `scripts/test-ci.ps1` is the same build and the same seven suites with no WSL in

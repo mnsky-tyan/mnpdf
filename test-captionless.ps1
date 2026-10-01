@@ -19,7 +19,7 @@
 #     window proc instead.
 #
 # Unlike the colour suite this one runs backgrounded: everything it asserts is
-# a posted message plus a rect read, so the captain's screen is untouched.
+# a posted message plus a rect read, so the desktop is left untouched.
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot\tests\lib.ps1"
 
@@ -109,7 +109,7 @@ function QuitAndWait($Proc) {
   if (-not (Await { $Proc.HasExited } 20000)) { $Proc | Stop-Process -Force | Out-Null; Start-Sleep -Milliseconds 500 }
 }
 
-# ---- a deterministic start, with the captain's real prefs protected ----------
+# ---- a deterministic start, with the user's real prefs protected ----------
 Init-PrefForge $appPref 'captionless'
 try {
   New-Item -ItemType Directory -Force -Path (Split-Path -Parent $appPref) | Out-Null
@@ -201,7 +201,7 @@ try {
 finally {
   Restore-AppPref
   # only ever the two instances this suite started: the gate guarantees no other
-  # instance is running, and an instance the captain opened himself must never
+  # instance is running, and an instance the user opened himself must never
   # be force-killed, because a force kill skips the app's graceful exit
   foreach ($proc in @($p, $p2)) {
     if ($proc -and -not $proc.HasExited) { $proc | Stop-Process -Force -ErrorAction SilentlyContinue }

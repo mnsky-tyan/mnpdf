@@ -1,7 +1,7 @@
 @echo off
-rem The exact path is tried first because that is what this machine has; the
-rem fallback asks vswhere, so a runner or a new install does not need this file
-rem edited to build.
+rem The well-known install path is tried first because it needs no lookup; the
+rem fallback asks vswhere, so a different edition, a fresh runner or a new
+rem install does not need this file edited to build.
 set "VSDEV="
 if exist "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\Tools\VsDevCmd.bat" (
   set "VSDEV=C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\Tools\VsDevCmd.bat"

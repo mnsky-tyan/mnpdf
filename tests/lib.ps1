@@ -68,11 +68,12 @@ function FindAppWindow([int]$ProcId) {
   return [IntPtr]::Zero
 }
 
-# Restore a backgrounded window without activating it: the captain's own window
-# must never come to the front while a suite runs. SW_SHOWNOACTIVATE through
-# SetWindowPlacement gives a real client rect (posted clicks at client coords,
-# resize-refit and the titlebar client-rect assertions all need one) with the
-# foreground untouched. Verified: showCmd=1, client 537x364, isFg=False.
+# Restore a backgrounded window without activating it: a window the user already
+# has open must never come to the front while a suite runs. SW_SHOWNOACTIVATE
+# through SetWindowPlacement gives a real client rect (posted clicks at client
+# coords, resize-refit and the titlebar client-rect assertions all need one)
+# with the foreground untouched. Verified: showCmd=1, client 537x364,
+# isFg=False.
 function ShowNoActivate([IntPtr]$Wnd) {
   $wp = New-Object WPL
   $wp.length = 44
@@ -121,7 +122,7 @@ function Launch([string]$Exe, [string]$Doc) {
 # The suites that exercise the update check forge %APPDATA%\mnpdf\app.txt so the
 # answer is deterministic and offline (a completed check remembered from minutes
 # ago, or a stale clock that must be re-stamped). That file also holds the
-# captain's real titlebar / autosave / hlcolor / pincolor / palnext / updcheck /
+# user's real titlebar / autosave / hlcolor / pincolor / palnext / updcheck /
 # updtag preferences and the frame geometry winx/winy/winw/winh/winmax, so a run
 # must put it back exactly as it found it - on every path, including a hard kill.
 
