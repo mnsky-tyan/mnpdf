@@ -175,9 +175,12 @@ Start-Sleep -Milliseconds 150
 Post $h 0x0201 ([IntPtr]1) (Lparam $lx $ly)                     # WM_LBUTTONDOWN right after
 Start-Sleep -Milliseconds 200
 $t = CopyAndWait $h (GetClip)
+# the line at the word's spot must at least contain the word; it may be a
+# short heading, so a prose length would assume one document's layout again
+$w = if ($word) { $word.Trim() } else { '' }
 if (-not $script:clipOk) { Write-Output "SKIP line select: clipboard locked" }
-elseif ($t -match '\s' -and $t.Length -gt 15) { Pass "line select: '$t'" }
-else { Fail "line select" "clipboard was '$t'" }
+elseif ($w -and $t -and $t.Contains($w) -and $t.Length -ge $w.Length) { Pass "line select: '$t'" }
+else { Fail "line select" "clipboard was '$t' (word was '$w')" }
 
 Write-Output '[marker] before search test'
 # --- 5. search bar: open, type, check title hits, F3, close ---
