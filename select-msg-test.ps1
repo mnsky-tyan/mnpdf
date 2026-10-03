@@ -144,19 +144,29 @@ if ($hlLine) { Pass "highlight via menu command persisted: $hlLine" }
 else { Fail "highlight via menu command" "no hl= in sidecar" }
 
 # --- 3. double click = word select ---
-Start-Sleep -Milliseconds 100
-Post $h 0x0203 ([IntPtr]1) (Lparam 600 210)                     # WM_LBUTTONDBLCLK on title
-Start-Sleep -Milliseconds 200
-$t = CopyAndWait $h (GetClip)
+# The pixel a word sits under depends on the fit zoom, which follows the screen
+# the runner gives this suite (165% there, 173% here). Sweep down the page and
+# take the first double-click that selects a single word, so the case tests the
+# capability at any zoom instead of one resolution's layout.
+$wordAt = $null; $word = $null
+foreach ($y in 210, 220, 200, 230, 190, 240, 180, 250) {
+  Post $h 0x0203 ([IntPtr]1) (Lparam 600 $y)                    # WM_LBUTTONDBLCLK
+  Start-Sleep -Milliseconds 200
+  $t = CopyAndWait $h (GetClip)
+  if (-not $script:clipOk) { break }
+  if ($t -and $t -notmatch '\s' -and $t.Length -le 20) { $wordAt = $y; $word = $t; break }
+}
 if (-not $script:clipOk) { Write-Output "SKIP word select: clipboard locked" }
-elseif ($t -and $t -notmatch '\s' -and $t.Length -le 20) { Pass "word select: '$t'" }
-else { Fail "word select" "clipboard was '$t'" }
+elseif ($word) { Pass "word select: '$word'" }
+else { Fail "word select" "no single word under x=600 (last '$t')" }
 
 Write-Output '[marker] before line test'
 # --- 4. triple click = line select ---
-Post $h 0x0203 ([IntPtr]1) (Lparam 600 210)
+# the same y that held a word holds its line, at whatever zoom found it
+$ly = if ($wordAt) { $wordAt } else { 210 }
+Post $h 0x0203 ([IntPtr]1) (Lparam 600 $ly)
 Start-Sleep -Milliseconds 150
-Post $h 0x0201 ([IntPtr]1) (Lparam 600 210)                     # WM_LBUTTONDOWN right after
+Post $h 0x0201 ([IntPtr]1) (Lparam 600 $ly)                     # WM_LBUTTONDOWN right after
 Start-Sleep -Milliseconds 200
 $t = CopyAndWait $h (GetClip)
 if (-not $script:clipOk) { Write-Output "SKIP line select: clipboard locked" }
