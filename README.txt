@@ -34,8 +34,10 @@ Split pages exports a range - 2-5 or 1,3,8 - into a new PDF and leaves the
 original alone.
 
 Insert signature takes a JPEG and asks where to put it: the next click on a
-page drops the stamp there. A stamp reaches the PDF when you save, and sits in
-the sidecar until then, exactly like a highlight.
+page drops the stamp there. Clear signatures takes them all away again. A
+stamp reaches the PDF when you save, and sits in the sidecar until then,
+exactly like a highlight. A signature has to be a JPEG: the picker refuses
+anything else rather than handing it to the image decoder.
 
 Night mode inverts the page for a dark screen and comes back that way after
 a restart.

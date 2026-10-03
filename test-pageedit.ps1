@@ -189,6 +189,47 @@ try {
     Pass 'the stamp really lands on the page'
   } else { Fail 'stamp on the page' 'page 1 rasterizes as it did before the stamp' }
 
+  # Clearing has to take the object off the page, not only out of the sidecar:
+  # the page must rasterize exactly as it did before the stamp went on.
+  $cleared = Join-Path $scratch 'cleared.txt'
+  $r = Run-Hooked ("sig|{0}|0;;clearsigs;;pagehash|{1}" -f $jpg, $cleared) (New-Case) $cleared
+  if ($r.Hashes.Count -eq $FixturePages -and $r.Hashes[0] -eq $ref.Hashes[0]) {
+    Pass 'clear signatures takes the stamp back off the page'
+  } else { Fail 'clear signatures' 'page 1 still rasterizes as the stamped one' }
+
+  # A file that is not a JPEG must be refused, not fed to the decoder: a PNG,
+  # a GIF and a text file renamed .jpg all took the process down (0xC0000005).
+  $notJpeg = Join-Path $scratch 'not-an-image.jpg'
+  Set-Content -LiteralPath $notJpeg -Value 'this is not a JPEG' -Encoding ASCII
+  $r = Run-Hooked ("sig|{0}|0;;pagehash|{1}" -f $notJpeg, (Join-Path $scratch 'png.txt')) (New-Case) (Join-Path $scratch 'png.txt')
+  if ($r.Hashes.Count -eq $FixturePages -and $r.Hashes[0] -eq $ref.Hashes[0]) {
+    Pass 'a file that is not a JPEG is refused instead of placed'
+  } else { Fail 'non-JPEG signature' 'the reader did not come back with the page unchanged' }
+
+  # A stamp recovered from the sidecar is in the page but not in the PDF, so
+  # the document really is unsaved: Save has to do something.
+  $recovered = New-Case
+  [void](Run-Hooked ("sig|{0}|0" -f $jpg) $recovered)
+  $r = Run-Hooked '' $recovered
+  if ($r.Title -match "\u2022") { Pass 'a stamp recovered from the sidecar marks the document unsaved' }
+  else { Fail 'recovered stamp dirty' "'$($r.Title)' - Save would do nothing" }
+
+  # Reopen last goes back to the document this one replaced. last.txt always
+  # names the document on screen (autosave rewrites it), so reading it would
+  # reopen the same file and look like nothing happened: the 1-page fixture is
+  # opened on top of the 13-page one, and the command has to bring 13 back.
+  $env:MNPDF_HOOK = "open|" + (Join-Path $PSScriptRoot 'tests\arc-annot.pdf')
+  $p = Launch $exe (New-Case)
+  $h = FindAppWindow $p.Id
+  [void](Await { (Title $h) -match 'mnpdf 1/1' } 15000)
+  $onOne = (Title $h) -match 'mnpdf 1/1'
+  [MN]::PostMessageW($h, 0x0111, [IntPtr]$CMD_REOPEN_LAST, [IntPtr]0) | Out-Null
+  $back = Await { (Title $h) -match 'mnpdf 1/' + $FixturePages } 8000
+  $env:MNPDF_HOOK = $null
+  Quit-Proc $p
+  if ($onOne -and $back) { Pass 'reopen last document returns to the document it replaced' }
+  else { Fail 'reopen last document' "opened the 1-page fixture: $onOne, came back: $back" }
+
   # The sidecar is the only memory a stamp has before a save, so a quit and
   # relaunch of the same path must put it back on the page exactly where it was.
   $again = Join-Path $scratch 'again.txt'

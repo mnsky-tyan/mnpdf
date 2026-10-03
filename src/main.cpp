@@ -177,6 +177,7 @@ static bool gTitlebar = true;                    // OS caption strip shown
 static int gWinX = CW_USEDEFAULT, gWinY = CW_USEDEFAULT;   // last placement
 static int gWinW = 1100, gWinH = 800;
 static bool gWinMax = false;                     // was maximized at last quit
+static std::wstring gPrevPath;                  // the document open before this one
 static bool gNight = false;                      // invert the page for dark reading
 static bool gThumbsOn = false;                   // thumbnails side drawer visible
 static bool gOutlineOn = false;                  // bookmarks side drawer visible
@@ -2613,6 +2614,9 @@ static int nearestPalColor(unsigned r, unsigned g, unsigned b) {
 
 static bool openPath(const std::wstring& path) {
     if (gEditPin >= 0) commitPinEdit();            // an open pin box saves first
+    // last.txt names the CURRENT document (autosave rewrites it constantly), so
+    // "reopen last" cannot read it: the document being left is the previous one
+    if (!gPath.empty() && gPath != path) gPrevPath = gPath;
     gTextPage = nullptr;                           // handles live in the cache now
     gPage = nullptr;
     flushPageCache();
@@ -3197,10 +3201,32 @@ static bool readWholeFile(const std::wstring& path, std::vector<unsigned char>& 
     return got == (size_t)n;
 }
 
+// The first few bytes of a file. A format gate needs no more than that, and a
+// one-kilobyte PNG header must not cost the whole file on every placement.
+static bool readWholeFileHead(const std::wstring& path, std::vector<unsigned char>& out, size_t want) {
+    FILE* f = _wfopen(path.c_str(), L"rb");
+    if (!f) return false;
+    out.resize(want);
+    size_t got = fread(out.data(), 1, want, f);
+    fclose(f);
+    out.resize(got);
+    return got > 0;
+}
+
+// A JPEG always starts with FFD8FF (SOI + next marker). Anything else - a PNG,
+// a GIF, a text file the reader renamed - must be refused here: the JPEG
+// loader takes those bytes and takes the process down with them.
+static bool looksLikeJpeg(const std::wstring& path) {
+    std::vector<unsigned char> head;
+    if (!readWholeFileHead(path, head, 3)) return false;
+    return head[0] == 0xFF && head[1] == 0xD8 && head[2] == 0xFF;
+}
+
 // drop a stamp into gDoc at its recorded spot. Returns false when the image
 // cannot be placed (the file moved away).
 static bool placeSigObj(const Sig& s) {
     if (!gDoc || s.page < 0 || s.page >= gDocPages) return false;
+    if (!looksLikeJpeg(s.path)) return false;   // never hand non-JPEG bytes to pdfium
     FPDF_PAGE pg = acquirePage(s.page);
     if (!pg) return false;
     JpegBlob blob;
@@ -3229,10 +3255,15 @@ static void replaySigs() {
     // an unreadable image drops that stamp and nothing else: the stamps placed
     // before it are already in the pages, and dropping the whole set would
     // leave them drawn with no record of them anywhere
+    bool any = false;
     for (size_t i = 0; i < gSigs.size(); ) {
-        if (placeSigObj(gSigs[i])) i++;
+        if (placeSigObj(gSigs[i])) { i++; any = true; }
         else gSigs.erase(gSigs.begin() + i);
     }
+    // The stamp is now in the page and the PDF on disk does not carry it, so the
+    // document really is unsaved: without this the title shows a clean document,
+    // Save does nothing, and the stamp is lost at the next quit.
+    if (any) markDirty();
 }
 
 // the reader clicked: turn the click into PDF user space, keep the stamp on the
@@ -3263,6 +3294,48 @@ static void commitSigPlacement(int page, double sx, double sy) {
     renderPage();
 }
 
+// Clearing has to remove the page objects themselves: a stamp lives inside
+// gDoc, not only in the sidecar, so forgetting the sidecar would leave it drawn
+// and saved. The objects are found by the box each stamp occupies - no handle is
+// kept across page reloads, which would dangle the moment the cache evicts the
+// page - and the walk goes backwards because removing shifts the indices.
+static void clearSignatures() {
+    if (gSigs.empty()) return;
+    std::vector<Sig> stamps = gSigs;
+    for (int i = 0; i < gDocPages && !stamps.empty(); i++) {
+        bool anyHere = false;
+        for (const Sig& s : stamps) if (s.page == i) { anyHere = true; break; }
+        if (!anyHere) continue;
+        FPDF_PAGE pg = acquirePage(i);
+        if (!pg) continue;
+        for (int k = FPDFPage_CountObjects(pg) - 1; k >= 0; k--) {
+            FPDF_PAGEOBJECT obj = FPDFPage_GetObject(pg, k);
+            if (!obj || FPDFPageObj_GetType(obj) != FPDF_PAGEOBJ_IMAGE) continue;
+            float bl, bb, br, bt;
+            if (!FPDFPageObj_GetBounds(obj, &bl, &bb, &br, &bt)) continue;
+            for (size_t n = 0; n < stamps.size(); n++) {
+                const Sig& s = stamps[n];
+                if (s.page != i) continue;
+                if (fabs((double)bl - (s.cx - s.w / 2)) < 0.25
+                    && fabs((double)bb - (s.cy - s.h / 2)) < 0.25
+                    && fabs((double)br - (s.cx + s.w / 2)) < 0.25
+                    && fabs((double)bt - (s.cy + s.h / 2)) < 0.25) {
+                    // ownership of a removed object comes back to the caller, so
+                    // what was taken off the page has to be freed here
+                    if (FPDFPage_RemoveObject(pg, obj)) FPDFPageObj_Destroy(obj);
+                    break;
+                }
+            }
+        }
+        FPDFPage_GenerateContent(pg);
+    }
+    gSigs.clear();
+    flushPageCache();
+    markDirty();
+    writeSidecarNow();
+    renderPage();
+}
+
 static void pickSignatureImage() {
     wchar_t buf[MAX_PATH * 4] = {};
     OPENFILENAMEW ofn = {};
@@ -3274,6 +3347,11 @@ static void pickSignatureImage() {
     ofn.lpstrTitle = L"Choose a signature image";
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY;
     if (!GetOpenFileNameW(&ofn)) return;
+    if (!looksLikeJpeg(buf)) {
+        MessageBoxW(gWnd, L"A signature has to be a JPEG image. That file is not one.",
+                    L"Place signature", MB_OK | MB_ICONWARNING);
+        return;
+    }
     gSigPlacing = buf;
     MessageBoxW(gWnd, L"Click the page where the signature should sit. Esc cancels.",
                 L"Place signature", MB_OK | MB_ICONINFORMATION);
@@ -4025,6 +4103,10 @@ static void runHook(const std::wstring& spec) {
         movePage(num(arg1, -1), num(arg2, -1));
     } else if (verb == L"rotatepage") {
         rotatePage(num(arg1, -1), num(arg2, 1) >= 0 ? +1 : -1);
+    } else if (verb == L"open" && !arg1.empty()) {
+        openPath(arg1);                            // the swap Reopen last has to undo
+    } else if (verb == L"clearsigs") {
+        clearSignatures();
     } else if (verb == L"pagehash" && !arg1.empty()) {
         FILE* f = _wfopen(arg1.c_str(), L"wb");
         if (f) {
@@ -4052,26 +4134,19 @@ static void runHook(const std::wstring& spec) {
 // ---- reopen the last document ---------------------------------------------
 static void reopenLastDocument() {
     if (!gDoc) return;
-    wchar_t dir[MAX_PATH];
-    appDirW(dir, MAX_PATH);
-    FILE* fp = _wfopen((std::wstring(dir) + L"\\last.txt").c_str(), L"rb");
-    if (fp) {
-        char buf[MAX_PATH * 3] = "";
-        size_t got = fread(buf, 1, sizeof(buf) - 1, fp);
-        fclose(fp);
-        while (got && (buf[got - 1] == '\n' || buf[got - 1] == '\r')) got--;
-        buf[got] = 0;
-        if (got) {
-            int wn = MultiByteToWideChar(CP_UTF8, 0, buf, -1, nullptr, 0);
-            std::vector<wchar_t> wpath(wn);
-            MultiByteToWideChar(CP_UTF8, 0, buf, -1, wpath.data(), wn);
-            if (wpath[0] && GetFileAttributesW(wpath.data()) != INVALID_FILE_ATTRIBUTES) {
-                openPath(wpath.data());
-                return;
-            }
-        }
+    // The document this one replaced. last.txt is no use here: autosave keeps it
+    // pointing at whatever is open, so reading it would reopen the same file.
+    std::wstring want = gPrevPath;
+    if (want.empty() || want == gPath) {
+        MessageBoxW(gWnd, L"No earlier document to reopen.", L"mnpdf", MB_OK | MB_ICONINFORMATION);
+        return;
     }
-    MessageBoxW(gWnd, L"No previous document to reopen.", L"mnpdf", MB_OK | MB_ICONINFORMATION);
+    if (GetFileAttributesW(want.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        MessageBoxW(gWnd, L"That document has moved or been deleted since you left it.",
+                    L"mnpdf", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    openPath(want);
 }
 
 // ---- the Advanced cascade --------------------------------------------------
@@ -4185,6 +4260,7 @@ static void onContextMenu(HWND h, LPARAM lp) {   // right click
                202, L"Thumbnails");
     AppendMenuW(menu, MF_STRING | (gNight ? MF_CHECKED : 0), 200, L"Night mode");
     AppendMenuW(menu, gDoc ? MF_STRING : MF_GRAYED, 203, L"Insert signature...");
+    AppendMenuW(menu, gSigs.empty() ? MF_GRAYED : MF_STRING, 204, L"Clear signatures");
     AppendMenuW(menu, gDoc ? MF_STRING : MF_GRAYED, 205, L"Merge PDFs...");
     AppendMenuW(menu, gDoc && gDocPages > 1 ? MF_STRING : MF_GRAYED, 206, L"Split pages...");
     AppendMenuW(menu, gDoc ? MF_STRING : MF_GRAYED, 207, L"Reopen last document");
@@ -4240,6 +4316,7 @@ static void onCommand(HWND h, WPARAM wp) {
     case 201: toggleOutlineDrawer(); return;
     case 202: toggleThumbDrawer(); return;
     case 203: if (gDoc) pickSignatureImage(); return;
+    case 204: clearSignatures(); return;
     case 205: if (gDoc) mergeDialog(); return;
     case 206: if (gDoc && gDocPages > 1) openRangePrompt(); return;
     case 207: reopenLastDocument(); return;

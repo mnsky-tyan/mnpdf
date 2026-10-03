@@ -56,8 +56,10 @@ document you are reading. *Split pages* exports a range - `2-5` or `1,3,8` -
 into a new PDF without touching the original.
 
 **Signing.** *Insert signature* takes a JPEG and asks where to put it; the
-next click on a page drops the stamp there. A stamp lives in the file once you
-save, and in the sidecar until then, exactly like a highlight.
+next click on a page drops the stamp there. A file that is not a JPEG is
+refused rather than decoded. *Clear signatures* takes them all
+away again. A stamp lives in the file once you save, and in the
+sidecar until then, exactly like a highlight.
 
 **Dark reading.** *Night mode* inverts the page for a dark screen and is
 remembered for the next start.
