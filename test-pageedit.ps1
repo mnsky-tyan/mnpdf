@@ -206,6 +206,30 @@ try {
     Pass 'a file that is not a JPEG is refused instead of placed'
   } else { Fail 'non-JPEG signature' 'the reader did not come back with the page unchanged' }
 
+  # Three magic bytes are not a format test: a stream that starts like a JPEG
+  # but cannot be decoded (a PNG body behind an SOI header, entropy data cut
+  # off) went straight to the loader, which reported success on it anyway. The
+  # stamp then reached the page and the sidecar, and the reader died at the
+  # first paint - as did every later launch of that document, because the sig
+  # line stayed. Such a file must be refused like any other non-JPEG: nothing
+  # on the page, and nothing remembered for the next start.
+  $fakeJpeg = Join-Path $scratch 'png-behind-jpeg-magic.jpg'
+  [IO.File]::WriteAllBytes($fakeJpeg, ([byte[]](0xFF,0xD8,0xFF,0xE0) + [byte[]](0x89,0x50,0x4E,0x47,0x0D,0x0A,0x1A,0x0A) + (New-Object byte[] 500)))
+  $fakeDoc = New-Case
+  $fakeHash = Join-Path $scratch 'fake.txt'
+  $survived = $false; $carried = $false
+  try {
+    $rf = Run-Hooked ("sig|{0}|0;;pagehash|{1}" -f $fakeJpeg, $fakeHash) $fakeDoc $fakeHash
+    $survived = ($rf.Hashes.Count -eq $FixturePages)
+    $carried = ((Get-Content (SidecarFor $fakeDoc) -Raw -ErrorAction SilentlyContinue) -match 'sig=')
+  } catch {
+    $survived = $false                      # the reader never got its window up
+  }
+  if (-not $survived) { Fail 'undecodable JPEG' 'the reader never came back with every page rasterized' }
+  elseif ($rf.Hashes[0] -ne $ref.Hashes[0]) { Fail 'undecodable JPEG' 'the stamp reached the page anyway' }
+  elseif ($carried) { Fail 'undecodable JPEG' 'the refused stamp was still written to the sidecar' }
+  else { Pass 'a file that only looks like a JPEG is refused instead of placed' }
+
   # A stamp recovered from the sidecar is in the page but not in the PDF, so
   # the document really is unsaved: Save has to do something.
   $recovered = New-Case

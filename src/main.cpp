@@ -3201,25 +3201,38 @@ static bool readWholeFile(const std::wstring& path, std::vector<unsigned char>& 
     return got == (size_t)n;
 }
 
-// The first few bytes of a file. A format gate needs no more than that, and a
-// one-kilobyte PNG header must not cost the whole file on every placement.
-static bool readWholeFileHead(const std::wstring& path, std::vector<unsigned char>& out, size_t want) {
-    FILE* f = _wfopen(path.c_str(), L"rb");
-    if (!f) return false;
-    out.resize(want);
-    size_t got = fread(out.data(), 1, want, f);
-    fclose(f);
-    out.resize(got);
-    return got == want;               // a short file has no magic bytes to judge
-}
-
-// A JPEG always starts with FFD8FF (SOI + next marker). Anything else - a PNG,
-// a GIF, a text file the reader renamed - must be refused here: the JPEG
-// loader takes those bytes and takes the process down with them.
+// A JPEG is a chain of length-prefixed segments running from SOI to EOI, and
+// that chain is the only honest test. Three magic bytes also fit a stream the
+// loader cannot decode - entropy data cut off, garbage behind the header, a
+// PNG body behind an FFD8FF prefix - and that loader reports success on
+// exactly those, so the stamp reaches the page and the sidecar and the reader
+// dies at the first paint, taking every later launch of the document with it.
+// Anything else - a PNG, a GIF, a text file the reader renamed - has to be
+// refused here for the same reason.
 static bool looksLikeJpeg(const std::wstring& path) {
-    std::vector<unsigned char> head;
-    if (!readWholeFileHead(path, head, 3)) return false;
-    return head[0] == 0xFF && head[1] == 0xD8 && head[2] == 0xFF;
+    std::vector<unsigned char> b;
+    if (!readWholeFile(path, b)) return false;
+    if (b.size() < 4 || b[0] != 0xFF || b[1] != 0xD8 || b[2] != 0xFF) return false;
+    bool sawScan = false;
+    size_t i = 2;
+    while (i + 1 < b.size()) {
+        if (b[i] != 0xFF) return false;
+        unsigned char m = b[i + 1];
+        i += 2;
+        if (m == 0xD9) return sawScan;                          // EOI ends the image
+        if (m == 0x01 || (m >= 0xD0 && m <= 0xD7)) continue;    // TEM and restarts carry no length
+        if (i + 1 >= b.size()) return false;
+        size_t len = ((size_t)b[i] << 8) | b[i + 1];            // a segment length counts itself
+        if (len < 2 || i + len > b.size()) return false;
+        i += len;
+        if (m != 0xDA) continue;
+        // SOS: entropy-coded data runs on until the next marker that is neither
+        // a stuffed FF00 nor a restart
+        sawScan = true;
+        while (i + 1 < b.size() &&
+               !(b[i] == 0xFF && b[i + 1] != 0x00 && (b[i + 1] < 0xD0 || b[i + 1] > 0xD7))) i++;
+    }
+    return false;                                               // ran out before an EOI
 }
 
 // drop a stamp into gDoc at its recorded spot. Returns false when the image
