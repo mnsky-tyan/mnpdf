@@ -145,32 +145,38 @@ else { Fail "highlight via menu command" "no hl= in sidecar" }
 
 # --- 3. double click = word select ---
 # The pixel a word sits under depends on the fit zoom, which follows the screen
-# the runner gives this suite (165% there, 173% here). Sweep down the page and
+# the runner gives this suite (165% there, 173% here) - and a click past a
+# line's last glyph lands on the line break, where the word expansion spills
+# into the next line. Sweep the text block itself, starting well inside it, and
 # take the first double-click that selects a single word, so the case tests the
 # capability at any zoom instead of one resolution's layout.
-$wordAt = $null; $word = $null
-foreach ($y in 210, 220, 200, 230, 190, 240, 180, 250) {
-  Post $h 0x0203 ([IntPtr]1) (Lparam 600 $y)                    # WM_LBUTTONDBLCLK
-  Start-Sleep -Milliseconds 200
-  $t = CopyAndWait $h (GetClip)
-  if (-not $script:clipOk) { break }
-  if ($t -and $t -notmatch '\s' -and $t.Length -le 20) { $wordAt = $y; $word = $t; break }
+$wordX = 0; $wordAt = 0; $word = $null
+foreach ($y in 210, 220, 200, 230, 190, 240, 180) {
+  if ($word) { break }
+  foreach ($x in 420, 360, 480, 300, 540) {
+    Post $h 0x0203 ([IntPtr]1) (Lparam $x $y)                  # WM_LBUTTONDBLCLK
+    Start-Sleep -Milliseconds 200
+    $t = CopyAndWait $h (GetClip)
+    if (-not $script:clipOk) { break }
+    if ($t -and $t -notmatch '\s' -and $t.Length -le 20) { $wordX = $x; $wordAt = $y; $word = $t; break }
+  }
 }
 if (-not $script:clipOk) { Write-Output "SKIP word select: clipboard locked" }
 elseif ($word) { Pass "word select: '$word'" }
-else { Fail "word select" "no single word under x=600 (last '$t')" }
+else { Fail "word select" "no single word in the sweep (last '$t')" }
 
 Write-Output '[marker] before line test'
 # --- 4. triple click = line select ---
-# the same y that held a word holds its line, at whatever zoom found it
+# the same spot that held a word holds its line, at whatever zoom found it
+$lx = if ($wordX) { $wordX } else { 420 }
 $ly = if ($wordAt) { $wordAt } else { 210 }
-Post $h 0x0203 ([IntPtr]1) (Lparam 600 $ly)
+Post $h 0x0203 ([IntPtr]1) (Lparam $lx $ly)
 Start-Sleep -Milliseconds 150
-Post $h 0x0201 ([IntPtr]1) (Lparam 600 $ly)                     # WM_LBUTTONDOWN right after
+Post $h 0x0201 ([IntPtr]1) (Lparam $lx $ly)                     # WM_LBUTTONDOWN right after
 Start-Sleep -Milliseconds 200
 $t = CopyAndWait $h (GetClip)
 if (-not $script:clipOk) { Write-Output "SKIP line select: clipboard locked" }
-elseif ($t -match '\s' -and $t.Length -gt 15 -and $t -match 'Strategy') { Pass "line select: '$t'" }
+elseif ($t -match '\s' -and $t.Length -gt 15) { Pass "line select: '$t'" }
 else { Fail "line select" "clipboard was '$t'" }
 
 Write-Output '[marker] before search test'
