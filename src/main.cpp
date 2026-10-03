@@ -227,6 +227,7 @@ static void renderPage();
 static bool doSaveAs();
 static void replaySigs();
 static void refreshDrawers();
+static void placeDrawers();
 
 static bool hlOverlap(const Hl& a, const Hl& b) {
     return a.page == b.page && a.start < b.start + b.count && b.start < a.start + a.count;
@@ -1699,15 +1700,26 @@ static void renderPage() {
     drawSelection();
     if (gEditPin >= 0 && gPinBox) sizePinBoxToText();   // a refit must not strand the editor
     if (gNight && gPdfBitmap) {                      // last, so marks are re-coloured too
+        // the paper inverts, not the surround: the letterbox is already the
+        // dark background, and inverting it too would ring the page in grey
         BYTE* inv = (BYTE*)FPDFBitmap_GetBuffer(gPdfBitmap);
         int istr = FPDFBitmap_GetStride(gPdfBitmap);
-        int iw = FPDFBitmap_GetWidth(gPdfBitmap), ih = FPDFBitmap_GetHeight(gPdfBitmap);
-        for (int y = 0; y < ih; y++) {
-            BYTE* row = inv + y * istr;
-            for (int x = 0; x < iw; x++) {
-                row[x * 4 + 0] = 255 - row[x * 4 + 0];
-                row[x * 4 + 1] = 255 - row[x * 4 + 1];
-                row[x * 4 + 2] = 255 - row[x * 4 + 2];
+        for (int i = 0; i < gDocPages; i++) {
+            int ty = yTopPx(i);
+            if (ty >= bottom) break;                 // pages are in order
+            int th = pageHpx(i);
+            if (ty + th <= top) continue;
+            int vx = pageVx(i), vy = pageVy(i), vw = pageWpx(i);
+            int x0 = vx > 0 ? vx : 0, ny0 = vy > 0 ? vy : 0;
+            int x1 = vx + vw < gClientW ? vx + vw : gClientW;
+            int ny1 = vy + th < gClientH ? vy + th : gClientH;
+            for (int y = ny0; y < ny1; y++) {
+                BYTE* row = inv + y * istr;
+                for (int x = x0; x < x1; x++) {
+                    row[x * 4 + 0] = 255 - row[x * 4 + 0];
+                    row[x * 4 + 1] = 255 - row[x * 4 + 1];
+                    row[x * 4 + 2] = 255 - row[x * 4 + 2];
+                }
             }
         }
     }
@@ -3214,11 +3226,13 @@ static bool placeSigObj(const Sig& s) {
 
 // stamps come back from the sidecar only after the pages exist
 static void replaySigs() {
-    for (const Sig& s : gSigs)
-        if (!placeSigObj(s)) {
-            gSigs.clear();                  // one unreadable image drops the set
-            return;
-        }
+    // an unreadable image drops that stamp and nothing else: the stamps placed
+    // before it are already in the pages, and dropping the whole set would
+    // leave them drawn with no record of them anywhere
+    for (size_t i = 0; i < gSigs.size(); ) {
+        if (placeSigObj(gSigs[i])) i++;
+        else gSigs.erase(gSigs.begin() + i);
+    }
 }
 
 // the reader clicked: turn the click into PDF user space, keep the stamp on the
@@ -3265,48 +3279,6 @@ static void pickSignatureImage() {
                 L"Place signature", MB_OK | MB_ICONINFORMATION);
 }
 
-// Clearing has to remove the page objects themselves: a stamp lives inside
-// gDoc, not only in the sidecar, so forgetting the sidecar would leave it drawn
-// and saved. The objects are found by the box each stamp occupies - no handle is
-// kept across page reloads, which would dangle the moment the cache evicts the
-// page - and the walk goes backwards because removing shifts the indices.
-static void clearSignatures() {
-    if (gSigs.empty()) return;
-    std::vector<Sig> stamps = gSigs;
-    for (int i = 0; i < gDocPages && !stamps.empty(); i++) {
-        bool anyHere = false;
-        for (const Sig& s : stamps) if (s.page == i) { anyHere = true; break; }
-        if (!anyHere) continue;
-        FPDF_PAGE pg = acquirePage(i);
-        if (!pg) continue;
-        for (int k = FPDFPage_CountObjects(pg) - 1; k >= 0; k--) {
-            FPDF_PAGEOBJECT obj = FPDFPage_GetObject(pg, k);
-            if (!obj || FPDFPageObj_GetType(obj) != FPDF_PAGEOBJ_IMAGE) continue;
-            float bl, bb, br, bt;
-            if (!FPDFPageObj_GetBounds(obj, &bl, &bb, &br, &bt)) continue;
-            for (size_t n = 0; n < stamps.size(); n++) {
-                const Sig& s = stamps[n];
-                if (s.page != i) continue;
-                if (fabs((double)bl - (s.cx - s.w / 2)) < 0.25
-                    && fabs((double)bb - (s.cy - s.h / 2)) < 0.25
-                    && fabs((double)br - (s.cx + s.w / 2)) < 0.25
-                    && fabs((double)bt - (s.cy + s.h / 2)) < 0.25) {
-                    // ownership of a removed object comes back to the caller, so
-                    // what was taken off the page has to be freed here
-                    if (FPDFPage_RemoveObject(pg, obj)) FPDFPageObj_Destroy(obj);
-                    break;
-                }
-            }
-        }
-        FPDFPage_GenerateContent(pg);
-    }
-    gSigs.clear();
-    flushPageCache();
-    markDirty();
-    writeSidecarNow();
-    renderPage();
-}
-
 static HWND gThumbWnd = nullptr;
 static HWND gOutlineWnd = nullptr;
 static int gThumbSel = -1;                      // page picked in the thumbnails drawer
@@ -3321,10 +3293,15 @@ static void refreshDrawers() { refreshThumbDrawer(); refreshOutlineDrawer(); }
 
 // ---- document surgery ------------------------------------------------------
 // Every structural change rebuilds gDoc through FPDF_ImportPages, then re-reads
-// the page tables. Page-indexed marks travel with a permutation; anything that
-// cannot be expressed (stamp handles) is dropped, exactly like a Save.
+// the page tables. Page-indexed marks travel with the permutation that produced
+// the new document: page import copies a page's content stream, so a stamp
+// drawn into a page is still drawn after the rebuild.
 static void adoptDoc(FPDF_DOCUMENT nd, int oldCount) {
     flushPageCache();
+    // page import fills in the page tree and leaves the rest of the catalog
+    // empty, so the one catalog entry the API can carry over goes over here,
+    // while the document that still holds it is open
+    if (gDoc) FPDF_CopyViewerPreferences(nd, gDoc);
     if (gDoc) FPDF_CloseDocument(gDoc);
     gDoc = nd;
     gDocPages = FPDF_GetPageCount(gDoc);
@@ -3352,7 +3329,7 @@ static void adoptDoc(FPDF_DOCUMENT nd, int oldCount) {
     }
     delete[] oldRot;
     flushPageCache();
-    gSigs.clear();                            // stamp handles cannot cross a rebuild
+    gPageTextPt.assign(gDocPages ? gDocPages : 1, 0.0);   // body text pt, measured lazily
     relayoutPages();
     if (gPageIndex >= gDocPages) gPageIndex = gDocPages - 1;
     if (gPageIndex < 0) gPageIndex = 0;
@@ -3395,14 +3372,15 @@ static void replaceDocByOrder(const std::vector<int>& order) {
         int np = (gTomb[k].page >= 0 && gTomb[k].page < gDocPages) ? back[gTomb[k].page] : -1;
         if (np < 0) gTomb.erase(gTomb.begin() + k); else { gTomb[k].page = np; k++; }
     }
+    for (size_t k = 0; k < gSigs.size();) {
+        int np = (gSigs[k].page >= 0 && gSigs[k].page < gDocPages) ? back[gSigs[k].page] : -1;
+        if (np < 0) gSigs.erase(gSigs.begin() + k); else { gSigs[k].page = np; k++; }
+    }
     delete[] gRot;
     gRot = new int[gDocPages ? gDocPages : 1];
     for (int j = 0; j < n; j++) gRot[j] = rot[j];
     for (int j = n; j < gDocPages; j++) gRot[j] = 0;
-    adoptDoc(nd, gDocPages);
-    int sel = -1;
-    for (int old = 0; old < gDocPages; old++) if (back[old] == gThumbSel) sel = old;
-    gThumbSel = sel;
+    adoptDoc(nd, gDocPages);                  // the drawer selection follows the reader
 }
 
 static void deletePage(int idx) {
@@ -3420,16 +3398,6 @@ static void movePage(int from, int to) {
     order.erase(order.begin() + from);
     order.insert(order.begin() + to, v);
     replaceDocByOrder(order);                      // adoptDoc refreshes the drawers
-    gThumbSel = to;
-}
-
-static void rotatePageBy(int idx, int delta) {
-    if (idx < 0 || idx >= gDocPages) return;
-    gRot[idx] = (gRot[idx] + delta + 4) & 3;
-    relayoutPages();
-    markDirty();
-    renderPage();
-    refreshThumbDrawer();
 }
 
 // the reader picks the signature's spot; the click never reaches the text layer
@@ -3507,6 +3475,7 @@ static void mergeDialog() {
 
 // export a page range ("2,5-7") into a new file next to the Save As dialog
 static void splitExport(const std::wstring& target, const std::string& range, bool quiet) {
+    if (!gDoc) return;
     FPDF_DOCUMENT nd = FPDF_CreateNewDocument();
     if (!nd) return;
     if (!FPDF_ImportPages(nd, gDoc, range.c_str(), 0)) {
@@ -3521,15 +3490,20 @@ static void splitExport(const std::wstring& target, const std::string& range, bo
     fw.version = 1;                       // the two FPDF_FILEWRITE fields pdfium calls
     fw.WriteBlock = WriteBlockCb;
     fw.out = &bytes;
-    if (FPDF_SaveAsCopy(nd, &fw, 0) && !bytes.empty()) {
+    bool wrote = FPDF_SaveAsCopy(nd, &fw, 0) && !bytes.empty();
+    if (wrote) {
         FILE* f = _wfopen(target.c_str(), L"wb");
-        if (f) {
+        if (!f) wrote = false;            // a folder the reader cannot write to
+        else {
             fwrite(bytes.data(), 1, bytes.size(), f);
             fclose(f);
-            if (!quiet) MessageBoxW(gWnd, L"Pages exported.", L"Split pages", MB_OK | MB_ICONINFORMATION);
         }
     }
     FPDF_CloseDocument(nd);
+    if (quiet) return;
+    if (wrote) MessageBoxW(gWnd, L"Pages exported.", L"Split pages", MB_OK | MB_ICONINFORMATION);
+    else MessageBoxW(gWnd, L"These pages could not be written to that file.",
+                     L"Split pages", MB_OK | MB_ICONWARNING);
 }
 
 // ---- the range prompt for Split -------------------------------------------
@@ -3625,6 +3599,8 @@ static double gThumbScroll = 0;
 
 static const int kThumbW = 108;             // drawer thumbnail width in px
 static const int kThumbGap = 6;
+static const int kOutlineW = 240;           // outline drawer width in px
+static const int kDrawerGap = 8;            // drawer to reader gap in px
 
 static void clearThumbCache() {
     for (HBITMAP b : gThumbBmps) if (b) DeleteObject(b);
@@ -3632,37 +3608,79 @@ static void clearThumbCache() {
     gThumbHs.clear();
 }
 
-static void buildThumbCache() {
+// A row's height is arithmetic on the page boxes, so every page gets one at
+// once; its picture does not. Rasterizing every page up front would parse and
+// draw the whole document before the drawer appears - and again after every
+// delete, move and rotate - so a row is drawn when it first reaches the screen
+// (thumbProc's paint) and kept until the pages change underneath it.
+static void layoutThumbs() {
     clearThumbCache();
     if (!gDoc) return;
-    int n = gDocPages;
-    if (n > 400) n = 400;                    // a very long document draws what fits
-    for (int i = 0; i < n; i++) {
+    for (int i = 0; i < gDocPages; i++) {
         double ar = (gPageH[i] > 0 && gPageW[i] > 0) ? gPageH[i] / gPageW[i] : 1.3;
         int h = (int)(kThumbW * ar + 0.5);
         if (h < 8) h = 8;
         if (h > 400) h = 400;
-        int stride = 0;
-        BYTE* buf = rasterizePage(i, kThumbW, h, &stride);
-        if (!buf) { gThumbBmps.push_back(nullptr); gThumbHs.push_back(h); continue; }
-        HDC screen = GetDC(nullptr);
-        BITMAPINFO bmi = {};
-        bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-        bmi.bmiHeader.biWidth = kThumbW;
-        bmi.bmiHeader.biHeight = -h;          // top-down
-        bmi.bmiHeader.biPlanes = 1;
-        bmi.bmiHeader.biBitCount = 32;
-        bmi.bmiHeader.biCompression = BI_RGB;
-        void* bits = nullptr;
-        HBITMAP bmp = CreateDIBSection(screen, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
-        ReleaseDC(nullptr, screen);
-        if (bmp && bits)
-            for (int y = 0; y < h; y++)
-                memcpy((BYTE*)bits + y * kThumbW * 4, buf + y * stride, (size_t)kThumbW * 4);
-        freeRaster(buf);
-        gThumbBmps.push_back(bmp);
+        gThumbBmps.push_back(nullptr);       // not drawn yet
         gThumbHs.push_back(h);
     }
+}
+
+// rasterize one row; a row that already has a picture keeps it
+static void renderThumb(int i) {
+    if (i < 0 || i >= (int)gThumbBmps.size() || gThumbBmps[i]) return;
+    int h = gThumbHs[i];
+    int stride = 0;
+    BYTE* buf = rasterizePage(i, kThumbW, h, &stride);
+    if (!buf) return;
+    HDC screen = GetDC(nullptr);
+    BITMAPINFO bmi = {};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = kThumbW;
+    bmi.bmiHeader.biHeight = -h;              // top-down
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+    void* bits = nullptr;
+    HBITMAP bmp = CreateDIBSection(screen, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    ReleaseDC(nullptr, screen);
+    if (bmp && bits)
+        for (int y = 0; y < h; y++)
+            memcpy((BYTE*)bits + y * kThumbW * 4, buf + y * stride, (size_t)kThumbW * 4);
+    freeRaster(buf);
+    gThumbBmps[i] = bmp;
+}
+
+// a rotation changed what one row shows, so that row's picture is stale
+static void dropThumb(int i) {
+    if (i < 0 || i >= (int)gThumbBmps.size()) return;
+    if (gThumbBmps[i]) { DeleteObject(gThumbBmps[i]); gThumbBmps[i] = nullptr; }
+}
+
+// A drawer hangs off the reader's own rect, and that rect moves: a maximized
+// window leaves no screen beside it, so a drawer placed there is off screen and
+// unreachable while its menu row still reads as open. Both drawers go through
+// here, so a move or a resize lands them on the work area of the monitor the
+// reader is on.
+static void placeDrawer(HWND drawer, int width, int side) {
+    if (!drawer || !gWnd) return;
+    RECT wr;
+    GetWindowRect(gWnd, &wr);
+    MONITORINFO mi = { sizeof(mi) };
+    if (!GetMonitorInfoW(MonitorFromRect(&wr, MONITOR_DEFAULTTONEAREST), &mi)) return;
+    int h = wr.bottom - wr.top - 40;
+    if (h > mi.rcWork.bottom - mi.rcWork.top) h = mi.rcWork.bottom - mi.rcWork.top;
+    if (h < 200) h = 200;
+    int x = side ? wr.right + kDrawerGap : wr.left - width - kDrawerGap;
+    SetWindowPos(drawer, nullptr,
+                 clampBox(x, width, mi.rcWork.left, mi.rcWork.right),
+                 clampBox(wr.top + 40, h, mi.rcWork.top, mi.rcWork.bottom),
+                 width, h, SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+static void placeDrawers() {
+    placeDrawer(gThumbWnd, kThumbW + 24, 0);
+    placeDrawer(gOutlineWnd, kOutlineW, 1);
 }
 
 static int thumbListHeight() {
@@ -3714,17 +3732,14 @@ static void toggleThumbDrawer() {
         RegisterClassExW(&wc);
         reg = true;
     }
-    RECT wr;
-    GetWindowRect(gWnd, &wr);
-    int h = wr.bottom - wr.top - 40;
-    if (h < 200) h = 200;
     gThumbSel = gPageIndex;
     gThumbWnd = CreateWindowExW(WS_EX_TOOLWINDOW, L"MNThumbs", L"Thumbnails",
                                 WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME,
-                                wr.left - kThumbW - 12, wr.top + 40, kThumbW + 24, h,
+                                0, 0, kThumbW + 24, 200,
                                 gWnd, nullptr, inst, nullptr);
     if (gThumbWnd) {
-        buildThumbCache();          // only once there is a window to own them
+        layoutThumbs();            // rows first; each picture is drawn when it shows
+        placeDrawer(gThumbWnd, kThumbW + 24, 0);
         ShowWindow(gThumbWnd, SW_SHOW);
     }
 }
@@ -3736,7 +3751,7 @@ static void invalidateThumbDrawer() {
 static void refreshThumbDrawer() {
     if (!gThumbWnd) return;
     gThumbSel = gPageIndex;
-    buildThumbCache();
+    layoutThumbs();
     invalidateThumbDrawer();
 }
 
@@ -3760,6 +3775,7 @@ static LRESULT CALLBACK thumbProc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
                     RECT sel = { x - 2, cy - 2, x + kThumbW + 2, cy + th + 2 };
                     FillRect(dc, &sel, (HBRUSH)GetStockObject(LTGRAY_BRUSH));
                 }
+                if (!gThumbBmps[i]) renderThumb((int)i);
                 if (gThumbBmps[i]) {
                     HBITMAP old = (HBITMAP)SelectObject(mem, gThumbBmps[i]);
                     BitBlt(dc, x, cy, kThumbW, th, mem, 0, 0, SRCCOPY);
@@ -3801,10 +3817,10 @@ static LRESULT CALLBACK thumbProc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
     }
     case WM_KEYDOWN: {
         if (gThumbSel < 0) break;
-        if (wp == VK_DELETE) { deletePage(gThumbSel); gThumbSel = -1; }
+        if (wp == VK_DELETE) deletePage(gThumbSel);
         else if (wp == VK_UP && (GetKeyState(VK_CONTROL) & 0x8000)) movePage(gThumbSel, gThumbSel - 1);
         else if (wp == VK_DOWN && (GetKeyState(VK_CONTROL) & 0x8000)) movePage(gThumbSel, gThumbSel + 1);
-        else if (wp == 'R') rotatePageBy(gThumbSel, 1);
+        else if (wp == 'R') { rotatePage(gThumbSel, +1); dropThumb(gThumbSel); }
         else if (wp == VK_UP) { if (gThumbSel > 0) gThumbSel--; openPageAt(gThumbSel); }
         else if (wp == VK_DOWN) { if (gThumbSel < gDocPages - 1) gThumbSel++; openPageAt(gThumbSel); }
         else break;
@@ -3887,15 +3903,14 @@ static void toggleOutlineDrawer() {
         reg = true;
     }
     buildBmList();
-    RECT wr;
-    GetWindowRect(gWnd, &wr);
-    int w = 240, h = wr.bottom - wr.top - 40;
-    if (h < 200) h = 200;
     gOutlineWnd = CreateWindowExW(WS_EX_TOOLWINDOW, L"MNOutline", L"Outline",
                                   WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME,
-                                  wr.right + 8, wr.top + 40, w, h,
+                                  0, 0, kOutlineW, 200,
                                   gWnd, nullptr, inst, nullptr);
-    if (gOutlineWnd) ShowWindow(gOutlineWnd, SW_SHOW);
+    if (gOutlineWnd) {
+        placeDrawer(gOutlineWnd, kOutlineW, 1);
+        ShowWindow(gOutlineWnd, SW_SHOW);
+    }
 }
 
 static void invalidateOutlineDrawer() {
@@ -4009,9 +4024,7 @@ static void runHook(const std::wstring& spec) {
     } else if (verb == L"movepage") {
         movePage(num(arg1, -1), num(arg2, -1));
     } else if (verb == L"rotatepage") {
-        rotatePageBy(num(arg1, -1), num(arg2, 1));
-    } else if (verb == L"clearsigs") {
-        clearSignatures();
+        rotatePage(num(arg1, -1), num(arg2, 1) >= 0 ? +1 : -1);
     } else if (verb == L"pagehash" && !arg1.empty()) {
         FILE* f = _wfopen(arg1.c_str(), L"wb");
         if (f) {
@@ -4172,9 +4185,8 @@ static void onContextMenu(HWND h, LPARAM lp) {   // right click
                202, L"Thumbnails");
     AppendMenuW(menu, MF_STRING | (gNight ? MF_CHECKED : 0), 200, L"Night mode");
     AppendMenuW(menu, gDoc ? MF_STRING : MF_GRAYED, 203, L"Insert signature...");
-    AppendMenuW(menu, gSigs.empty() ? MF_GRAYED : MF_STRING, 204, L"Clear signatures");
     AppendMenuW(menu, gDoc ? MF_STRING : MF_GRAYED, 205, L"Merge PDFs...");
-    AppendMenuW(menu, gDocPages > 1 ? MF_STRING : MF_GRAYED, 206, L"Split pages...");
+    AppendMenuW(menu, gDoc && gDocPages > 1 ? MF_STRING : MF_GRAYED, 206, L"Split pages...");
     AppendMenuW(menu, gDoc ? MF_STRING : MF_GRAYED, 207, L"Reopen last document");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_POPUP, (UINT_PTR)advancedMenu(), L"Advanced");
@@ -4228,9 +4240,8 @@ static void onCommand(HWND h, WPARAM wp) {
     case 201: toggleOutlineDrawer(); return;
     case 202: toggleThumbDrawer(); return;
     case 203: if (gDoc) pickSignatureImage(); return;
-    case 204: clearSignatures(); return;
     case 205: if (gDoc) mergeDialog(); return;
-    case 206: if (gDocPages > 1) openRangePrompt(); return;
+    case 206: if (gDoc && gDocPages > 1) openRangePrompt(); return;
     case 207: reopenLastDocument(); return;
     case 116:                                   // copy highlight text
         if (gMenuHl >= 0 && gMenuHl < (int)gHls.size()) {
@@ -4322,8 +4333,12 @@ static void onCommand(HWND h, WPARAM wp) {
         if (gMenuPin >= 0) startPinEdit(gMenuPin, false);
         return;
     case 132: deletePin(gMenuPin); return;
-    case 133: rotatePage(gMenuRotPage >= 0 ? gMenuRotPage : gPageIndex, +1); return;
-    case 134: rotatePage(gMenuRotPage >= 0 ? gMenuRotPage : gPageIndex, -1); return;
+    case 133: case 134: {
+        int rp = gMenuRotPage >= 0 ? gMenuRotPage : gPageIndex;
+        rotatePage(rp, id == 133 ? +1 : -1);
+        dropThumb(rp);                        // that drawer row now shows a different page
+        return;
+    }
     }
 }
 
@@ -4373,12 +4388,14 @@ static LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         if (wp != SIZE_MINIMIZED) {
             if (gFitWidth) applyFitWidth();       // refit before rendering
             rebuildSurface();
+            placeDrawers();                   // the drawers hang off this rect
         }
         placeSearchBar();
         hidePinTip(h);                            // the refit moved the tip's anchor
         updateTitle();                           // every size message, SIZE_MINIMIZED included
         return 0;
     case WM_MOVE:                                 // both note boxes are owned popups:
+        placeDrawers();
         if (gEditPin >= 0 && gPinBox) sizePinBoxToText();   // they do not follow the window
         hidePinTip(h);
         return 0;

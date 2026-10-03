@@ -180,19 +180,14 @@ try {
   else { Fail 'sidecar after save' 'the sig line survived a save' }
   Quit-Proc $p
 
-  # Clear signatures has to take the stamp off the page, not only out of the
-  # sidecar: the page that carries it must rasterize exactly as it did before.
-  $stamped = Join-Path $scratch 'clear.txt'
+  # the stamp has to be in the page itself, not only in the sidecar: a page
+  # that carries one must rasterize differently from the fixture.
+  $stamped = Join-Path $scratch 'stamped.txt'
   $r = Run-Hooked ("sig|{0}|0;;pagehash|{1}" -f $jpg, $stamped) (New-Case) $stamped
   $r2Hash = $r.Hashes[0]
   if ($r.Hashes.Count -eq $FixturePages -and $r.Hashes[0] -ne $ref.Hashes[0]) {
     Pass 'the stamp really lands on the page'
   } else { Fail 'stamp on the page' 'page 1 rasterizes as it did before the stamp' }
-  $cleared = Join-Path $scratch 'cleared.txt'
-  $r = Run-Hooked ("sig|{0}|0;;clearsigs;;pagehash|{1}" -f $jpg, $cleared) (New-Case) $cleared
-  if ($r.Hashes.Count -eq $FixturePages -and $r.Hashes[0] -eq $ref.Hashes[0]) {
-    Pass 'clear signatures takes the stamp back off the page'
-  } else { Fail 'clear signatures' 'page 1 still rasterizes as the stamped one' }
 
   # The sidecar is the only memory a stamp has before a save, so a quit and
   # relaunch of the same path must put it back on the page exactly where it was.
