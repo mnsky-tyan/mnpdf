@@ -149,7 +149,7 @@ unless it is set:
 |---|---|
 | `MNPDF_BACKGROUND` | app: start minimised, without stealing the foreground - every suite but `test-colors.ps1`. The app only checks that the variable exists, so a foreground suite needs it *removed*, not set to `0` |
 | `MNPDF_VERBOSE` | app: put the document name and page in the window title |
-| `MNPDF_HOOK` | app: at launch, run one page-editing step (`merge:<pdf>`, `sig:<jpeg>:<page>`, `split:<range>:<out.pdf>`, `delpage:<n>`, `movepage:<n>:<m>`, `rotatepage:<n>`, `pagehash:<file>`, `night:<0|1>`; `;;` chains steps) instead of waiting for a modal file dialog a posted-message harness cannot click |
+| `MNPDF_HOOK` | app: at launch, run one page-editing step (`merge\|<pdf>`, `sig\|<jpeg>\|<page>`, `split\|<range>\|<out.pdf>`, `delpage\|<n>`, `movepage\|<n>\|<m>`, `rotatepage\|<n>\|<+1\|-1>`, `open\|<pdf>`, `clearsigs`, `pagehash\|<file>`, `night\|<0\|1>`; `;;` chains steps) instead of waiting for a modal file dialog a posted-message harness cannot click |
 | `MNPDF_PRINT_PROBE` | app: at print time, write raster statistics to the given file instead of opening the modal dialog |
 | `MNPDF_GATE_EXE` | runner: the binary the suites drive, so a suite never hardcodes a path |
 | `MNPDF_GATE_STATE` | runner: the suite's private state directory (`APPDATA`/`TEMP` live under it) |

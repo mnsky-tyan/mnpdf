@@ -3210,7 +3210,7 @@ static bool readWholeFileHead(const std::wstring& path, std::vector<unsigned cha
     size_t got = fread(out.data(), 1, want, f);
     fclose(f);
     out.resize(got);
-    return got > 0;
+    return got == want;               // a short file has no magic bytes to judge
 }
 
 // A JPEG always starts with FFD8FF (SOI + next marker). Anything else - a PNG,
@@ -3426,6 +3426,7 @@ static void adoptDoc(FPDF_DOCUMENT nd, int oldCount) {
 static void replaceDocByOrder(const std::vector<int>& order) {
     int n = (int)order.size();
     if (n <= 0) return;          // a full permutation keeps the count: only an empty set is wrong
+    if (gEditPin >= 0) commitPinEdit();   // an open note lands on the pin it edits, before indices move
     std::vector<int> back(gDocPages, -1);
     for (int j = 0; j < n; j++) back[order[j]] = j;
     std::vector<int> rot(gDocPages, 0);
@@ -3454,6 +3455,29 @@ static void replaceDocByOrder(const std::vector<int>& order) {
         int np = (gSigs[k].page >= 0 && gSigs[k].page < gDocPages) ? back[gSigs[k].page] : -1;
         if (np < 0) gSigs.erase(gSigs.begin() + k); else { gSigs[k].page = np; k++; }
     }
+    // the selection names its pages by number too: it moves with the permutation,
+    // and one that lost a page has nothing left to paint, copy or highlight
+    if (gSelAnchorPage >= 0 || gSelHeadPage >= 0) {
+        int na = (gSelAnchorPage >= 0 && gSelAnchorPage < gDocPages) ? back[gSelAnchorPage] : -1;
+        int nh = (gSelHeadPage >= 0 && gSelHeadPage < gDocPages) ? back[gSelHeadPage] : -1;
+        if (na < 0 || nh < 0) clearSelection();
+        else { gSelAnchorPage = na; gSelHeadPage = nh; }
+    }
+    // search hits travel the same way; their char offsets still fit because the
+    // page text came across verbatim, but a hit on a deleted page is simply gone
+    bool hitKept = false;
+    int w = 0;
+    for (int m = 0; m < gMatchCount; m++) {
+        int np = (gMatches[m].page >= 0 && gMatches[m].page < gDocPages) ? back[gMatches[m].page] : -1;
+        if (np < 0) continue;
+        gMatches[w] = gMatches[m];
+        gMatches[w].page = np;
+        if (m == gMatchActive) hitKept = true;
+        w++;
+    }
+    gMatchCount = w;
+    if (!hitKept) gMatchActive = gMatchCount ? 0 : -1;
+    updateMatchLabel();                  // a dropped hit changes the counter the find bar shows
     delete[] gRot;
     gRot = new int[gDocPages ? gDocPages : 1];
     for (int j = 0; j < n; j++) gRot[j] = rot[j];
@@ -4123,11 +4147,6 @@ static void runHook(const std::wstring& spec) {
         gNight = num(arg1, 0) != 0;
         writeAppPref();
         renderPage();
-    } else if (verb == L"thumbs" || verb == L"outline") {
-        bool want = num(arg1, 1) != 0;
-        if (want != (verb == L"thumbs" ? gThumbsOn : gOutlineOn)) {
-            if (verb == L"thumbs") toggleThumbDrawer(); else toggleOutlineDrawer();
-        }
     }
 }
 
