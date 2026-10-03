@@ -96,14 +96,12 @@ struct Pin;
 static int gSelAnchor = -1, gSelHead = -1;
 static int gSelAnchorPage = -1, gSelHeadPage = -1;
 static int gMenuHl = -1;                         // highlight the context menu targets
-static bool gMenuRecolor = false;
 static int gMenuPin = -1;                        // pin the context menu targets
 static int gMenuRotPage = -1;                    // page the context menu targets (rotate)
 static int gMenuPinPtPage = -1;                  // "add pin here" drop point
 static int gColorTarget = 0;                       // what a custom colour applies to
 static double gMenuPinPtX = 0, gMenuPinPtY = 0;
 static bool gSelDrag = false;                    // left button held with a live drag
-static bool gMultiClick = false;                 // dbl/triple-click sequence: release keeps the selection
 static bool gLastWasDbl = false;                 // for triple-click line select
 static DWORD gLastDblTime = 0;
 static int gLastDblX = 0, gLastDblY = 0;
@@ -237,6 +235,30 @@ static int pinIndexOf(const Pin& v, int color) {
     return -1;
 }
 
+// the bounds-guarded pin/hl mutations the undo and redo cases share
+static void pinEraseAt(int idx) {
+    if (idx >= 0 && idx < (int)gPins.size()) gPins.erase(gPins.begin() + idx);
+}
+
+static void pinSetTextAt(int idx, const std::wstring& text) {
+    if (idx >= 0 && idx < (int)gPins.size()) gPins[idx].text = text;
+}
+
+// recolour the highlight at an identity (page, start, count); first match wins
+static void hlRecolorAt(int page, int start, int count, int color) {
+    for (Hl& h : gHls)
+        if (h.page == page && h.start == start && h.count == count) { h.color = color; break; }
+}
+
+static void rotApply(int page, int rot) {
+    if (gRot && page >= 0 && page < gDocPages) {
+        gRot[page] = rot;
+        relayoutPages();
+        clampScroll();
+        ensureActivePage();      // every yTopPx moved: re-derive the active page
+    }
+}
+
 static void undoOp() {
     if (gUndo.empty()) return;
     Op op = gUndo.back();
@@ -250,24 +272,19 @@ static void undoOp() {
         gHls.push_back(op.hlVal);
         break;
     case 2:                                       // hlrecolor
-        for (Hl& h : gHls) if (h.page == op.hlVal.page && h.start == op.hlVal.start && h.count == op.hlVal.count) { h.color = op.hlFrom; break; }
+        hlRecolorAt(op.hlVal.page, op.hlVal.start, op.hlVal.count, op.hlFrom);
         break;
     case 3:                                       // pinadd: remove
-        if (op.pinIdx >= 0 && op.pinIdx < (int)gPins.size()) gPins.erase(gPins.begin() + op.pinIdx);
+        pinEraseAt(op.pinIdx);
         break;
     case 4:                                       // pindel: restore
         gPins.push_back(op.pinVal);
         break;
     case 5:                                       // pintext
-        if (op.pinIdx >= 0 && op.pinIdx < (int)gPins.size()) gPins[op.pinIdx].text = op.textFrom;
+        pinSetTextAt(op.pinIdx, op.textFrom);
         break;
     case 6:                                       // rot
-        if (gRot && op.rotPage >= 0 && op.rotPage < gDocPages) {
-            gRot[op.rotPage] = op.rotFrom;
-            relayoutPages();
-            clampScroll();
-            ensureActivePage();
-        }
+        rotApply(op.rotPage, op.rotFrom);
         break;
     case 7:                                       // pinrecolor: the pin still wears the op's colour
         { int i = pinIndexOf(op.pinVal, op.hlTo); if (i >= 0) { gPins[i].color = op.hlFrom; op.pinIdx = i; } }
@@ -292,24 +309,19 @@ static void redoOp() {
         gHls.push_back(op.hlVal);
         break;
     case 2:
-        for (Hl& h : gHls) if (h.page == op.hlVal.page && h.start == op.hlVal.start && h.count == op.hlVal.count) { h.color = op.hlTo; break; }
+        hlRecolorAt(op.hlVal.page, op.hlVal.start, op.hlVal.count, op.hlTo);
         break;
     case 3:
         gPins.push_back(op.pinVal);
         break;
     case 4:
-        if (op.pinIdx >= 0 && op.pinIdx < (int)gPins.size()) gPins.erase(gPins.begin() + op.pinIdx);
+        pinEraseAt(op.pinIdx);
         break;
     case 5:
-        if (op.pinIdx >= 0 && op.pinIdx < (int)gPins.size()) gPins[op.pinIdx].text = op.textTo;
+        pinSetTextAt(op.pinIdx, op.textTo);
         break;
     case 6:
-        if (gRot && op.rotPage >= 0 && op.rotPage < gDocPages) {
-            gRot[op.rotPage] = op.rotTo;
-            relayoutPages();
-            clampScroll();
-            ensureActivePage();
-        }
+        rotApply(op.rotPage, op.rotTo);
         break;
     case 7:                                       // pinrecolor: the pin undo repainted, else that colour
         {
@@ -337,7 +349,8 @@ static HWND gMatchLabel = nullptr;               // "9/113" beside the find box
 static WNDPROC gEditBaseProc = nullptr;
 static bool gSearchOpen = false;
 static wchar_t gQuery[128] = L"";
-static struct { int page, start, count; } gMatches[4096];
+static const int kMatchCap = 4096;               // search stops here; the label then reports the capped count
+static struct { int page, start, count; } gMatches[kMatchCap];
 static int gMatchCount = 0;
 static int gMatchActive = -1;
 static void updateMatchLabel() {
@@ -354,6 +367,7 @@ static HDC gHiSelection = nullptr;               // blue: drag selection
 static bool gSaveDirty = false;                  // sidecar write pending
 static bool gAutosave = true;                    // toggle: persist state+edits to the sidecar
 static int gEdgeScroll = 0;                      // drag auto-scroll: -1 up, +1 down, 0 still
+static const int kEdgeZone = 56;                 // drag auto-scroll: the in-window margin that arms it
 static POINT gDragPt = { 0, 0 };                 // last drag cursor pos (client)
 static HDC gHiMatch = nullptr;                   // amber: search matches
 static HDC gHiActive = nullptr;                  // orange: current search match
@@ -492,6 +506,28 @@ static void pagePxToPt(int page, double sx, double sy, double* ox, double* oy);
 // tolerance widens so a drag started on empty space still snaps to nearby text
 static int charIndexAtDoc(int cx, int cy, int* pageOut);
 
+// the page under a document-space y, or -1 when the point is outside the stack
+static int pageAtDocY(int docY) {
+    for (int i = 0; i < gDocPages; i++) {
+        int top = yTopPx(i);
+        if (docY >= top && docY < top + pageHpx(i)) return i;
+    }
+    return -1;
+}
+
+// nearest character at a page-space point, widening the tolerance from 4
+// device px up to maxPx; -1 when nothing hits. Every hit-test site used to
+// carry its own copy of this loop with a different cap, which is how the
+// caps drifted (32 / 16 / 128 px).
+static int charIndexWithTol(FPDF_TEXTPAGE tp, double px, double py, int maxPx) {
+    for (int px10 = 4; px10 <= maxPx; px10 *= 2) {
+        double tol = px10 / gZoom;
+        int idx = FPDFText_GetCharIndexAtPos(tp, px, py, tol, tol);
+        if (idx >= 0) return idx;
+    }
+    return -1;
+}
+
 // nearest character for a point that missed all glyph boxes: clamps to the
 // line horizontally, or to the page start/end when above/below the text
 static int snapIndexNear(int page, int cx, int cy) {
@@ -512,11 +548,8 @@ static int snapIndexNear(int page, int cx, int cy) {
         if (py <= 0) return n - 1;
         if (py >= H) return 0;
     }
-    for (int px10 = 4; px10 <= 128; px10 *= 2) {     // wide horizontal snap
-        double tol = px10 / gZoom;
-        int idx = FPDFText_GetCharIndexAtPos(tp, px, py, tol, tol);
-        if (idx >= 0) return idx;
-    }
+    int idx = charIndexWithTol(tp, px, py, 128);             // wide horizontal snap
+    if (idx >= 0) return idx;
     // still nothing: find the vertically nearest line, take its nearer end
     int best = 0, bestEnd = 0;
     double bestDist = 1e18;
@@ -545,11 +578,7 @@ static int charIndexAtDoc(int cx, int cy, int* pageOut) {
     *pageOut = -1;
     if (!gPrefixPt || !gDocPages) return -1;
     int docY = cy - docTop();
-    int page = -1;
-    for (int i = 0; i < gDocPages; i++) {
-        int top = yTopPx(i);
-        if (docY >= top && docY < top + pageHpx(i)) { page = i; break; }
-    }
+    int page = pageAtDocY(docY);
     if (page < 0) {
         // blank gap between/around pages: snap to the nearer page edge
         if (docY < yTopPx(0)) { *pageOut = 0; return 0; }
@@ -573,10 +602,7 @@ static int charIndexAtDoc(int cx, int cy, int* pageOut) {
     double px, py;
     pagePxToPt(page, ppx, ppy, &px, &py);
     int idx = -1;
-    for (int px10 = 4; idx < 0 && px10 <= 32; px10 *= 2) {   // 4..32 device px
-        double tol = px10 / gZoom;
-        idx = FPDFText_GetCharIndexAtPos(tp, px, py, tol, tol);
-    }
+    idx = charIndexWithTol(tp, px, py, 32);                  // 4..32 device px
     if (idx < 0) idx = snapIndexNear(page, cx, cy);          // blank space on the page
     if (idx < 0) return -1;
     *pageOut = page;
@@ -590,22 +616,13 @@ static int charIndexStrict(int cx, int cy, int* pageOut) {
     *pageOut = -1;
     if (!gPrefixPt || !gDocPages) return -1;
     int docY = cy - docTop();
-    int page = -1;
-    for (int i = 0; i < gDocPages; i++) {
-        int top = yTopPx(i);
-        if (docY >= top && docY < top + pageHpx(i)) { page = i; break; }
-    }
+    int page = pageAtDocY(docY);
     if (page < 0) return -1;
     FPDF_TEXTPAGE tp = textPageOf(page);
     if (!tp) return -1;
     double px, py;
     pagePxToPt(page, cx - docLeft() - pageLeftPx(page), docY - yTopPx(page), &px, &py);
-    for (int px10 = 4; px10 <= 16; px10 *= 2) {
-        double tol = px10 / gZoom;
-        int idx = FPDFText_GetCharIndexAtPos(tp, px, py, tol, tol);
-        if (idx >= 0) { *pageOut = page; return idx; }
-    }
-    return -1;
+    return charIndexWithTol(tp, px, py, 16);
 }
 
 static int charIndexClamped(int cx, int cy, int* pageOut) {
@@ -681,16 +698,24 @@ static void selectLine(int page, int idx) {
 }
 
 // double click: select the whitespace-delimited run around idx
-static void selectWord(int page, int idx);
-static void selectLine(int page, int idx);
-static bool loadPage(int index);
-static void markSave();
-static void relayoutPages();
-static void renderPage();
-static void toggleSearch(bool show);
-static void pagePxToPt(int page, double sx, double sy, double* ox, double* oy);
+static bool loadPage(int index);   // defined below the search bar; nextMatch calls it earlier
 
 static void copyTextRange(int p0, int i0, int p1, int i1);
+
+// the [s,e] char slice of page p inside an ordered cross-page range: copy,
+// selection drawing and highlighting all walk a range the same way, and this
+// prologue used to exist three times over
+static bool pageSlice(int p, int p0, int i0, int p1, int i1,
+                      FPDF_TEXTPAGE* tpOut, int* sOut, int* eOut) {
+    FPDF_TEXTPAGE tp = textPageOf(p);
+    if (!tp) return false;
+    int n = FPDFText_CountChars(tp);
+    *sOut = (p == p0) ? i0 : 0;
+    *eOut = (p == p1) ? i1 : n - 1;
+    if (*eOut < *sOut || *eOut >= n) return false;
+    *tpOut = tp;
+    return true;
+}
 
 static void copySelection() {
     if (!hasSelection()) return;
@@ -703,12 +728,8 @@ static void copySelection() {
 static void copyTextRange(int p0, int i0, int p1, int i1) {
     std::vector<unsigned short> buf;
     for (int p = p0; p <= p1; p++) {
-        FPDF_TEXTPAGE tp = textPageOf(p);
-        if (!tp) continue;
-        int n = FPDFText_CountChars(tp);
-        int s = (p == p0) ? i0 : 0;
-        int e = (p == p1) ? i1 : n - 1;
-        if (e < s || e >= n) continue;
+        FPDF_TEXTPAGE tp; int s, e;
+        if (!pageSlice(p, p0, i0, p1, i1, &tp, &s, &e)) continue;
         size_t base = buf.size();
         buf.resize(base + (size_t)(e - s + 2));
         int got = FPDFText_GetText(tp, s, e - s + 1, buf.data() + base);
@@ -769,9 +790,9 @@ static void releaseHiHl(int idx) {
 static void pagePtToPx(int page, double x, double y, double* ox, double* oy) {
     double W = gPageW[page], H = gPageH[page];
     switch (gRot[page] & 3) {
-    default: *ox = x * gZoom;     *oy = (H - y) * gZoom; break;
-    case 1:  *ox = y * gZoom;     *oy = x * gZoom;       break;
-    case 2:  *ox = (W - x) * gZoom; *oy = y * gZoom;     break;
+    case 0:  *ox = x * gZoom;       *oy = (H - y) * gZoom; break;
+    case 1:  *ox = y * gZoom;       *oy = x * gZoom;       break;
+    case 2:  *ox = (W - x) * gZoom; *oy = y * gZoom;       break;
     case 3:  *ox = (H - y) * gZoom; *oy = (W - x) * gZoom; break;
     }
 }
@@ -779,10 +800,10 @@ static void pagePtToPx(int page, double x, double y, double* ox, double* oy) {
 static void pagePxToPt(int page, double sx, double sy, double* ox, double* oy) {
     double W = gPageW[page], H = gPageH[page];
     switch (gRot[page] & 3) {
-    default: *ox = sx / gZoom;     *oy = H - sy / gZoom; break;
-    case 1:  *ox = sy / gZoom;     *oy = sx / gZoom;       break;
-    case 2:  *ox = W - sx / gZoom; *oy = sy / gZoom;       break;
-    case 3:  *ox = W - sy / gZoom; *oy = H - sx / gZoom;   break;
+    case 0:  *ox = sx / gZoom;      *oy = H - sy / gZoom;  break;
+    case 1:  *ox = sy / gZoom;      *oy = sx / gZoom;      break;
+    case 2:  *ox = W - sx / gZoom;  *oy = sy / gZoom;      break;
+    case 3:  *ox = W - sy / gZoom;  *oy = H - sx / gZoom;  break;
     }
 }
 
@@ -817,12 +838,8 @@ static void drawSelection() {
     selRange(&p0, &i0, &p1, &i1);
     HDC src = highlightDC(&gHiSelection, 215, 120, 0);
     for (int p = p0; p <= p1; p++) {
-        FPDF_TEXTPAGE tp = textPageOf(p);
-        if (!tp) continue;
-        int n = FPDFText_CountChars(tp);
-        int s = (p == p0) ? i0 : 0;
-        int e = (p == p1) ? i1 : n - 1;
-        if (e < s || e >= n) continue;
+        FPDF_TEXTPAGE tp; int s, e;
+        if (!pageSlice(p, p0, i0, p1, i1, &tp, &s, &e)) continue;
         blendCharRects(p, tp, s, e - s + 1, src);
     }
 }
@@ -873,12 +890,8 @@ static void applyHighlightFromSelection(int color) {
     Op op = {};
     op.kind = 0;
     for (int p = p0; p <= p1; p++) {
-        FPDF_TEXTPAGE tp = textPageOf(p);
-        if (!tp) continue;
-        int n = FPDFText_CountChars(tp);
-        int s = (p == p0) ? i0 : 0;
-        int e = (p == p1) ? i1 : n - 1;
-        if (e < s || e >= n) continue;
+        FPDF_TEXTPAGE tp; int s, e;
+        if (!pageSlice(p, p0, i0, p1, i1, &tp, &s, &e)) continue;
         Hl seg = { p, s, e - s + 1, color };
         for (int k = (int)gHls.size() - 1; k >= 0; k--) {
             if (hlOverlap(seg, gHls[k])) {
@@ -930,6 +943,22 @@ static int pinRadius(double zoom) {
     return r;
 }
 
+// where a pin dot lands on the screen and what it is painted with; both draw
+// branches used to run this same prologue and differ only in the draw call
+struct PinDraw { int x, y, r; COLORREF color; };
+
+static bool pinDrawPos(const Pin& pn, PinDraw* out) {
+    int vy = pageVy(pn.page), vh = pageHpx(pn.page);
+    if (vy + vh < 0 || vy > gClientH) return false;      // page not in view
+    double ax, ay;
+    pagePtToPx(pn.page, pn.x, pn.y, &ax, &ay);
+    out->x = pageVx(pn.page) + (int)ax;
+    out->y = pageVy(pn.page) + (int)ay;
+    out->r = pinRadius(gZoom);
+    if (!palColor(pn.color, out->color)) out->color = gPalPreset[kPalPreset - 1];
+    return true;
+}
+
 static void drawPins() {
     if (!gMemDC || gPins.empty()) return;
     if (gGdiOk) {
@@ -937,34 +966,20 @@ static void drawPins() {
         Gdiplus::Graphics g(gMemDC);
         g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);   // GDI's Ellipse leaves a wiggly edge
         for (const Pin& pn : gPins) {
-            int vy = pageVy(pn.page), vh = pageHpx(pn.page);
-            if (vy + vh < 0 || vy > gClientH) continue;      // page not in view
-            double ax, ay;
-            pagePtToPx(pn.page, pn.x, pn.y, &ax, &ay);
-            int x = pageVx(pn.page) + (int)ax;
-            int y = pageVy(pn.page) + (int)ay;
-            int r = pinRadius(gZoom);
-            COLORREF pc;
-            if (!palColor(pn.color, pc)) pc = gPalPreset[kPalPreset - 1];
-            Gdiplus::SolidBrush brush(Gdiplus::Color(255, GetRValue(pc), GetGValue(pc), GetBValue(pc)));
-            g.FillEllipse(&brush, x - r, y - r, 2 * r, 2 * r);
+            PinDraw d;
+            if (!pinDrawPos(pn, &d)) continue;
+            Gdiplus::SolidBrush brush(Gdiplus::Color(255, GetRValue(d.color), GetGValue(d.color), GetBValue(d.color)));
+            g.FillEllipse(&brush, d.x - d.r, d.y - d.r, 2 * d.r, 2 * d.r);
         }
     } else {
         for (const Pin& pn : gPins) {
-            int vy = pageVy(pn.page), vh = pageHpx(pn.page);
-            if (vy + vh < 0 || vy > gClientH) continue;      // page not in view
-            double ax, ay;
-            pagePtToPx(pn.page, pn.x, pn.y, &ax, &ay);
-            int x = pageVx(pn.page) + (int)ax;
-            int y = pageVy(pn.page) + (int)ay;
-            int r = pinRadius(gZoom);
-            COLORREF pc;
-            if (!palColor(pn.color, pc)) pc = gPalPreset[kPalPreset - 1];
-            HBRUSH br = CreateSolidBrush(pc);
+            PinDraw d;
+            if (!pinDrawPos(pn, &d)) continue;
+            HBRUSH br = CreateSolidBrush(d.color);
             HPEN np = CreatePen(PS_NULL, 0, 0);
             HGDIOBJ ob = SelectObject(gMemDC, br);
             HGDIOBJ op = SelectObject(gMemDC, np);
-            Ellipse(gMemDC, x - r, y - r, x + r, y + r);
+            Ellipse(gMemDC, d.x - d.r, d.y - d.r, d.x + d.r, d.y + d.r);
             SelectObject(gMemDC, op);
             SelectObject(gMemDC, ob);
             DeleteObject(np);
@@ -975,22 +990,19 @@ static void drawPins() {
 
 static int pinAt(int cx, int cy) {
     if (!gPrefixPt || !gDocPages) return -1;
+    int i = pageAtDocY(cy - docTop());
+    if (i < 0) return -1;
     int docY = cy - docTop();
-    for (int i = 0; i < gDocPages; i++) {
-        int top = yTopPx(i);
-        if (docY < top || docY >= top + pageHpx(i)) continue;
-        double px, py;
-        pagePxToPt(i, cx - docLeft() - pageLeftPx(i), docY - top, &px, &py);
-        // the hover target stays a comfortable 8px even when the dot itself
-        // has shrunk, so a small pin is still easy to hover
-        double hr = (double)pinRadius(gZoom) / gZoom;
-        double minHr = 8.0 / gZoom;
-        if (hr < minHr) hr = minHr;
-        for (int k = 0; k < (int)gPins.size(); k++) {
-            const Pin& pn = gPins[k];
-            if (pn.page == i && fabs(pn.x - px) < hr && fabs(pn.y - py) < hr) return k;
-        }
-        return -1;
+    double px, py;
+    pagePxToPt(i, cx - docLeft() - pageLeftPx(i), docY - yTopPx(i), &px, &py);
+    // the hover target stays a comfortable 8px even when the dot itself
+    // has shrunk, so a small pin is still easy to hover
+    double hr = (double)pinRadius(gZoom) / gZoom;
+    double minHr = 8.0 / gZoom;
+    if (hr < minHr) hr = minHr;
+    for (int k = 0; k < (int)gPins.size(); k++) {
+        const Pin& pn = gPins[k];
+        if (pn.page == i && fabs(pn.x - px) < hr && fabs(pn.y - py) < hr) return k;
     }
     return -1;
 }
@@ -1246,7 +1258,10 @@ static LRESULT CALLBACK pinBoxProc(HWND b, UINT m, WPARAM wp, LPARAM lp) {
     }
     case WM_KILLFOCUS:
         // a transient activation (a closing menu re-activating us) must not
-        // commit a box that only just opened
+        // commit a box that only just opened. The 400 ms is a contract with the
+        // colour box and its suite: test-colors.ps1 waits out the same grace
+        // before it clicks away, because both boxes must ignore a focus loss
+        // they did not ask for (src/main.cpp colorBoxProc says the same).
         if (GetTickCount() - gPinBoxBorn > 400) commitPinEdit();
         return 0;
     case WM_ACTIVATE:
@@ -1453,12 +1468,12 @@ static void runSearch() {
     gMatchCount = 0;
     gMatchActive = -1;
     if (gQuery[0]) {
-        for (int i = 0; i < gDocPages && gMatchCount < (int)(sizeof(gMatches) / sizeof(gMatches[0])); i++) {
+        for (int i = 0; i < gDocPages && gMatchCount < kMatchCap; i++) {
             FPDF_TEXTPAGE tp = textPageOf(i);
             if (!tp) continue;
             FPDF_SCHHANDLE sh = FPDFText_FindStart(tp, (FPDF_WIDESTRING)gQuery, 0, 0);
             if (!sh) continue;
-            while (gMatchCount < (int)(sizeof(gMatches) / sizeof(gMatches[0])) && FPDFText_FindNext(sh)) {
+            while (gMatchCount < kMatchCap && FPDFText_FindNext(sh)) {
                 gMatches[gMatchCount].page = i;
                 gMatches[gMatchCount].start = FPDFText_GetSchResultIndex(sh);
                 gMatches[gMatchCount].count = FPDFText_GetSchCount(sh);
@@ -1484,7 +1499,6 @@ static bool charRectYRange(int page, FPDF_TEXTPAGE tp, int start, int count, int
         double ax, ay, bx, by;
         pagePtToPx(page, l, t, &ax, &ay);
         pagePtToPx(page, r, b, &bx, &by);
-        lo = (int)(ax < bx ? ax : bx) < lo ? (int)(ax < bx ? ax : bx) : lo;
         int yTop = (int)(ay < by ? ay : by);
         int yBot = (int)(ay > by ? ay : by);
         if (yTop < lo) lo = yTop;
@@ -1754,52 +1768,54 @@ static unsigned long checksumOf(const BYTE* buf, size_t n) {
 
 static void printProbe() {
     if (!gDoc || gDocPages <= 0) return;
+    const wchar_t* out = _wgetenv(L"MNPDF_PRINT_PROBE");   // caller checked too; cheap and first
+    if (!out || !*out) return;
     int w = rotWpt(0) * 2, h = rotHpt(0) * 2;   // ~144 dpi in points
-    int stride = 0, dirtyStride = 0;
+    int stride = 0;
     BYTE* clean = rasterizePage(0, w, h, &stride);
     if (!clean) return;
-    // annotated twin: identical box, FPDF_ANNOT alone, so the two checksums
-    // differ for exactly the one flag the intent is about
-    BYTE* dirty = rasterizePage(0, w, h, &dirtyStride, FPDF_ANNOT);
-    if (wchar_t* out = _wgetenv(L"MNPDF_PRINT_PROBE")) {
-        // write a private temp name and move it into place, so the file only
-        // ever exists complete: a reader polling for its existence must never
-        // land between the create and the last fwrite and read a 0-byte file
-        std::wstring tmp = std::wstring(out) + L"." + std::to_wstring(GetCurrentProcessId()) + L".tmp";
-        FILE* f = _wfopen(tmp.c_str(), L"wb");
-        if (f) {
-            // ink present in the clean page: proves a page really rasterized
-            long ink = 0;
-            for (long i = 0; i < (long)stride * h; i++)
-                if (clean[i] < 0xF0) ink++;
-            int annots = 0, inkAnnots = 0;
-            FPDF_PAGE p = FPDF_LoadPage(gDoc, 0);
-            if (p) {
-                annots = FPDFPage_GetAnnotCount(p);
-                // Link and Popup annotations carry no ink, so a page full of
-                // them renders identically with FPDF_ANNOT on. Only an
-                // ink-drawing subtype can make clean and annot differ, which
-                // is what the test compares.
-                for (int i = 0; i < annots; i++) {
-                    FPDF_ANNOTATION a = FPDFPage_GetAnnot(p, i);
-                    if (!a) continue;
-                    int st = FPDFAnnot_GetSubtype(a);
-                    if (st != FPDF_ANNOT_LINK && st != FPDF_ANNOT_POPUP) inkAnnots++;
-                    FPDFPage_CloseAnnot(a);
-                }
-                FPDF_ClosePage(p);
+    // write a private temp name and move it into place, so the file only
+    // ever exists complete: a reader polling for its existence must never
+    // land between the create and the last fwrite and read a 0-byte file
+    std::wstring tmp = std::wstring(out) + L"." + std::to_wstring(GetCurrentProcessId()) + L".tmp";
+    FILE* f = _wfopen(tmp.c_str(), L"wb");
+    if (f) {
+        // annotated twin: identical box, FPDF_ANNOT alone, so the two checksums
+        // differ for exactly the one flag the intent is about. Rendered only
+        // once the output is known writable - it exists for this one checksum.
+        int dirtyStride = 0;
+        BYTE* dirty = rasterizePage(0, w, h, &dirtyStride, FPDF_ANNOT);
+        // ink present in the clean page: proves a page really rasterized
+        long ink = 0;
+        for (long i = 0; i < (long)stride * h; i++)
+            if (clean[i] < 0xF0) ink++;
+        int annots = 0, inkAnnots = 0;
+        FPDF_PAGE p = FPDF_LoadPage(gDoc, 0);
+        if (p) {
+            annots = FPDFPage_GetAnnotCount(p);
+            // Link and Popup annotations carry no ink, so a page full of
+            // them renders identically with FPDF_ANNOT on. Only an
+            // ink-drawing subtype can make clean and annot differ, which
+            // is what the test compares.
+            for (int i = 0; i < annots; i++) {
+                FPDF_ANNOTATION a = FPDFPage_GetAnnot(p, i);
+                if (!a) continue;
+                int st = FPDFAnnot_GetSubtype(a);
+                if (st != FPDF_ANNOT_LINK && st != FPDF_ANNOT_POPUP) inkAnnots++;
+                FPDFPage_CloseAnnot(a);
             }
-            // ASCII on purpose: a wide-mode probe file arrives as UTF-16 with
-            // no BOM, which the suites cannot parse
-            fprintf(f, "pages=%d w=%d h=%d ink=%ld annots=%d inkannots=%d clean=%lu annot=%lu\n",
-                    gDocPages, w, h, ink, annots, inkAnnots,
-                    checksumOf(clean, (size_t)stride * h),
-                    dirty ? checksumOf(dirty, (size_t)dirtyStride * h) : 0UL);
-            fclose(f);
-            MoveFileExW(tmp.c_str(), out, MOVEFILE_REPLACE_EXISTING);
+            FPDF_ClosePage(p);
         }
+        // ASCII on purpose: a wide-mode probe file arrives as UTF-16 with
+        // no BOM, which the suites cannot parse
+        fprintf(f, "pages=%d w=%d h=%d ink=%ld annots=%d inkannots=%d clean=%lu annot=%lu\n",
+                gDocPages, w, h, ink, annots, inkAnnots,
+                checksumOf(clean, (size_t)stride * h),
+                dirty ? checksumOf(dirty, (size_t)dirtyStride * h) : 0UL);
+        fclose(f);
+        MoveFileExW(tmp.c_str(), out, MOVEFILE_REPLACE_EXISTING);
+        freeRaster(dirty);
     }
-    freeRaster(dirty);
     freeRaster(clean);
 }
 
@@ -1999,6 +2015,16 @@ static std::wstring utf8ToWide(const std::string& text) {
     if (n <= 0) return L"";
     std::wstring out(n, L'\0');
     MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), (int)text.size(), &out[0], n);
+    return out;
+}
+
+// UTF-16 -> UTF-8 body (no terminator) for the stdio writers and pdfium's argv;
+// the conversion used to exist four times over with drifted guards
+static std::string wideToUtf8(const std::wstring& text) {
+    int n = WideCharToMultiByte(CP_UTF8, 0, text.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    std::string out(n > 0 ? n : 1, '\0');
+    if (n > 0) WideCharToMultiByte(CP_UTF8, 0, text.c_str(), -1, &out[0], n, nullptr, nullptr);
+    out.resize(n > 0 ? n - 1 : 0);
     return out;
 }
 
@@ -2216,15 +2242,12 @@ static void writeSidecarNow() {
         }
         for (const Pin& pn : gPins) {
             if (pn.text.empty()) continue;
-            int n = WideCharToMultiByte(CP_UTF8, 0, pn.text.c_str(), -1, nullptr, 0, nullptr, nullptr);
-            std::vector<char> u8(n);
-            WideCharToMultiByte(CP_UTF8, 0, pn.text.c_str(), -1, u8.data(), n, nullptr, nullptr);
             std::string esc;                       // multiline-safe: \n stays one line
-            for (char* p = u8.data(); *p; p++) {
-                if (*p == '\\') esc += "\\\\";
-                else if (*p == '\n') esc += "\\n";
-                else if (*p == '\r') continue;
-                else esc += *p;
+            for (char p : wideToUtf8(pn.text)) {
+                if (p == '\\') esc += "\\\\";
+                else if (p == '\n') esc += "\\n";
+                else if (p == '\r') continue;
+                else esc += p;
             }
             fprintf(fp, "pin=%d,%.2f,%.2f,c%d,%s\n", pn.page, pn.x, pn.y, pn.color, esc.c_str());
         }
@@ -2234,10 +2257,8 @@ static void writeSidecarNow() {
     appDirW(dir, MAX_PATH);
     FILE* lfp = _wfopen((std::wstring(dir) + L"\\last.txt").c_str(), L"wb");
     if (lfp) {
-        int n = WideCharToMultiByte(CP_UTF8, 0, gPath.c_str(), -1, nullptr, 0, nullptr, nullptr);
-        std::vector<char> u8(n);
-        WideCharToMultiByte(CP_UTF8, 0, gPath.c_str(), -1, u8.data(), n, nullptr, nullptr);
-        fwrite(u8.data(), 1, (size_t)n - 1, lfp);   // n includes the terminator
+        std::string u8 = wideToUtf8(gPath);
+        fwrite(u8.data(), 1, u8.size(), lfp);
         fputc('\n', lfp);
         fclose(lfp);
     }
@@ -2283,13 +2304,8 @@ static void writeAppPref() {
                 fprintf(fp, "pal%d=%02x%02x%02x\n", c,
                         GetRValue(gPalCustom[c]), GetGValue(gPalCustom[c]), GetBValue(gPalCustom[c]));
         fprintf(fp, "palnext=%d\n", gPalNext);
-        if (gLastUpdateCheck > 0) {
-            int n = WideCharToMultiByte(CP_UTF8, 0, gLastUpdateTag.c_str(), -1, nullptr, 0, nullptr, nullptr);
-            std::vector<char> u8(n > 0 ? n : 1);
-            if (n > 0) WideCharToMultiByte(CP_UTF8, 0, gLastUpdateTag.c_str(), -1, u8.data(), n, nullptr, nullptr);
-            u8[n > 0 ? n - 1 : 0] = 0;
-            fprintf(fp, "updcheck=%lld\nupdtag=%s\n", gLastUpdateCheck, u8.data());
-        }
+        if (gLastUpdateCheck > 0)
+            fprintf(fp, "updcheck=%lld\nupdtag=%s\n", gLastUpdateCheck, wideToUtf8(gLastUpdateTag).c_str());
         fclose(fp);
     }
 }
@@ -2344,13 +2360,33 @@ static void toggleTitlebar(HWND h) {
     renderPage();
 }
 
+// one line of any length: a fixed fgets buffer would silently split a pin
+// line that carries kNoteMaxChars of UTF-8 text (the writer can emit several
+// KB), truncating the note and parsing the tail as garbage. Reads until \n or
+// EOF, strips the trailing newline and any \r, and NUL-terminates.
+static bool readSidecarLine(FILE* fp, std::vector<char>& buf) {
+    size_t len = 0;
+    int c;
+    bool any = false;
+    while ((c = fgetc(fp)) != EOF) {
+        any = true;
+        if (c == '\n') break;
+        if (len + 1 >= buf.size()) buf.resize(buf.size() * 2);
+        buf[len++] = (char)c;
+    }
+    if (len > 0 && buf[len - 1] == '\r') len--;
+    buf[len] = 0;
+    return any;
+}
+
 static void restoreSidecar(const std::wstring& path) {
     FILE* fp = _wfopen(sidecarPathFor(path).c_str(), L"rb");
     if (!fp) return;
     double zoom = -1;
     int fit = -1, page = -1, fmt = 0;
-    char line[512];
-    while (fgets(line, 512, fp)) {
+    std::vector<char> lineBuf(512);
+    while (readSidecarLine(fp, lineBuf)) {
+        char* line = lineBuf.data();
         double d;
         int a, b, c, d2;
         if (sscanf(line, "zoom=%lf", &d) == 1) zoom = d;
@@ -2370,9 +2406,22 @@ static void restoreSidecar(const std::wstring& path) {
         else if (sscanf(line, "hl=%d,%d,%d,%d", &a, &b, &c, &d2) == 4) {
             if (a >= 0 && a < gDocPages && b >= 0 && c > 0) {
                 int col = d2 >= 0 && d2 < kPalCount ? d2 : 0;
-                bool have = false;                     // already held from the file itself?
-                for (const Hl& h : gHls)
-                    if (h.baked && h.page == a && h.start == b && h.count == c) { have = true; break; }
+                // already held from the file itself? identity is page/start/count,
+                // but the sidecar also carries the colour, and where the two
+                // disagree the sidecar is the newer decision: a recolour that is
+                // still unsaved must not quietly revert to the baked colour
+                bool have = false;
+                for (int k = (int)gHls.size() - 1; k >= 0; k--) {
+                    Hl& h = gHls[k];
+                    if (h.baked && h.page == a && h.start == b && h.count == c) {
+                        have = true;
+                        if (h.color != col) {          // the file's colour is stale
+                            gHls.erase(gHls.begin() + k);
+                            have = false;              // the sidecar entry takes its place
+                        }
+                        break;
+                    }
+                }
                 if (!have) gHls.push_back({ a, b, c, col });
             }
         } else if (sscanf(line, "rot=%d,%d", &a, &b) == 2) {
@@ -2382,10 +2431,9 @@ static void restoreSidecar(const std::wstring& path) {
             for (int k = 4; line[k]; k++) {
                 if (line[k] == ',') { if (c1 < 0) c1 = k; else if (c2 < 0) c2 = k; else { c3 = k; break; } }
             }
-            int pp, rr;
+            int pp;
             double xx, yy;
             if (c3 > 0 && sscanf(line + 4, "%d,%lf,%lf", &pp, &xx, &yy) == 3 && pp >= 0 && pp < gDocPages) {
-                line[(int)strlen(line) - 1] = 0;       // drop trailing newline
                 // format 2 writes a "cN" colour field after the third comma; a
                 // sidecar without the fmt line is pre-colour, where the note
                 // itself follows that comma and the pin keeps the red it had
@@ -2414,9 +2462,21 @@ static void restoreSidecar(const std::wstring& path) {
                 int wn = MultiByteToWideChar(CP_UTF8, 0, un.c_str(), -1, nullptr, 0);
                 std::vector<wchar_t> wt(wn);
                 MultiByteToWideChar(CP_UTF8, 0, un.c_str(), -1, wt.data(), wn);
-                bool have = false;                     // already held from the file itself?
-                for (const Pin& p : gPins)
-                    if (p.baked && p.page == pp && fabs(p.x - xx) < 2.0 && fabs(p.y - yy) < 2.0) { have = true; break; }
+                // already held from the file itself? same rule as the highlights:
+                // identity is page/point, and a note or colour the sidecar knows
+                // and the file does not yet is the newer state - it wins
+                bool have = false;
+                for (int k = (int)gPins.size() - 1; k >= 0; k--) {
+                    const Pin& p = gPins[k];
+                    if (p.baked && p.page == pp && fabs(p.x - xx) < 2.0 && fabs(p.y - yy) < 2.0) {
+                        have = true;
+                        if (p.color != pcol || p.text != wt.data()) {
+                            gPins.erase(gPins.begin() + k);
+                            have = false;
+                        }
+                        break;
+                    }
+                }
                 if (!have) gPins.push_back({ pp, xx, yy, wt.data(), pcol, false });
             }
         }
@@ -2476,10 +2536,8 @@ static bool openPath(const std::wstring& path) {
     flushPageCache();
     if (gDoc) FPDF_CloseDocument(gDoc); gDoc = nullptr;
     // pdfium wants UTF-8; Windows gave us UTF-16
-    int n = WideCharToMultiByte(CP_UTF8, 0, path.c_str(), -1, nullptr, 0, nullptr, nullptr);
-    std::vector<char> u8(n);
-    WideCharToMultiByte(CP_UTF8, 0, path.c_str(), -1, u8.data(), n, nullptr, nullptr);
-    gDoc = FPDF_LoadDocument(u8.data(), nullptr);
+    std::string u8 = wideToUtf8(path);
+    gDoc = FPDF_LoadDocument(u8.c_str(), nullptr);
     if (!gDoc) { MessageBoxW(gWnd, L"Could not open PDF", L"mnpdf", MB_ICONERROR); return false; }
     gPath = path;
     gPageCount = FPDF_GetPageCount(gDoc);
@@ -2574,12 +2632,22 @@ static bool openPath(const std::wstring& path) {
     std::vector<Hl> hlFile = gHls;                   // what the file itself held
     std::vector<Pin> pinFile = gPins;
     restoreSidecar(path);                          // saved zoom/page wins over defaults
-    if (!gTomb.empty()) markDirty();                // a baked mark has a pending deletion
-    else for (const Hl& h : gHls) {                 // sidecar edits beyond the file?
-        bool found = false;
-        for (const Hl& f : hlFile)
-            if (h.page == f.page && h.start == f.start && h.count == f.count && h.color == f.color) found = true;
-        if (!found) markDirty();
+    if (!gTomb.empty()) {
+        markDirty();                                // a baked mark has a pending deletion
+    } else {
+        for (const Hl& h : gHls) {                  // sidecar edits beyond the file?
+            bool found = false;
+            for (const Hl& f : hlFile)
+                if (h.page == f.page && h.start == f.start && h.count == f.count && h.color == f.color) found = true;
+            if (!found) markDirty();
+        }
+        for (const Pin& p : gPins) {                // and pins (note or colour) beyond it?
+            bool found = false;
+            for (const Pin& f : pinFile)
+                if (f.page == p.page && fabs(f.x - p.x) < 2.0 && fabs(f.y - p.y) < 2.0
+                    && f.text == p.text && f.color == p.color) found = true;
+            if (!found) markDirty();
+        }
     }
     clampScroll();
     renderPage();
@@ -2652,26 +2720,28 @@ static bool bakeAndWrite(const std::wstring& target) {
         }
         FPDFPage_SetRotation(p, gRot[i] * 90);
         FPDF_TEXTPAGE tp = FPDFText_LoadPage(p);
-        for (const Hl& hl : gHls) {
-            if (hl.page != i) continue;
-            int nr = FPDFText_CountRects(tp, hl.start, hl.count);
-            for (int k = 0; k < nr; k++) {
-                double l, t, r, b;
-                if (!FPDFText_GetRect(tp, k, &l, &t, &r, &b)) continue;
-                FPDF_ANNOTATION a = FPDFPage_CreateAnnot(p, FPDF_ANNOT_HIGHLIGHT);
-                if (!a) continue;
-                FS_RECTF rc = { (float)l, (float)t, (float)r, (float)b };
-                FPDFAnnot_SetRect(a, &rc);
-                FS_QUADPOINTSF q = { (float)l, (float)t, (float)r, (float)t, (float)l, (float)b, (float)r, (float)b };
-                FPDFAnnot_AppendAttachmentPoints(a, &q);
-                COLORREF bc;
-                if (!palColor(hl.color, bc)) bc = gPalPreset[0];
-                FPDFAnnot_SetColor(a, FPDFANNOT_COLORTYPE_Color,
-                                   GetRValue(bc), GetGValue(bc), GetBValue(bc), 255);
-                wchar_t src[48];
-                _snwprintf(src, 48, L"mnpdf %d %d", hl.start, hl.count);
-                FPDFAnnot_SetStringValue(a, "Source", (FPDF_WIDESTRING)src);
-                FPDFPage_CloseAnnot(a);
+        if (tp) {
+            for (const Hl& hl : gHls) {
+                if (hl.page != i) continue;
+                int nr = FPDFText_CountRects(tp, hl.start, hl.count);
+                for (int k = 0; k < nr; k++) {
+                    double l, t, r, b;
+                    if (!FPDFText_GetRect(tp, k, &l, &t, &r, &b)) continue;
+                    FPDF_ANNOTATION a = FPDFPage_CreateAnnot(p, FPDF_ANNOT_HIGHLIGHT);
+                    if (!a) continue;
+                    FS_RECTF rc = { (float)l, (float)t, (float)r, (float)b };
+                    FPDFAnnot_SetRect(a, &rc);
+                    FS_QUADPOINTSF q = { (float)l, (float)t, (float)r, (float)t, (float)l, (float)b, (float)r, (float)b };
+                    FPDFAnnot_AppendAttachmentPoints(a, &q);
+                    COLORREF bc;
+                    if (!palColor(hl.color, bc)) bc = gPalPreset[0];
+                    FPDFAnnot_SetColor(a, FPDFANNOT_COLORTYPE_Color,
+                                       GetRValue(bc), GetGValue(bc), GetBValue(bc), 255);
+                    wchar_t src[48];
+                    _snwprintf(src, 48, L"mnpdf %d %d", hl.start, hl.count);
+                    FPDFAnnot_SetStringValue(a, "Source", (FPDF_WIDESTRING)src);
+                    FPDFPage_CloseAnnot(a);
+                }
             }
         }
         for (const Pin& pn : gPins) {
@@ -2689,7 +2759,7 @@ static bool bakeAndWrite(const std::wstring& target) {
                 FPDFPage_CloseAnnot(a);
             }
         }
-        FPDFText_ClosePage(tp);
+        if (tp) FPDFText_ClosePage(tp);
         FPDF_ClosePage(p);
     }
     if (!ok) return false;
@@ -2706,9 +2776,6 @@ static bool bakeAndWrite(const std::wstring& target) {
     return true;
 }
 
-static bool doSave();
-
-// returns true when the document ended up saved (or had nothing to save)
 static bool doSaveImpl(const std::wstring& target) {
     if (!gDoc) return false;
     if (!gDirty) return true;
@@ -2978,6 +3045,10 @@ static LRESULT CALLBACK colorBoxProc(HWND b, UINT m, WPARAM wp, LPARAM lp) {
     }
     case WM_KILLFOCUS:
         if (gColorErrBusy) return 0;
+        // 400 ms grace: the box ignores a focus loss it did not ask for, so a
+        // stray keystroke cannot become a colour. The pin editor holds the
+        // same grace and test-colors.ps1 waits out the same 400 ms before it
+        // clicks away - the three agree by design.
         if (GetTickCount() - gColorBoxBorn > 400) commitColorBox();
         return 0;
     case WM_ACTIVATE:
@@ -2988,6 +3059,278 @@ static LRESULT CALLBACK colorBoxProc(HWND b, UINT m, WPARAM wp, LPARAM lp) {
         break;
     }
     return CallWindowProcW(gColorBoxBase, b, m, wp, lp);
+}
+
+// ---- the four big dispatchers, lifted out of wndProc ----------------------
+// (review: wndProc owned ~20 message types with four inline dispatchers; the
+// bodies below are the same code, one indent level flatter)
+
+// vertical scroll by dy px; the restored-page flag dies here: scrolling is the
+// user taking over from a sidecar-restored position
+static void scrollByDy(int dy) {
+    gScrollY += dy;
+    gRestoredPage = false;                 // from here the center rule applies again
+    clampScroll();
+    ensureActivePage();
+}
+
+static void onKeyDown(HWND h, WPARAM wp) {
+    int page = clientH() * 9 / 10;
+    bool ctrl = GetKeyState(VK_CONTROL) & 0x8000;
+    bool scrolled = false;
+    if (wp == VK_NEXT || wp == ' ') { scrollByDy(page); scrolled = true; }
+    else if (wp == VK_PRIOR) { scrollByDy(-page); scrolled = true; }
+    else if (wp == VK_DOWN)  { scrollByDy(60); scrolled = true; }
+    else if (wp == VK_UP)    { scrollByDy(-60); scrolled = true; }
+    else if (wp == VK_LEFT)  { gScrollX -= 60; clampScroll(); scrolled = true; }
+    else if (wp == VK_RIGHT) { gScrollX += 60; clampScroll(); scrolled = true; }
+    else if (wp == '0' && ctrl) fitWidth();
+    else if (wp == 'F' && ctrl) toggleSearch(true);
+    else if (wp == 'O' && ctrl) openDialog();
+    else if (wp == 'C' && ctrl) copySelection();
+    else if (wp == VK_F3 && !gSearchOpen) toggleSearch(true);
+    else if (wp == VK_F3) nextMatch((GetKeyState(VK_SHIFT) & 0x8000) ? -1 : 1);
+    else if (wp == 'S' && ctrl) { (GetKeyState(VK_SHIFT) & 0x8000) ? doSaveAs() : doSave(); }
+    else if (wp == 'P' && ctrl && gDoc) doPrint();
+    else if (wp == 'Z' && ctrl) { (GetKeyState(VK_SHIFT) & 0x8000) ? redoOp() : undoOp(); }
+    else if (wp == 'Y' && ctrl) redoOp();
+    else if ((wp == VK_ADD || wp == VK_OEM_PLUS)) zoomAt(1.2, clientW() / 2, clientH() / 2);
+    else if ((wp == VK_SUBTRACT || wp == VK_OEM_MINUS)) zoomAt(1 / 1.2, clientW() / 2, clientH() / 2);
+    else if (wp == VK_ESCAPE) { if (gSearchOpen) toggleSearch(false); else PostMessageW(h, WM_CLOSE, 0, 0); }
+    if (scrolled) { markSave(); renderPage(); }
+}
+
+static void onContextMenu(HWND h, LPARAM lp) {   // right click
+    hidePinTip(h);
+    int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
+    if (x == -1 && y == -1) {                   // keyboard-invoked: menu at center
+        x = clientW() / 2; y = clientH() / 2;
+        POINT pt = { x, y };
+        ClientToScreen(h, &pt);
+        x = pt.x; y = pt.y;
+    }
+    HMENU menu = CreatePopupMenu();
+    POINT cpt = { x, y };
+    ScreenToClient(h, &cpt);                    // hit tests need client coords
+    int pg;
+    int ci = charIndexAtDoc(cpt.x, cpt.y, &pg);
+    int hit = hlAt(pg, ci);
+    gMenuHl = -1;
+    int menuPage = pg >= 0 ? pg : gPageIndex;
+    gMenuRotPage = menuPage;
+    int pt = pinAt(cpt.x, cpt.y);
+    if (pt >= 0) {                              // right-click on a pin
+        gMenuPin = pt;
+        AppendMenuW(menu, MF_STRING, 131, L"Edit text");
+        AppendMenuW(menu, MF_POPUP, (UINT_PTR)colorSubmenu(gPins[pt].color, 150, 156, 159), L"Color");
+        AppendMenuW(menu, MF_STRING, 132, L"Delete pin");
+    } else if (hit >= 0) {                      // right-click on a highlight
+        AppendMenuW(menu, MF_POPUP, (UINT_PTR)colorSubmenu(gHls[hit].color, 120, 126, 136), L"Color");
+        AppendMenuW(menu, MF_STRING, 116, L"Copy text");
+        AppendMenuW(menu, MF_STRING, 117, L"Delete highlight");
+        gMenuHl = hit;
+    } else if (hasSelection()) {                // selection pending: offer highlight/copy
+        AppendMenuW(menu, MF_STRING, 135, L"Highlight");           // one click: default color
+        AppendMenuW(menu, MF_POPUP, (UINT_PTR)colorSubmenu(gHlDefault, 140, 146, 149), L"Set default color");
+        AppendMenuW(menu, MF_STRING, 101, L"Copy\tCtrl+C");
+    } else if (gDoc) {                          // bare page: pin under cursor
+        double px, py;
+        pagePxToPt(menuPage, cpt.x - docLeft() - pageLeftPx(menuPage),
+                   cpt.y - docTop() - yTopPx(menuPage), &px, &py);
+        gMenuPinPtPage = menuPage;
+        gMenuPinPtX = px;
+        gMenuPinPtY = py;
+        AppendMenuW(menu, MF_STRING, 130, L"Add pin here");
+        AppendMenuW(menu, MF_POPUP, (UINT_PTR)colorSubmenu(gPinDefault, 160, 166, 169), L"Set pin color");
+    }
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING, 107, L"Open...\tCtrl+O");
+    AppendMenuW(menu, gDoc && gDirty ? MF_STRING : MF_GRAYED, 118, L"Save\tCtrl+S");
+    AppendMenuW(menu, gDoc && gDirty ? MF_STRING : MF_GRAYED, 119, L"Save As...\tCtrl+Shift+S");
+    AppendMenuW(menu, gDoc ? MF_STRING : MF_GRAYED, 137, L"Print...\tCtrl+P");
+    AppendMenuW(menu, MF_STRING | (gAutosave ? MF_CHECKED : 0), 109, L"Autosave");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, gUndo.empty() ? MF_GRAYED : MF_STRING, 114, L"Undo\tCtrl+Z");
+    AppendMenuW(menu, gRedo.empty() ? MF_GRAYED : MF_STRING, 115, L"Redo\tCtrl+Y");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING, 103, L"Find...\tCtrl+F");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING, 104, L"Fit Width\tCtrl+0");
+    AppendMenuW(menu, MF_STRING, 105, L"Zoom In\t+");
+    AppendMenuW(menu, MF_STRING, 106, L"Zoom Out\t-");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, gDoc ? MF_STRING : MF_GRAYED, 133, L"Rotate clockwise");
+    AppendMenuW(menu, gDoc ? MF_STRING : MF_GRAYED, 134, L"Rotate counter-clockwise");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING, 110, L"Minimize");
+    AppendMenuW(menu, MF_STRING, 111, IsZoomed(h) ? L"Restore" : L"Maximize");
+    AppendMenuW(menu, MF_STRING, 113, gTitlebar ? L"Hide titlebar" : L"Show titlebar");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING, 170, L"Check for updates");
+    AppendMenuW(menu, MF_STRING, 112, L"Quit");
+    SetForegroundWindow(h);   // TrackPopupMenu dismisses instantly without foreground
+    int cmd = TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_RETURNCMD | TPM_NONOTIFY, x, y, 0, h, nullptr);
+    DestroyMenu(menu);
+    if (cmd) SendMessageW(h, WM_COMMAND, MAKEWPARAM(cmd, 0), 0);   // sync: focus is still ours
+}
+
+// the colour a colour-menu command id names, or -1 when it is not one: a preset
+// at presetBase+c names palette entry c, a custom at customBase+c a custom slot
+static int menuColorIndex(int id, int presetBase, int customBase) {
+    if (id >= presetBase && id < presetBase + kPalPreset) return id - presetBase;
+    if (id >= customBase && id < customBase + kPalCustom) return kPalPreset + (id - customBase);
+    return -1;
+}
+
+// The menu-command ids are the protocol: colorSubmenu builds them, the reader's
+// clicks carry them, and the test suites post them by number (named as CMD_*
+// constants in tests/lib.ps1). They stay exactly where they have always been.
+static void onCommand(HWND h, WPARAM wp) {
+    int id = LOWORD(wp);
+    switch (id) {
+    case 1:                                     // the search Edit control's EN_CHANGE
+        if (HIWORD(wp) == EN_CHANGE && gSearchOpen) {
+            GetWindowTextW(gSearchBox, gQuery, 128);
+            runSearch();
+        }
+        return;
+    case 2:                                     // Edit > Find (the search bar's own id)
+        toggleSearch(true);
+        return;
+    case 101: copySelection(); return;
+    case 103: toggleSearch(true); return;
+    case 104: fitWidth(); return;
+    case 105: zoomAt(1.2, clientW() / 2, clientH() / 2); return;
+    case 106: zoomAt(1 / 1.2, clientW() / 2, clientH() / 2); return;
+    case 107: openDialog(); return;
+    case 116:                                   // copy highlight text
+        if (gMenuHl >= 0 && gMenuHl < (int)gHls.size()) {
+            const Hl& h2 = gHls[gMenuHl];
+            copyTextRange(h2.page, h2.start, h2.page, h2.start + h2.count - 1);
+        }
+        return;
+    case 117:                                   // delete highlight
+        if (gMenuHl >= 0 && gMenuHl < (int)gHls.size()) deleteHighlight(gMenuHl);
+        return;
+    case 135:                                   // Highlight with the default color
+        applyHighlightFromSelection(gHlDefault);
+        return;
+    // ---- the four colour menus. Each submenu answers two id families that
+    // differ only in base - presets at 120/140/150/160, custom slots at
+    // 126/146/156/166 - so one arm per menu replaces one case group per family.
+    case 120: case 121: case 122: case 123: case 124: case 125:
+    case 126: case 127: case 128: {             // recolour the menued highlight
+        int c = menuColorIndex(id, 120, 126);
+        if (c >= 0) recolorHighlight(gMenuHl, c);
+        return;
+    }
+    case 136: gColorTarget = 0; startColorEntry(); return;   // Custom... on a highlight
+    case 140: case 141: case 142: case 143: case 144: case 145:
+    case 146: case 147: case 148: {             // set the default highlight colour
+        int c = menuColorIndex(id, 140, 146);
+        if (c >= 0) {
+            gHlDefault = c;
+            writeAppPref();
+            if (hasSelection()) applyHighlightFromSelection(gHlDefault);
+        }
+        return;
+    }
+    case 149: gColorTarget = 2; startColorEntry(); return;   // Custom... on the default highlight
+    case 150: case 151: case 152: case 153: case 154: case 155:
+    case 156: case 157: case 158: {             // recolour the menued pin
+        int c = menuColorIndex(id, 150, 156);
+        if (c >= 0) recolorPin(gMenuPin, c);
+        return;
+    }
+    case 159: gColorTarget = 1; startColorEntry(); return;   // Custom... on a pin
+    case 160: case 161: case 162: case 163: case 164: case 165:
+    case 166: case 167: case 168: {             // set the default pin colour
+        int c = menuColorIndex(id, 160, 166);
+        if (c >= 0) {
+            gPinDefault = c;
+            writeAppPref();
+        }
+        return;
+    }
+    case 169: gColorTarget = 3; startColorEntry(); return;   // Custom... on the default pin
+    case 180:                                   // hand the three custom slots back
+        if (!anyCustomColor()) return;
+        if (MessageBoxW(h, L"Clear your custom colours?\n\n"
+                           L"Marks that use one fall back to the preset for that "
+                           L"kind - a highlight to yellow, a pin to red.",
+                        L"mnpdf", MB_YESNO | MB_ICONQUESTION) != IDYES) return;
+        clearCustomColors();
+        return;
+    case 109:                                  // toggle autosave
+        gAutosave = !gAutosave;
+        writeAppPref();
+        if (gAutosave) {
+            SetTimer(h, 1, 800, nullptr);      // re-arm the debounce tick
+            markSave();                        // flush current state soon
+        } else {
+            gSaveDirty = false;
+            KillTimer(h, 1);
+        }
+        return;
+    case 110: PostMessageW(h, WM_SYSCOMMAND, SC_MINIMIZE, 0); return;
+    case 111: PostMessageW(h, WM_SYSCOMMAND, IsZoomed(h) ? SC_RESTORE : SC_MAXIMIZE, 0); return;
+    case 112: PostMessageW(h, WM_CLOSE, 0, 0); return;
+    case 113: toggleTitlebar(h); return;
+    case 114: undoOp(); return;
+    case 115: redoOp(); return;
+    case 118: doSave(); return;
+    case 119: doSaveAs(); return;
+    case 137: doPrint(); return;
+    case 170: startUpdateCheck(true); return;
+    case 130:                                   // add pin at the menu drop point
+        if (gMenuPinPtPage >= 0) {
+            addPinAt(gMenuPinPtPage, gMenuPinPtX, gMenuPinPtY);
+        } else if (gDoc) {                      // fallback (posted id): center of the active page
+            addPinAt(gPageIndex, gPageW[gPageIndex] / 2, gPageH[gPageIndex] / 2);
+        }
+        return;
+    case 131:                                   // edit pin text
+        if (gMenuPin >= 0) startPinEdit(gMenuPin, false);
+        return;
+    case 132: deletePin(gMenuPin); return;
+    case 133: rotatePage(gMenuRotPage >= 0 ? gMenuRotPage : gPageIndex, +1); return;
+    case 134: rotatePage(gMenuRotPage >= 0 ? gMenuRotPage : gPageIndex, -1); return;
+    }
+}
+
+static void onTimer(HWND h, WPARAM wp) {
+    if (wp == 1 && gSaveDirty) {               // debounced autosave flush
+        gSaveDirty = false;
+        writeSidecarNow();
+    } else if (wp == 4 && gTipPin >= 0) {      // hover dwell elapsed: show the pin text
+        KillTimer(h, 4);
+        showPinTip(gTipPin);
+    } else if (wp == 3 && gSelDrag && gEdgeScroll) {   // drag auto-scroll at the margins
+        // The speed follows how far the drag has pushed past the edge:
+        // barely over the edge crawls, and the further past it goes the
+        // faster it runs - whether the cursor is still inside the window
+        // or has already been dragged beyond it. Measured in pages per
+        // second rather than pixels, so the pace feels the same at every
+        // zoom level.
+        const int zone = kEdgeZone;                 // the in-window margin
+        int depth = gEdgeScroll > 0 ? gDragPt.y - (gClientH - zone) : zone - gDragPt.y;
+        if (depth < 0) depth = 0;
+        const int maxDepth = zone * 2;              // held well past the window: top speed
+        if (depth > maxDepth) depth = maxDepth;
+        double frac = (double)depth / zone;         // 1.0 at the window edge, 2.0 past it
+        if (frac < 0.2) frac = 0.2;                 // never a dead stop
+        int ph = pageHpx(gPageIndex);               // one page of scroll, in px
+        if (ph < 64) ph = gClientH > 64 ? gClientH : 64;
+        double step = ph * 0.017 * frac;            // ~1.8 s per page at the window edge
+        scrollByDy(gEdgeScroll * (int)step);
+        int pg;
+        int idx = charIndexClamped(gDragPt.x, gDragPt.y, &pg);
+        if (idx >= 0) {
+            gSelHeadPage = pg;
+            gSelHead = idx;
+        }
+        renderPage();
+    }
 }
 
 static LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
@@ -3065,9 +3408,7 @@ static LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         if (gLastWasDbl && GetMessageTime() - (LONG)gLastDblTime < (LONG)GetDoubleClickTime()
             && abs(GET_X_LPARAM(lp) - gLastDblX) < 8 && abs(GET_Y_LPARAM(lp) - gLastDblY) < 8) {
             selectLine(pg, idx);                    // third click: whole line
-            gMultiClick = true;
         } else {
-            gMultiClick = false;
             gSelAnchorPage = gSelHeadPage = pg;
             gSelAnchor = gSelHead = idx;
         }
@@ -3085,7 +3426,6 @@ static LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         gSelAnchorPage = gSelHeadPage = pg;
         gSelAnchor = gSelHead = idx;
         selectWord(pg, idx);
-        gMultiClick = true;
         gLastWasDbl = true;
         gLastDblTime = GetMessageTime();
         gLastDblX = GET_X_LPARAM(lp);
@@ -3123,8 +3463,8 @@ static LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         if (gSelDrag && gSelAnchor >= 0) {
             gDragPt = { GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
             int edge = 0;
-            if (gDragPt.y < 56) edge = -1;         // near the top margin: scroll up
-            else if (gDragPt.y > gClientH - 56) edge = 1;
+            if (gDragPt.y < kEdgeZone) edge = -1;         // near the top margin: scroll up
+            else if (gDragPt.y > gClientH - kEdgeZone) edge = 1;
             if (edge != gEdgeScroll) {
                 gEdgeScroll = edge;
                 if (edge) SetTimer(h, 3, 25, nullptr);
@@ -3145,7 +3485,6 @@ static LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         gEdgeScroll = 0;
         KillTimer(h, 3);
         if (GetCapture() == h) ReleaseCapture();
-        gMultiClick = false;                       // drag stays a text selection
         return 0;
     case WM_COPY:                                   // standard copy-selection message
         copySelection();
@@ -3163,227 +3502,15 @@ static LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         if (wp & MK_CONTROL) {
             zoomAt(delta > 0 ? 1.1 : 1 / 1.1, pt.x, pt.y);
         } else {
-            gScrollY -= (int)(delta / 120.0 * 3 * 40.0);   // pure scroll; pages are stacked
-            gRestoredPage = false;                 // from here the center rule applies again
-            clampScroll();
-            ensureActivePage();
+            scrollByDy(-(int)(delta / 120.0 * 3 * 40.0));   // pure scroll; pages are stacked
             markSave();
             renderPage();
         }
         return 0;
     }
-    case WM_KEYDOWN: {
-        int page = clientH() * 9 / 10;
-        bool ctrl = GetKeyState(VK_CONTROL) & 0x8000;
-        bool scrolled = false;
-        if (wp == VK_NEXT || wp == ' ') { gScrollY += page; gRestoredPage = false; clampScroll(); ensureActivePage(); scrolled = true; }
-        else if (wp == VK_PRIOR) { gScrollY -= page; gRestoredPage = false; clampScroll(); ensureActivePage(); scrolled = true; }
-        else if (wp == VK_DOWN)  { gScrollY += 60; gRestoredPage = false; clampScroll(); ensureActivePage(); scrolled = true; }
-        else if (wp == VK_UP)    { gScrollY -= 60; gRestoredPage = false; clampScroll(); ensureActivePage(); scrolled = true; }
-        else if (wp == VK_LEFT)  { gScrollX -= 60; clampScroll(); scrolled = true; }
-        else if (wp == VK_RIGHT) { gScrollX += 60; clampScroll(); scrolled = true; }
-        else if (wp == '0' && ctrl) fitWidth();
-        else if (wp == 'F' && ctrl) toggleSearch(true);
-        else if (wp == 'O' && ctrl) openDialog();
-        else if (wp == 'C' && ctrl) copySelection();
-        else if (wp == VK_F3 && !gSearchOpen) toggleSearch(true);
-        else if (wp == VK_F3) nextMatch((GetKeyState(VK_SHIFT) & 0x8000) ? -1 : 1);
-        else if (wp == 'S' && ctrl) { (GetKeyState(VK_SHIFT) & 0x8000) ? doSaveAs() : doSave(); }
-        else if (wp == 'P' && ctrl && gDoc) doPrint();
-        else if (wp == 'Z' && ctrl) { (GetKeyState(VK_SHIFT) & 0x8000) ? redoOp() : undoOp(); }
-        else if (wp == 'Y' && ctrl) redoOp();
-        else if ((wp == VK_ADD || wp == VK_OEM_PLUS)) zoomAt(1.2, clientW() / 2, clientH() / 2);
-        else if ((wp == VK_SUBTRACT || wp == VK_OEM_MINUS)) zoomAt(1 / 1.2, clientW() / 2, clientH() / 2);
-        else if (wp == VK_ESCAPE) { if (gSearchOpen) toggleSearch(false); else PostMessageW(h, WM_CLOSE, 0, 0); }
-        if (scrolled) { markSave(); renderPage(); }
-        return 0;
-    }
-    case WM_CONTEXTMENU: {                         // right click
-        hidePinTip(h);
-        int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
-        if (x == -1 && y == -1) {                   // keyboard-invoked: menu at center
-            x = clientW() / 2; y = clientH() / 2;
-            POINT pt = { x, y };
-            ClientToScreen(h, &pt);
-            x = pt.x; y = pt.y;
-        }
-        HMENU menu = CreatePopupMenu();
-        POINT cpt = { x, y };
-        ScreenToClient(h, &cpt);                    // hit tests need client coords
-        int pg;
-        int ci = charIndexAtDoc(cpt.x, cpt.y, &pg);
-        int hit = hlAt(pg, ci);
-        gMenuHl = -1;
-        gMenuRecolor = false;
-        int menuPage = pg >= 0 ? pg : gPageIndex;
-        gMenuRotPage = menuPage;
-        int pt = pinAt(cpt.x, cpt.y);
-        if (pt >= 0) {                              // right-click on a pin
-            gMenuPin = pt;
-            AppendMenuW(menu, MF_STRING, 131, L"Edit text");
-            AppendMenuW(menu, MF_POPUP, (UINT_PTR)colorSubmenu(gPins[pt].color, 150, 156, 159), L"Color");
-            AppendMenuW(menu, MF_STRING, 132, L"Delete pin");
-        } else if (hit >= 0) {                      // right-click on a highlight
-            AppendMenuW(menu, MF_POPUP, (UINT_PTR)colorSubmenu(gHls[hit].color, 120, 126, 136), L"Color");
-            AppendMenuW(menu, MF_STRING, 116, L"Copy text");
-            AppendMenuW(menu, MF_STRING, 117, L"Delete highlight");
-            gMenuHl = hit;
-            gMenuRecolor = true;
-        } else if (hasSelection()) {                // selection pending: offer highlight/copy
-            AppendMenuW(menu, MF_STRING, 135, L"Highlight");           // one click: default color
-            AppendMenuW(menu, MF_POPUP, (UINT_PTR)colorSubmenu(gHlDefault, 140, 146, 149), L"Set default color");
-            AppendMenuW(menu, MF_STRING, 101, L"Copy\tCtrl+C");
-        } else if (gDoc) {                          // bare page: pin under cursor
-            double px, py;
-            pagePxToPt(menuPage, cpt.x - docLeft() - pageLeftPx(menuPage),
-                       cpt.y - docTop() - yTopPx(menuPage), &px, &py);
-            gMenuPinPtPage = menuPage;
-            gMenuPinPtX = px;
-            gMenuPinPtY = py;
-            AppendMenuW(menu, MF_STRING, 130, L"Add pin here");
-            AppendMenuW(menu, MF_POPUP, (UINT_PTR)colorSubmenu(gPinDefault, 160, 166, 169), L"Set pin color");
-        }
-        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(menu, MF_STRING, 107, L"Open...\tCtrl+O");
-        AppendMenuW(menu, gDoc && gDirty ? MF_STRING : MF_GRAYED, 118, L"Save\tCtrl+S");
-        AppendMenuW(menu, gDoc && gDirty ? MF_STRING : MF_GRAYED, 119, L"Save As...\tCtrl+Shift+S");
-        AppendMenuW(menu, gDoc ? MF_STRING : MF_GRAYED, 137, L"Print...\tCtrl+P");
-        AppendMenuW(menu, MF_STRING | (gAutosave ? MF_CHECKED : 0), 109, L"Autosave");
-        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(menu, gUndo.empty() ? MF_GRAYED : MF_STRING, 114, L"Undo\tCtrl+Z");
-        AppendMenuW(menu, gRedo.empty() ? MF_GRAYED : MF_STRING, 115, L"Redo\tCtrl+Y");
-        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(menu, MF_STRING, 103, L"Find...\tCtrl+F");
-        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(menu, MF_STRING, 104, L"Fit Width\tCtrl+0");
-        AppendMenuW(menu, MF_STRING, 105, L"Zoom In\t+");
-        AppendMenuW(menu, MF_STRING, 106, L"Zoom Out\t-");
-        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(menu, gDoc ? MF_STRING : MF_GRAYED, 133, L"Rotate clockwise");
-        AppendMenuW(menu, gDoc ? MF_STRING : MF_GRAYED, 134, L"Rotate counter-clockwise");
-        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(menu, MF_STRING, 110, L"Minimize");
-        AppendMenuW(menu, MF_STRING, 111, IsZoomed(h) ? L"Restore" : L"Maximize");
-        AppendMenuW(menu, MF_STRING, 113, gTitlebar ? L"Hide titlebar" : L"Show titlebar");
-        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(menu, MF_STRING, 170, L"Check for updates");
-        AppendMenuW(menu, MF_STRING, 112, L"Quit");
-        SetForegroundWindow(h);   // TrackPopupMenu dismisses instantly without foreground
-        int cmd = TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_RETURNCMD | TPM_NONOTIFY, x, y, 0, h, nullptr);
-        DestroyMenu(menu);
-        if (cmd) SendMessageW(h, WM_COMMAND, MAKEWPARAM(cmd, 0), 0);   // sync: focus is still ours
-        return 0;
-    }
-    case WM_COMMAND: {
-        int id = LOWORD(wp);
-        switch (id) {
-        case 101: copySelection(); return 0;
-        case 103: toggleSearch(true); return 0;
-        case 104: fitWidth(); return 0;
-        case 105: zoomAt(1.2, clientW() / 2, clientH() / 2); return 0;
-        case 106: zoomAt(1 / 1.2, clientW() / 2, clientH() / 2); return 0;
-        case 107: openDialog(); return 0;
-        case 116:                                   // copy highlight text
-            if (gMenuHl >= 0 && gMenuHl < (int)gHls.size()) {
-                const Hl& h2 = gHls[gMenuHl];
-                copyTextRange(h2.page, h2.start, h2.page, h2.start + h2.count - 1);
-            }
-            return 0;
-        case 117:                                   // delete highlight
-            if (gMenuHl >= 0 && gMenuHl < (int)gHls.size()) deleteHighlight(gMenuHl);
-            return 0;
-        case 135:                                   // Highlight with the default color
-            applyHighlightFromSelection(gHlDefault);
-            return 0;
-        case 140: case 141: case 142: case 143: case 144: case 145: {
-            int c = id - 140;                        // set the default highlight color
-            gHlDefault = c;
-            writeAppPref();
-            if (hasSelection()) applyHighlightFromSelection(gHlDefault);
-            return 0;
-        }
-        case 120: case 121: case 122: case 123: case 124: case 125: {   // highlight Color submenu, presets
-            recolorHighlight(gMenuHl, id - 120);
-            return 0;
-        }
-        case 126: case 127: case 128:                 // recolor a highlight from a custom slot
-            recolorHighlight(gMenuHl, kPalPreset + (id - 126));
-            return 0;
-        case 146: case 147: case 148:                 // default highlight color from a custom slot
-            gHlDefault = kPalPreset + (id - 146);
-            writeAppPref();
-            if (hasSelection()) applyHighlightFromSelection(gHlDefault);
-            return 0;
-        case 150: case 151: case 152: case 153: case 154: case 155:
-            recolorPin(gMenuPin, id - 150);
-            return 0;
-        case 156: case 157: case 158:                 // recolor a pin from a custom slot
-            recolorPin(gMenuPin, kPalPreset + (id - 156));
-            return 0;
-        case 160: case 161: case 162: case 163: case 164: case 165: {
-            gPinDefault = id - 160;                  // set the default pin color
-            writeAppPref();
-            return 0;
-        }
-        case 166: case 167: case 168:                 // default pin color from a custom slot
-            gPinDefault = kPalPreset + (id - 166);
-            writeAppPref();
-            return 0;
-        // "Custom..." rows: one per colour menu, so map each id to its target
-        case 136: gColorTarget = 0; startColorEntry(); return 0;   // recolor a highlight
-        case 159: gColorTarget = 1; startColorEntry(); return 0;   // recolor a pin
-        case 149: gColorTarget = 2; startColorEntry(); return 0;   // default highlight
-        case 169: gColorTarget = 3; startColorEntry(); return 0;   // default pin
-        case 180:                                   // hand the three custom slots back
-            if (!anyCustomColor()) return 0;
-            if (MessageBoxW(h, L"Clear your custom colours?\n\n"
-                               L"Marks that use one fall back to the preset for that "
-                               L"kind - a highlight to yellow, a pin to red.",
-                            L"mnpdf", MB_YESNO | MB_ICONQUESTION) != IDYES) return 0;
-            clearCustomColors();
-            return 0;
-        case 109:                                  // toggle autosave
-            gAutosave = !gAutosave;
-            writeAppPref();
-            if (gAutosave) {
-                SetTimer(h, 1, 800, nullptr);      // re-arm the debounce tick
-                markSave();                        // flush current state soon
-            } else {
-                gSaveDirty = false;
-                KillTimer(h, 1);
-            }
-            return 0;
-        case 110: PostMessageW(h, WM_SYSCOMMAND, SC_MINIMIZE, 0); return 0;
-        case 111: PostMessageW(h, WM_SYSCOMMAND, IsZoomed(h) ? SC_RESTORE : SC_MAXIMIZE, 0); return 0;
-        case 112: PostMessageW(h, WM_CLOSE, 0, 0); return 0;
-        case 113: toggleTitlebar(h); return 0;
-        case 114: undoOp(); return 0;
-        case 115: redoOp(); return 0;
-        case 118: doSave(); return 0;
-        case 119: doSaveAs(); return 0;
-        case 137: doPrint(); return 0;
-        case 170: startUpdateCheck(true); return 0;
-        case 130:                                   // add pin at the menu drop point
-            if (gMenuPinPtPage >= 0) {
-                addPinAt(gMenuPinPtPage, gMenuPinPtX, gMenuPinPtY);
-            } else if (gDoc) {                      // fallback (posted id): center of the active page
-                addPinAt(gPageIndex, gPageW[gPageIndex] / 2, gPageH[gPageIndex] / 2);
-            }
-            return 0;
-        case 131:                                   // edit pin text
-            if (gMenuPin >= 0) startPinEdit(gMenuPin, false);
-            return 0;
-        case 132: deletePin(gMenuPin); return 0;
-        case 133: rotatePage(gMenuRotPage >= 0 ? gMenuRotPage : gPageIndex, +1); return 0;
-        case 134: rotatePage(gMenuRotPage >= 0 ? gMenuRotPage : gPageIndex, -1); return 0;
-        }
-        if (id == 2) { toggleSearch(true); return 0; }   // Edit > Find
-        if (id == 1 && HIWORD(wp) == EN_CHANGE && gSearchOpen) {
-            GetWindowTextW(gSearchBox, gQuery, 128);
-            runSearch();
-        }
-        return 0;
-    }
+    case WM_KEYDOWN: onKeyDown(h, wp); return 0;
+    case WM_CONTEXTMENU: onContextMenu(h, lp); return 0;
+    case WM_COMMAND: onCommand(h, wp); return 0;
     case WM_NCHITTEST: {
         // With the caption hidden the client covers the whole window (see
         // WM_NCCALCSIZE), so DefWindowProc finds no non-client margin anywhere
@@ -3443,44 +3570,7 @@ static LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         }
         return 0;
     }
-    case WM_TIMER:
-        if (wp == 1 && gSaveDirty) {               // debounced autosave flush
-            gSaveDirty = false;
-            writeSidecarNow();
-        } else if (wp == 4 && gTipPin >= 0) {      // hover dwell elapsed: show the pin text
-            KillTimer(h, 4);
-            showPinTip(gTipPin);
-        } else if (wp == 3 && gSelDrag && gEdgeScroll) {   // drag auto-scroll at the margins
-            // The speed follows how far the drag has pushed past the edge:
-            // barely over the edge crawls, and the further past it goes the
-            // faster it runs - whether the cursor is still inside the window
-            // or has already been dragged beyond it. Measured in pages per
-            // second rather than pixels, so the pace feels the same at every
-            // zoom level.
-            const int zone = 56;                        // the in-window margin
-            int depth = gEdgeScroll > 0 ? gDragPt.y - (gClientH - zone) : zone - gDragPt.y;
-            if (depth < 0) depth = 0;
-            const int maxDepth = zone * 2;              // held well past the window: top speed
-            if (depth > maxDepth) depth = maxDepth;
-            double frac = (double)depth / zone;         // 1.0 at the window edge, 2.0 past it
-            if (frac < 0.2) frac = 0.2;                 // never a dead stop
-            int ph = pageHpx(gPageIndex);               // one page of scroll, in px
-            if (ph < 64) ph = gClientH > 64 ? gClientH : 64;
-            double step = ph * 0.017 * frac;            // ~1.8 s per page at the window edge
-            gScrollY += gEdgeScroll * (int)step;
-            gRestoredPage = false;
-            clampScroll();
-            ensureActivePage();
-            markSave();
-            int pg;
-            int idx = charIndexClamped(gDragPt.x, gDragPt.y, &pg);
-            if (idx >= 0) {
-                gSelHeadPage = pg;
-                gSelHead = idx;
-            }
-            renderPage();
-        }
-        return 0;
+    case WM_TIMER: onTimer(h, wp); return 0;
     case WM_CLOSE:
         if (gEditPin >= 0) commitPinEdit();        // an open pin box saves first
         if (gAutosave) {
