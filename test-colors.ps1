@@ -14,9 +14,11 @@
 # read as that colour on screen and survive a quit and relaunch. Two keystroke
 # facts are load bearing: non-hex characters never reach the box (it filters
 # them), and a focus loss inside the box's first 400 ms is deliberately ignored
-# so a stray keystroke cannot become a colour - so the bad entry below is hex
-# digits in the wrong number, and the click-away case keeps asking until the
-# app is ready to hear it.
+# so a stray keystroke cannot become a colour - the app holds the same 400 ms
+# grace in its pin editor (src/main.cpp colorBoxProc/pinBoxProc), and this
+# suite waits it out on its side of the contract - so the bad entry below is
+# hex digits in the wrong number, and the click-away case keeps asking until
+# the app is ready to hear it.
 #
 # Unlike every other suite this one launches the app in the foreground. The
 # colour box is a popup that needs the keyboard, and a minimised owner can
@@ -36,18 +38,8 @@
 # suite is the one that needed it and never had it.
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot\tests\lib.ps1"
-Add-Type -TypeDefinition @"
-using System;
-using System.Runtime.InteropServices;
-public static class CIDpi {
-  [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr c);
-  [DllImport("user32.dll")] public static extern bool IsProcessDPIAware();
-  [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
-  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);
-}
-"@
-[void][CIDpi]::SetProcessDpiAwarenessContext([IntPtr](-4))   # PER_MONITOR_AWARE_V2
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, System.Drawing
+[MN]::SetProcessDpiAwarenessContext([IntPtr](-4)) | Out-Null   # PER_MONITOR_AWARE_V2
 Add-Type -TypeDefinition @"
 using System;
 using System.Text;
@@ -55,30 +47,19 @@ using System.Runtime.InteropServices;
 public delegate bool EnumWindowsProcCol(IntPtr h, IntPtr l);
 public static class CL {
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassNameW(IntPtr h, StringBuilder s, int n);
-  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowTextW(IntPtr h, StringBuilder s, int n);
   [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProcCol cb, IntPtr l);
-  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
   [DllImport("user32.dll")] public static extern IntPtr GetParent(IntPtr h);
   [DllImport("user32.dll")] public static extern int GetWindowLongW(IntPtr h, int i);
-  [DllImport("user32.dll")] public static extern bool PostMessageW(IntPtr h, uint m, IntPtr w, IntPtr l);
-  [DllImport("user32.dll")] public static extern IntPtr SendMessageW(IntPtr h, uint m, IntPtr w, IntPtr l);
-  [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "SendMessageW")] public static extern IntPtr SendText(IntPtr h, uint m, IntPtr cap, [Out] char[] buf);
-  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll")] public static extern IntPtr GetDlgItem(IntPtr h, int id);
   [DllImport("user32.dll")] public static extern bool IsWindowEnabled(IntPtr h);
   [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr hdc, uint f);
-  [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out RECT r);
-  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);
 }
 "@
 
-$failures = New-Object System.Collections.Generic.List[string]
 $doc = Join-Path $PSScriptRoot 'tests\arc.pdf'
-$exe = $env:MNPDF_GATE_EXE
-if (-not $exe) { $exe = Join-Path $PSScriptRoot 'build\mnpdf.exe' }
+$exe = Resolve-AppExe
 $appPref = Join-Path $env:APPDATA 'mnpdf\app.txt'
-
-function Pass([string]$Name) { Write-Output ("PASS {0}" -f $Name) }
-function Fail([string]$Name) { $failures.Add($Name); Write-Output ("FAIL {0}" -f $Name) }
 
 # The colour box is a top-level EDIT owned by the app window. The search field
 # is a child, and so is excluded by the WS_CHILD bit; the note editor is owned
@@ -95,14 +76,14 @@ function FindColorBox([int]$ProcId, [IntPtr]$Owner) {
   $cb = [EnumWindowsProcCol]{
     param($h, $l)
     $wpId = 0
-    [void][CL]::GetWindowThreadProcessId($h, [ref]$wpId)
+    [void][MN]::GetWindowThreadProcessId($h, [ref]$wpId)
     if ($wpId -eq $ProcId) {
       $cn = New-Object System.Text.StringBuilder 64
       [void][CL]::GetClassNameW($h, $cn, 64)
       $isChild = [bool]([CL]::GetWindowLongW($h, -16) -band 0x40000000)
       $isMulti = [bool]([CL]::GetWindowLongW($h, -16) -band 0x0004)          # ES_MULTILINE
       if (-not $isChild -and -not $isMulti -and $cn.ToString() -eq 'Edit' -and [CL]::GetParent($h) -eq $Owner) {
-        if (-not $found) { $script:hit = $h; $script:found = $true }
+        if (-not $script:found) { $script:hit = $h; $script:found = $true }
       }
     }
     return $true }
@@ -111,16 +92,16 @@ function FindColorBox([int]$ProcId, [IntPtr]$Owner) {
 }
 function FindDlgCol([int]$ProcId) {
   $script:hit = [IntPtr]::Zero
-  $found = $false
+  $script:found = $false
   $cb = [EnumWindowsProcCol]{
     param($h, $l)
     $wpId = 0
-    [void][CL]::GetWindowThreadProcessId($h, [ref]$wpId)
+    [void][MN]::GetWindowThreadProcessId($h, [ref]$wpId)
     if ($wpId -eq $ProcId) {
       $cn = New-Object System.Text.StringBuilder 64
       [void][CL]::GetClassNameW($h, $cn, 64)
       if ($cn.ToString() -eq '#32770') {
-        if (-not $found) { $script:hit = $h; $script:found = $true }
+        if (-not $script:found) { $script:hit = $h; $script:found = $true }
       }
     }
     return $true }
@@ -133,7 +114,7 @@ function FindDlgCol([int]$ProcId) {
 function BoxText([IntPtr]$Box) {
   if ($Box -eq [IntPtr]::Zero) { return '' }
   $b = [char[]]::new(64)
-  [void][CL]::SendText($Box, 0x000D, [IntPtr]64, $b)
+  [void][MN]::SendText($Box, 0x000D, [IntPtr]64, $b)
   # WM_GETTEXT fills the text and one NUL and writes nothing further, so the
   # rest of the buffer is whatever the CLR had in it there. A raw join keeps
   # that garbage attached to the text ("#e", "#d") or in front of it (""),
@@ -181,7 +162,7 @@ function WithTypedBox([int]$ProcId, [IntPtr]$Wnd, [int]$Cmd, [string]$Hex, [scri
     $b = OpenColorBox $ProcId $Wnd $Cmd
     if ($b -ne [IntPtr]::Zero) {
       TypeHex $b $Hex
-      [void][CL]::PostMessageW($b, 0x0100, [IntPtr]13, [IntPtr]::Zero)      # Enter
+      [void][MN]::PostMessageW($b, 0x0100, [IntPtr]13, [IntPtr]::Zero)      # Enter
       if (& $Took $b) { return $b }
     }
     Start-Sleep -Milliseconds 200
@@ -195,23 +176,25 @@ function TypeHex([IntPtr]$Box, [string]$Hex) {
   # invalid entry. Selecting everything and typing over it is one message; a run
   # of backspaces is ten, and the app answers a focus loss it did not ask for by
   # committing whatever happens to be in the box, so the whole entry has to be
-  # over inside the box's first 400 ms, where that answer is still withheld.
-  [void][CL]::PostMessageW($Box, 0x00B1, [IntPtr]0, (New-Object IntPtr -1))   # EM_SETSEL: take all of it
+  # over inside the box's first 400 ms, where that answer is still withheld
+  # (src/main.cpp colorBoxProc holds the same grace for the pin editor).
+  [void][MN]::PostMessageW($Box, 0x00B1, [IntPtr]0, (New-Object IntPtr -1))   # EM_SETSEL: take all of it
   foreach ($ch in $Hex.ToCharArray()) {
-    [void][CL]::PostMessageW($Box, 0x0102, [IntPtr][int][char]$ch, [IntPtr]::Zero)
+    [void][MN]::PostMessageW($Box, 0x0102, [IntPtr][int][char]$ch, [IntPtr]::Zero)
     Start-Sleep -Milliseconds 15
   }
 }
 function AwaitBox([int]$ProcId, [IntPtr]$Owner, [int]$TimeoutMs = 4000) {
   for ($i = 0; $i -lt ($TimeoutMs / 20); $i++) {
     $b = FindColorBox $ProcId $Owner
-    if ($b -ne [IntPtr]::Zero -and [CL]::IsWindowVisible($b)) { return $b }
+    if ($b -ne [IntPtr]::Zero -and [MN]::IsWindowVisible($b)) { return $b }
     Start-Sleep -Milliseconds 20
   }
   return [IntPtr]::Zero
 }
-# the app's own menu opens the entry box: 149 = Custom... on the default
-# highlight colour, 169 = the same on the default pin colour
+# the app's own menu opens the entry box: CMD_CUSTOM_HL_COLOR = Custom... on the
+# default highlight colour, CMD_CUSTOM_PIN_COLOR = the same on the default pin
+# colour (tests/lib.ps1 names every id the app's WM_COMMAND answers)
 # The box gives up what is in it when the keyboard moves away from it, and the
 # OS moves the keyboard all by itself: a few hundred milliseconds after the box
 # appears, Windows Terminal takes the foreground back and the app hears "the
@@ -221,12 +204,12 @@ function AwaitBox([int]$ProcId, [IntPtr]$Owner, [int]$TimeoutMs = 4000) {
 # handed over, and opened again when it is not.
 function OpenColorBox([int]$ProcId, [IntPtr]$Wnd, [int]$Cmd, [int]$Attempts = 6) {
   for ($a = 0; $a -lt $Attempts; $a++) {
-    [void][CL]::PostMessageW($Wnd, 0x0111, [IntPtr]$Cmd, [IntPtr]::Zero)
+    [void][MN]::PostMessageW($Wnd, 0x0111, [IntPtr]$Cmd, [IntPtr]::Zero)
     $b = AwaitBox $ProcId $Wnd
     if ($b -ne [IntPtr]::Zero) {
       # read it now, while the foreground is still the box's
       $t = BoxText $b
-      if ($t -ne '' -and [CL]::IsWindowVisible($b)) { return $b }
+      if ($t -ne '' -and [MN]::IsWindowVisible($b)) { return $b }
     }
     Start-Sleep -Milliseconds 200
   }
@@ -242,7 +225,7 @@ function DismissDlg([int]$ProcId, [int]$Button, [int]$TimeoutMs = 8000) {
   do {
     $d = FindDlgCol $ProcId
     if ($d -ne [IntPtr]::Zero) {
-      [void][CL]::SendMessageW($d, 0x0111, [IntPtr]$Button, [IntPtr]::Zero)   # WM_COMMAND, the button id
+      [void][MN]::SendMessageW($d, 0x0111, [IntPtr]$Button, [IntPtr]::Zero)   # WM_COMMAND, the button id
       $gone = (Get-Date).AddMilliseconds(2000)
       while ((Get-Date) -lt $gone -and (FindDlgCol $ProcId) -ne [IntPtr]::Zero) {
         Start-Sleep -Milliseconds 75
@@ -252,7 +235,7 @@ function DismissDlg([int]$ProcId, [int]$Button, [int]$TimeoutMs = 8000) {
       $btn = [CL]::GetDlgItem($d, $Button)
       if ($btn -ne [IntPtr]::Zero -and [CL]::IsWindowEnabled($btn)) {
         Start-Sleep -Milliseconds 150
-        [void][CL]::SendMessageW($btn, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)   # BM_CLICK
+        [void][MN]::SendMessageW($btn, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)   # BM_CLICK
         $gone = (Get-Date).AddMilliseconds(2000)
         while ((Get-Date) -lt $gone -and (FindDlgCol $ProcId) -ne [IntPtr]::Zero) {
           Start-Sleep -Milliseconds 75
@@ -270,14 +253,14 @@ function DismissDlg([int]$ProcId, [int]$Button, [int]$TimeoutMs = 8000) {
 # broken colour is measuring the wrong thing: restore the window first and only
 # give up when it will not come back.
 function EnsureShown([IntPtr]$Wnd) {
-  $cr0 = New-Object CL+RECT
-  [void][CL]::GetClientRect($Wnd, [ref]$cr0)
+  $cr0 = New-Object MNRect
+  [void][MN]::GetClientRect($Wnd, [ref]$cr0)
   if ($cr0.B - $cr0.T -ge 8) { return $true }
   for ($i = 0; $i -lt 25; $i++) {
-    if ([CIDpi]::IsIconic($Wnd)) { [void][CIDpi]::ShowWindow($Wnd, 9) }   # 9 = SW_RESTORE
+    if ([MN]::IsIconic($Wnd)) { [void][CL]::ShowWindow($Wnd, 9) }   # 9 = SW_RESTORE
     Start-Sleep -Milliseconds 100
-    [void][CL]::GetClientRect($Wnd, [ref]$cr0)
-    if (($cr0.B - $cr0.T) -ge 8 -and -not [CIDpi]::IsIconic($Wnd)) { return $true }
+    [void][MN]::GetClientRect($Wnd, [ref]$cr0)
+    if (($cr0.B - $cr0.T) -ge 8 -and -not [MN]::IsIconic($Wnd)) { return $true }
   }
   return $false
 }
@@ -295,11 +278,14 @@ function EnsureShown([IntPtr]$Wnd) {
 # app renders it: PrintWindow draws the window 1:1 and clips, so a bitmap sized
 # from a virtualised client shows a quarter of the page - which is why this suite
 # pins the same per-monitor DPI awareness as the app before it measures.
+# The scan strides 2 px in both directions: a mark covers thousands of pixels,
+# so a quarter sample answers every question here at a quarter of the cost
+# (a full walk of a 1100x800 client measured ~8.4 s per capture in PowerShell),
+# and the assertions count rises of hundreds, not absolutes.
 function ColourCount([IntPtr]$Wnd) {
   [void](EnsureShown $Wnd)
-  Add-Type -AssemblyName System.Drawing | Out-Null
-  $cr = New-Object CL+RECT
-  [void][CL]::GetClientRect($Wnd, [ref]$cr)
+  $cr = New-Object MNRect
+  [void][MN]::GetClientRect($Wnd, [ref]$cr)
   $bw = $cr.R - $cr.L; $bh = $cr.B - $cr.T
   if ($bw -lt 8 -or $bh -lt 8) { return [pscustomobject]@{ cool = -1; warm = -1; lum = 0 } }   # a minimised client rect
   $bmp = New-Object System.Drawing.Bitmap($bw, $bh)
@@ -315,9 +301,9 @@ function ColourCount([IntPtr]$Wnd) {
   [void][System.Runtime.InteropServices.Marshal]::Copy($data.Scan0, $buf, 0, $buf.Length)
   $bmp.UnlockBits($data); $bmp.Dispose()
   $cool = 0; $warm = 0; $sum = 0; $n = 0
-  for ($y = 0; $y -lt $bh; $y++) {
+  for ($y = 0; $y -lt $bh; $y += 2) {
     $rowBase = $y * $stride
-    for ($x = 0; $x -lt $bw; $x++) {
+    for ($x = 0; $x -lt $bw; $x += 2) {
       $i = $rowBase + $x * 4
       $b = $buf[$i]; $gn = $buf[$i + 1]; $r = $buf[$i + 2]
       $v = ($gn - $r) + ($b - $r)
@@ -349,39 +335,48 @@ function WaitCount([IntPtr]$Wnd, [string]$What, [int]$MoreThan, [int]$TimeoutMs 
 # $w * ($fraction that had become pixels), and the app received a teleporting
 # pointer: the drag never extended a selection, so the highlight never existed.
 function DragBlock([IntPtr]$Wnd, [double]$Fx0, [double]$Fy0, [double]$Fx1, [double]$Fy1) {
-  $cr = New-Object CL+RECT
-  [void][CL]::GetClientRect($Wnd, [ref]$cr)
+  $cr = New-Object MNRect
+  [void][MN]::GetClientRect($Wnd, [ref]$cr)
   $cwPx = $cr.R - $cr.L; $chPx = $cr.B - $cr.T
   $px0 = [int]($cwPx * $Fx0); $py0 = [int]($chPx * $Fy0)
   $px1 = [int]($cwPx * $Fx1); $py1 = [int]($chPx * $Fy1)
-  [void][CL]::PostMessageW($Wnd, 0x0201, [IntPtr]1, (New-Object IntPtr (($py0 -shl 16) -bor ($px0 -band 0xFFFF))))
+  [void][MN]::PostMessageW($Wnd, 0x0201, [IntPtr]1, (New-Object IntPtr (($py0 -shl 16) -bor ($px0 -band 0xFFFF))))
   Start-Sleep -Milliseconds 60
   foreach ($frac in @(0.33, 0.66)) {
     $mx = [int]($cwPx * ($Fx0 + ($Fx1 - $Fx0) * $frac))
     $my = [int]($chPx * ($Fy0 + ($Fy1 - $Fy0) * $frac))
-    [void][CL]::PostMessageW($Wnd, 0x0200, [IntPtr]1, (New-Object IntPtr (($my -shl 16) -bor ($mx -band 0xFFFF))))
+    [void][MN]::PostMessageW($Wnd, 0x0200, [IntPtr]1, (New-Object IntPtr (($my -shl 16) -bor ($mx -band 0xFFFF))))
     Start-Sleep -Milliseconds 40
   }
-  [void][CL]::PostMessageW($Wnd, 0x0202, [IntPtr]0, (New-Object IntPtr (($py1 -shl 16) -bor ($px1 -band 0xFFFF))))
+  [void][MN]::PostMessageW($Wnd, 0x0202, [IntPtr]0, (New-Object IntPtr (($py1 -shl 16) -bor ($px1 -band 0xFFFF))))
   Start-Sleep -Milliseconds 200
 }
 function HighlightBlock([IntPtr]$Wnd, [double]$Fx0, [double]$Fy0, [double]$Fx1, [double]$Fy1) {
   DragBlock $Wnd $Fx0 $Fy0 $Fx1 $Fy1
-  [void][CL]::PostMessageW($Wnd, 0x0111, [IntPtr]135, [IntPtr]::Zero)   # Highlight
+  [void][MN]::PostMessageW($Wnd, 0x0111, [IntPtr]$CMD_HIGHLIGHT, [IntPtr]::Zero)   # Highlight
   Start-Sleep -Milliseconds 900
 }
 
+# requires a machine we own: this suite rewrites app.txt and would otherwise
+# do it underneath a running instance
+Assert-NoRunningApp
+
 $proc = $null; $wnd = [IntPtr]::Zero
+$script:proc2 = $null
 try {
-  # A clean slate: the yellow default, no custom colours.
-  New-Item -ItemType Directory -Force -Path (Split-Path $appPref) | Out-Null
-  Set-Content $appPref "titlebar=1`nautosave=1`nhlcolor=0`npincolor=5`npalnext=0`n"
+  # A clean slate with the user's real prefs protected: Init-PrefForge backs
+  # their app.txt up and arms the watchdog (tests\watchdog.ps1), then the forge
+  # below pins the yellow default, no custom colours, and an update clock inside
+  # its cooldown - so no case here spends a real GitHub request, which the
+  # unpinned version of this setup silently did at every launch.
+  Init-PrefForge $appPref 'colors'
+  [void](Set-ForgedAppPref 300)
 
   $proc = Launch $exe $doc
   $wnd = FindAppWindow $proc.Id
 
   # ---- case 1: the box says what shape the answer has -----------------------
-  $box = OpenColorBox $proc.Id $wnd 149
+  $box = OpenColorBox $proc.Id $wnd $CMD_CUSTOM_HL_COLOR
   if ($box -eq [IntPtr]::Zero) { Fail 'the colour box opens' } else {
     $t = BoxText $box
     # the box holds the keyboard while it is up, and the desktop talks to
@@ -393,7 +388,7 @@ try {
   }
 
   # ---- case 2: a valid colour becomes the default highlight colour --------
-  $box = WithTypedBox $proc.Id $wnd 149 '20c0a0' {
+  $box = WithTypedBox $proc.Id $wnd $CMD_CUSTOM_HL_COLOR '20c0a0' {
     param($b) (AwaitPref 'pal0=20c0a0' 400) -and (AwaitPref 'hlcolor=6' 400) }
   if ($box -ne [IntPtr]::Zero) { Pass 'a typed colour lands in the palette and becomes the default' }
   else { Fail ('a typed colour lands in the palette and becomes the default ({0})' -f ((PrefLines) -join ' ')) }
@@ -421,7 +416,7 @@ try {
   # The preset default has to move the same measure the other way, so the
   # result above cannot be an artefact of the measurement: the yellow preset
   # paints the other direction, and the page was greyscale before either mark.
-  [void][CL]::PostMessageW($wnd, 0x0111, [IntPtr]140, [IntPtr]::Zero)     # default highlight = yellow preset
+  [void][MN]::PostMessageW($wnd, 0x0111, [IntPtr]$CMD_DEFAULT_HL_YELLOW, [IntPtr]::Zero)   # default highlight = yellow preset
   Start-Sleep -Milliseconds 500
   $yellowBefore = ColourCount $wnd
   HighlightBlock $wnd 0.15 0.52 0.80 0.95
@@ -437,11 +432,11 @@ try {
 
   # ---- case 4: an invalid entry explains itself, and keeps the box -------
   # hex, but five digits: the box takes it, the parse refuses it
-  $box = WithTypedBox $proc.Id $wnd 149 '12345' {
+  $box = WithTypedBox $proc.Id $wnd $CMD_CUSTOM_HL_COLOR '12345' {
     param($b)
     Start-Sleep -Milliseconds 500
-    $d = FindDlgCol $procId
-    $d -ne [IntPtr]::Zero -and [CL]::IsWindowVisible($b) }
+    $d = FindDlgCol $ProcId
+    $d -ne [IntPtr]::Zero -and [MN]::IsWindowVisible($b) }
   if ($box -eq [IntPtr]::Zero) { Fail 'an invalid colour is explained at once and leaves the box open (no dialog)' }
   else {
     $dlg = FindDlgCol $proc.Id
@@ -450,13 +445,13 @@ try {
       Pass 'an invalid colour is explained at once and leaves the box open'
     } else {
       Fail ('an invalid colour is explained at once and leaves the box open (box open {0}, body {1})' -f
-            [CL]::IsWindowVisible($box), ($body -replace "`r?`n", ' | '))
+            [MN]::IsWindowVisible($box), ($body -replace "`r?`n", ' | '))
     }
     DismissDlg $proc.Id 2 | Out-Null                                        # OK
   }
 
   # ---- case 5: typed then clicked away keeps the colour ------------------
-  $box = OpenColorBox $proc.Id $wnd 149
+  $box = OpenColorBox $proc.Id $wnd $CMD_CUSTOM_HL_COLOR
   TypeHex $box 'abcdef'
   # The app holds a focus loss for the box's first 400 ms, and the reader's
   # "click away" can land inside that. A click away that the app is not ready to
@@ -464,7 +459,7 @@ try {
   # and accept a box that has already given the colour up on its own.
   for ($k = 0; $k -lt 14; $k++) {
     if (AwaitPref 'pal[0-9]+=abcdef' 500) { break }
-    if ([CL]::IsWindowVisible($box)) { [void][CL]::PostMessageW($box, 0x0008, [IntPtr]::Zero, [IntPtr]::Zero) }
+    if ([MN]::IsWindowVisible($box)) { [void][MN]::PostMessageW($box, 0x0008, [IntPtr]::Zero, [IntPtr]::Zero) }
   }
   if (AwaitPref 'pal[0-9]+=abcdef') { Pass 'a colour typed then clicked away is kept' }
   else { Fail ('a colour typed then clicked away is kept ({0})' -f ((PrefLines) -join ' ')) }
@@ -472,13 +467,13 @@ try {
   # ---- case 6: the slots can be cleared, with a confirmation -------------
   # With only three slots, a reader who wants a different set has to be able to
   # start from empty, and it asks first and says what happens to the marks.
-  [void][CL]::PostMessageW($wnd, 0x0111, [IntPtr]180, [IntPtr]::Zero)
+  [void][MN]::PostMessageW($wnd, 0x0111, [IntPtr]$CMD_CLEAR_CUSTOM, [IntPtr]::Zero)
   DismissDlg $proc.Id 7 | Out-Null                                          # No, first
   $pf = (PrefLines) -join ' '
   if ($pf -match 'pal[0-9]+=') {
     Pass 'clearing asks first, and No keeps the colours'
   } else { Fail ('clearing asks first, and No keeps the colours ({0})' -f $pf) }
-  [void][CL]::PostMessageW($wnd, 0x0111, [IntPtr]180, [IntPtr]::Zero)
+  [void][MN]::PostMessageW($wnd, 0x0111, [IntPtr]$CMD_CLEAR_CUSTOM, [IntPtr]::Zero)
   DismissDlg $proc.Id 6 | Out-Null                                          # Yes
   $keep = $null
   for ($w = 0; $w -lt 40; $w++) {
@@ -490,13 +485,13 @@ try {
   else { Fail ('clearing empties the slots ({0})' -f $keep) }
 
   # ---- case 7: the pin colour menu behaves the same way ------------------
-  $box = WithTypedBox $proc.Id $wnd 169 'ff8800' {
+  $box = WithTypedBox $proc.Id $wnd $CMD_CUSTOM_PIN_COLOR 'ff8800' {
     param($b) (AwaitPref 'pal0=ff8800' 400) -and (AwaitPref 'pincolor=6' 400) }
   if ($box -ne [IntPtr]::Zero) { Pass 'the pin colour menu takes a custom colour too' }
   else { Fail ('the pin colour menu takes a custom colour too ({0})' -f ((PrefLines) -join ' ')) }
 
   # ---- case 8: it survives a quit and relaunch ---------------------------
-  [void][CL]::PostMessageW($wnd, 0x0111, [IntPtr]112, [IntPtr]::Zero)
+  [void][MN]::PostMessageW($wnd, 0x0111, [IntPtr]$CMD_QUIT, [IntPtr]::Zero)
   for ($i = 0; $i -lt 60; $i++) { if ($proc.HasExited) { break }; Start-Sleep -Milliseconds 250 }
   if (-not $proc.HasExited) { $proc | Stop-Process -Force }
   $script:proc2 = Launch $exe $doc
@@ -506,15 +501,14 @@ try {
   } else {
     Fail ('the custom pin colour survives a quit and relaunch ({0})' -f ((PrefLines) -join ' '))
   }
-  [void][CL]::PostMessageW($script:wnd2, 0x0111, [IntPtr]112, [IntPtr]::Zero)
+  [void][MN]::PostMessageW($script:wnd2, 0x0111, [IntPtr]$CMD_QUIT, [IntPtr]::Zero)
   for ($i = 0; $i -lt 60; $i++) { if ($script:proc2.HasExited) { break }; Start-Sleep -Milliseconds 250 }
   if (-not $script:proc2.HasExited) { $script:proc2 | Stop-Process -Force }
 } finally {
   foreach ($p in @($proc, $script:proc2)) {
     if ($p -and -not $p.HasExited) { $p | Stop-Process -Force -ErrorAction SilentlyContinue }
   }
-  Remove-Item -LiteralPath $appPref -Force -ErrorAction SilentlyContinue
+  Restore-AppPref          # the user's real app.txt goes back on every path
 }
 Write-Output ''
-if ($failures.Count) { Write-Output ("RESULT: {0} FAILURE(S)" -f $failures.Count); exit 1 }
-Write-Output 'RESULT: ALL PASS'
+Complete-Suite
