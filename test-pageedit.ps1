@@ -230,6 +230,46 @@ try {
   elseif ($carried) { Fail 'undecodable JPEG' 'the refused stamp was still written to the sidecar' }
   else { Pass 'a file that only looks like a JPEG is refused instead of placed' }
 
+  # A chain that walks from SOI to EOI can still describe no picture at all.
+  # The frame-less chain - SOI, a scan, one entropy byte, EOI, with no frame
+  # header anywhere - parses as a complete chain and even carries fill bytes,
+  # but nothing in it says how big the image is or what is in it. So does a
+  # frame whose scan names a component the frame never declared. The loader
+  # reports success on both, so the stamp would reach the page and the sidecar
+  # and the reader would die at the first paint - and at every later launch of
+  # that document, because the sig line stayed. A frame a decoder can actually
+  # read is what has to be required, so nothing goes on the page and nothing is
+  # remembered for the next start.
+  $noframe = @(
+    @{ Name = 'a scan with no frame header'
+       Bytes = [byte[]](0xFF,0xD8,0xFF,0xFF,0xFF,0xDA,0x00,0x08,0x01,0x01,0x00,0x00,0x3F,0x00,0xFF,0xD9) },
+    @{ Name = 'a scan naming a component no frame declared'
+       Bytes = [byte[]]([IO.File]::ReadAllBytes($jpg)) }
+  )
+  # the second shape is the real sample with its scan pointed at a component its
+  # one-component frame never declared: everything else about it is decodable
+  $scan = 0
+  while (-not ($noframe[1].Bytes[$scan] -eq 0xFF -and $noframe[1].Bytes[$scan + 1] -eq 0xDA)) { $scan++ }
+  $noframe[1].Bytes[$scan + 4] = 0x02                  # marker, length, component count, selector
+  foreach ($shape in $noframe) {
+    $noFrameJpeg = Join-Path $scratch 'no-frame.jpg'
+    [IO.File]::WriteAllBytes($noFrameJpeg, $shape.Bytes)
+    $nfDoc = New-Case
+    $nfHash = Join-Path $scratch 'noframe.txt'
+    $survived = $false; $carried = $false
+    try {
+      $rn = Run-Hooked ("sig|{0}|0;;pagehash|{1}" -f $noFrameJpeg, $nfHash) $nfDoc $nfHash
+      $survived = ($rn.Hashes.Count -eq $FixturePages)
+      $carried = ((Get-Content (SidecarFor $nfDoc) -Raw -ErrorAction SilentlyContinue) -match 'sig=')
+    } catch {
+      $survived = $false
+    }
+    if (-not $survived) { Fail 'JPEG without a frame' 'the reader never came back with every page rasterized' }
+    elseif ($rn.Hashes[0] -ne $ref.Hashes[0]) { Fail 'JPEG without a frame' 'the stamp reached the page anyway' }
+    elseif ($carried) { Fail 'JPEG without a frame' 'the refused stamp was still written to the sidecar' }
+    else { Pass ("$($shape.Name) is refused instead of placed") }
+  }
+
   # The chain test also has to accept what the standard allows, not only what
   # this fixture happens to contain: ITU T.81 B.1.1.2 lets any number of 0xFF
   # fill bytes sit ahead of a marker, and real encoders emit them. Read as a

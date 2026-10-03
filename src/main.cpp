@@ -3213,6 +3213,9 @@ static bool looksLikeJpeg(const std::wstring& path) {
     std::vector<unsigned char> b;
     if (!readWholeFile(path, b)) return false;
     if (b.size() < 4 || b[0] != 0xFF || b[1] != 0xD8 || b[2] != 0xFF) return false;
+    bool sawFrame = false;                 // a SOF: nothing else says what the image is
+    int frameComps = 0;
+    unsigned char compIds[4] = { 0, 0, 0, 0 };
     bool sawScan = false;
     size_t i = 2;
     while (i + 1 < b.size()) {
@@ -3229,8 +3232,44 @@ static bool looksLikeJpeg(const std::wstring& path) {
         if (i + 1 >= b.size()) return false;
         size_t len = ((size_t)b[i] << 8) | b[i + 1];            // a segment length counts itself
         if (len < 2 || i + len > b.size()) return false;
+        size_t seg = i;                                   // where this segment's header starts
+        // SOF0-SOF15, less DHT, the reserved JPG extension and DAC: the frame
+        // header, which is what makes the stream a picture rather than a shape.
+        // The chain walk alone does not require one, and a chain without one -
+        // SOI, a scan, entropy, EOI - reaches the loader, which reports success
+        // on it anyway and dies at the first paint, taking every later launch
+        // of the document with it. So the frame has to be here, and it has to
+        // describe something a decoder can hold: 1 to 4 components, each one
+        // spelled out in the segment, and a picture of a real size.
+        if (m >= 0xC0 && m <= 0xCF && m != 0xC4 && m != 0xC8 && m != 0xCC) {
+            if (len < 8) return false;
+            int nf = b[seg + 7];
+            if (nf < 1 || nf > 4 || len < (size_t)8 + 3 * (size_t)nf) return false;
+            unsigned h = ((unsigned)b[seg + 3] << 8) | b[seg + 4];
+            unsigned w = ((unsigned)b[seg + 5] << 8) | b[seg + 6];
+            // a stamp is drawn into 150x60pt, so even a scanned page stays far
+            // below this; a frame that claims more cannot be allocated anyway
+            if (w == 0 || h == 0 || (unsigned long long)w * h > 100000000ULL) return false;
+            sawFrame = true;
+            frameComps = nf;
+            for (int c = 0; c < nf; c++) compIds[c] = b[seg + 8 + 3 * c];
+        }
         i += len;
         if (m != 0xDA) continue;
+        // SOS: the scan names the components it reads, and every name has to be
+        // one the frame declared - a scan describing components the frame never
+        // declared decodes into nothing and dies the same way a frame-less
+        // chain does. A progressive picture scans a subset per SOS, so the
+        // counts need not be equal, only in range and correctly named.
+        if (!sawFrame || len < 6) return false;
+        int ns = b[seg + 2];
+        if (ns < 1 || ns > frameComps || len < (size_t)6 + 2 * (size_t)ns) return false;
+        for (int c = 0; c < ns; c++) {
+            unsigned char id = b[seg + 3 + 2 * c];
+            bool known = false;
+            for (int f = 0; f < frameComps; f++) if (compIds[f] == id) known = true;
+            if (!known) return false;
+        }
         // SOS: entropy-coded data runs on until the next marker that is neither
         // a stuffed FF00 nor a restart - and a fill run ahead of that marker
         // belongs to the marker, not to the data
