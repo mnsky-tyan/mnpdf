@@ -1,0 +1,14 @@
+# The suite roster: one suite per line, run in this order by both runners
+# (scripts/gate-test.sh under WSL, scripts/test-ci.ps1 on Windows/CI). This
+# file is the single source of truth - adding a suite here adds it everywhere.
+#
+# A trailing '*' marks a foreground suite: the app must start WITHOUT
+# MNPDF_BACKGROUND so its popup can take the keyboard. Every other suite
+# runs with the app minimised and inactive.
+select-msg-test
+test-features
+test-suite2
+test-continuous
+test-release
+test-captionless
+test-colors*

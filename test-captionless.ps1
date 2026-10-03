@@ -20,72 +20,52 @@
 #
 # Unlike the colour suite this one runs backgrounded: everything it asserts is
 # a posted message plus a rect read, so the desktop is left untouched.
-$ErrorActionPreference = 'Stop'
 . "$PSScriptRoot\tests\lib.ps1"
-
 Add-Type -TypeDefinition @"
 using System;
-using System.Text;
 using System.Runtime.InteropServices;
 public static class CAP {
-  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowTextW(IntPtr h, StringBuilder s, int n);
-  [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out RECT r);
-  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
-  [DllImport("user32.dll")] public static extern bool PostMessageW(IntPtr h, uint m, IntPtr w, IntPtr l);
-  [DllImport("user32.dll")] public static extern IntPtr SendMessageW(IntPtr h, uint m, IntPtr w, IntPtr l);
-  [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
   [DllImport("user32.dll")] public static extern int GetSystemMetricsForDpi(int i, uint dpi);
   [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr h);
-  [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr c);
-  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
 }
 "@
 
 # the app is per-monitor aware (src/main.cpp wWinMain), so this process must be
 # too: hit-test probes then land in the same pixels the app's own zones are
 # measured in instead of relying on Windows virtualising them
-[void][CAP]::SetProcessDpiAwarenessContext([IntPtr](-4))
+[void][MN]::SetProcessDpiAwarenessContext([IntPtr](-4))
 
 # the title is this suite's only proof that a document is open: the app puts its
 # page count there only in this mode (src/main.cpp updateTitle), and it does so
 # from renderPage, i.e. once gDoc holds the fixture
 $env:MNPDF_VERBOSE = "1"
 
-$failures = New-Object System.Collections.Generic.List[string]
 $doc = Join-Path $PSScriptRoot 'tests\arc.pdf'
-$exe = $env:MNPDF_GATE_EXE
-if (-not $exe) { $exe = Join-Path $PSScriptRoot 'build\mnpdf.exe' }
+$exe = Resolve-AppExe
 $appPref = Join-Path $env:APPDATA 'mnpdf\app.txt'
-$CMD_TOGGLE = 113    # Hide titlebar / Show titlebar
-$CMD_QUIT   = 112    # Quit
 
-function Pass([string]$Name) { Write-Output ("PASS {0}" -f $Name) }
-function Fail([string]$Name, [string]$Detail) {
-  $failures.Add($Name); Write-Output ("FAIL {0} - {1}" -f $Name, $Detail)
-}
-
-function Title([IntPtr]$Wnd) { $sb = New-Object System.Text.StringBuilder 256; [void][CAP]::GetWindowTextW($Wnd, $sb, 256); $sb.ToString() }
+function Title([IntPtr]$Wnd) { $sb = New-Object System.Text.StringBuilder 256; [void][MN]::GetWindowTextW($Wnd, $sb, 256); $sb.ToString() }
 
 # how much of the window the non-client area still eats, in pixels
 function CaptionGap([IntPtr]$Wnd) {
-  $c = New-Object CAP+RECT; $w = New-Object CAP+RECT
-  [void][CAP]::GetClientRect($Wnd, [ref]$c)
-  [void][CAP]::GetWindowRect($Wnd, [ref]$w)
+  $c = New-Object MNRect; $w = New-Object MNRect
+  [void][MN]::GetClientRect($Wnd, [ref]$c)
+  [void][MN]::GetWindowRect($Wnd, [ref]$w)
   return (($w.B - $w.T) - ($c.B - $c.T))
 }
 function ClientSize([IntPtr]$Wnd) {
-  $c = New-Object CAP+RECT
-  [void][CAP]::GetClientRect($Wnd, [ref]$c)
+  $c = New-Object MNRect
+  [void][MN]::GetClientRect($Wnd, [ref]$c)
   return ($c.R - $c.L), ($c.B - $c.T)
 }
 # WM_NCHITTEST takes a point in SCREEN coordinates. Read from the window rect,
 # not from the client rect: the two share a top-left corner here only when the
 # caption is hidden, which is the case that matters.
 function HitAt([IntPtr]$Wnd, [int]$Dx, [int]$Dy) {
-  $w = New-Object CAP+RECT
-  [void][CAP]::GetWindowRect($Wnd, [ref]$w)
+  $w = New-Object MNRect
+  [void][MN]::GetWindowRect($Wnd, [ref]$w)
   $l = New-Object IntPtr ((($w.T + $Dy) -shl 16) -bor (($w.L + $Dx) -band 0xFFFF))
-  return [CAP]::SendMessageW($Wnd, 0x0084, [IntPtr]::Zero, $l).ToInt32()
+  return [MN]::SendMessageW($Wnd, 0x0084, [IntPtr]::Zero, $l).ToInt32()
 }
 # the resize sliver above the caption, in pixels: the same two window metrics
 # the app uses for its frame band (src/main.cpp WM_NCHITTEST), taken at this
@@ -98,24 +78,30 @@ function FrameTop([IntPtr]$Wnd) {
 # a window still minimizing offers a client rect of 0x0 and a window rect that is
 # Windows' parked position, neither of which the app ever shows a reader.
 function SettledRect([IntPtr]$Wnd) {
-  [void](Await { -not [CAP]::IsIconic($Wnd) -and (ClientSize $Wnd)[1] -gt 200 } 15000)
+  [void](Await { -not [MN]::IsIconic($Wnd) -and (ClientSize $Wnd)[1] -gt 200 } 15000)
 }
 function Toggle([IntPtr]$Wnd) {
-  [void][CAP]::PostMessageW($Wnd, 0x0111, [IntPtr]$CMD_TOGGLE, [IntPtr]::Zero)
+  [void][MN]::PostMessageW($Wnd, 0x0111, [IntPtr]$CMD_TITLEBAR, [IntPtr]::Zero)
   Start-Sleep -Milliseconds 500
 }
 function QuitAndWait($Proc) {
-  [void][CAP]::PostMessageW((FindAppWindow $Proc.Id), 0x0111, [IntPtr]$CMD_QUIT, [IntPtr]::Zero)
+  [void][MN]::PostMessageW((FindAppWindow $Proc.Id), 0x0111, [IntPtr]$CMD_QUIT, [IntPtr]::Zero)
   if (-not (Await { $Proc.HasExited } 20000)) { $Proc | Stop-Process -Force | Out-Null; Start-Sleep -Milliseconds 500 }
 }
+
+# requires a machine we own: this suite forges app.txt and would otherwise
+# rewrite a running instance's preferences underneath it
+Assert-NoRunningApp
 
 # ---- a deterministic start, with the user's real prefs protected ----------
 Init-PrefForge $appPref 'captionless'
 try {
   New-Item -ItemType Directory -Force -Path (Split-Path -Parent $appPref) | Out-Null
   # the update clock is stamped inside its cooldown, so no launch here spends a
-  # GitHub request and an update result never rewrites app.txt under the reader
-  Set-Content -LiteralPath $appPref ("titlebar=1`nautosave=1`nhlcolor=0`npincolor=5`npalnext=0`nupdcheck={0}`nupdtag=v2.1.3`n{1}`n" -f ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - 300), $script:prefSentinel)
+  # GitHub request and an update result never rewrites app.txt under the reader.
+  # The template, and the version it remembers, come from tests/lib.ps1 and the
+  # shipped README.txt, so nothing here freezes its own copy of either.
+  [void](Set-ForgedAppPref 300)
 
   $p = Launch $exe $doc
   $h = FindAppWindow $p.Id
@@ -145,7 +131,7 @@ try {
   else { Fail 'captionless client' "gap should be 0, got $gapNone" }
   $cw, $ch = ClientSize $h
   if ($ch -gt 0) { Pass ("caption-less client is a real {0}x{1} rect" -f $cw, $ch) }
-  else { Fail 'captionless client size' "got {0}x{1}" -f $cw, $ch }
+  else { Fail 'captionless client size' ("got {0}x{1}" -f $cw, $ch) }
   $pref = (Get-Content -LiteralPath $appPref -Raw -ErrorAction SilentlyContinue)
   if ($pref -match '(?m)^titlebar=0') { Pass 'the hidden titlebar is persisted to app.txt' }
   else { Fail 'titlebar pref' 'app.txt does not say titlebar=0 after the toggle' }
@@ -209,5 +195,4 @@ finally {
 }
 
 Write-Output ""
-if ($failures.Count) { Write-Output "RESULT: $($failures.Count) FAILURE(S)"; exit 1 }
-Write-Output "RESULT: ALL PASS"
+Complete-Suite
