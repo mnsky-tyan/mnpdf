@@ -151,9 +151,9 @@ else { Fail "highlight via menu command" "no hl= in sidecar" }
 # take the first double-click that selects a single word, so the case tests the
 # capability at any zoom instead of one resolution's layout.
 $wordX = 0; $wordAt = 0; $word = $null
-foreach ($y in 210, 220, 200, 230, 190, 240, 180) {
+foreach ($y in 300, 340, 260, 380, 220, 420, 180, 460) {
   if ($word) { break }
-  foreach ($x in 420, 360, 480, 300, 540) {
+  foreach ($x in 420, 340, 500) {
     Post $h 0x0203 ([IntPtr]1) (Lparam $x $y)                  # WM_LBUTTONDBLCLK
     Start-Sleep -Milliseconds 200
     $t = CopyAndWait $h (GetClip)
