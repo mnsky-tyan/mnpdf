@@ -230,6 +230,32 @@ try {
   elseif ($carried) { Fail 'undecodable JPEG' 'the refused stamp was still written to the sidecar' }
   else { Pass 'a file that only looks like a JPEG is refused instead of placed' }
 
+  # The chain test also has to accept what the standard allows, not only what
+  # this fixture happens to contain: ITU T.81 B.1.1.2 lets any number of 0xFF
+  # fill bytes sit ahead of a marker, and real encoders emit them. Read as a
+  # marker code of its own, a fill run refuses a perfectly good image - so the
+  # same picture carrying fill bytes before the first marker and before EOI has
+  # to stamp onto the page exactly as the plain sample does.
+  $fill = Join-Path $scratch 'fill-bytes.jpg'
+  $raw = [IO.File]::ReadAllBytes($jpg)
+  $withFill = New-Object System.Collections.Generic.List[byte]
+  $withFill.AddRange([byte[]]$raw[0..1])                          # SOI
+  $withFill.Add(0xFF)                                            # a fill byte before the first marker
+  $withFill.AddRange([byte[]]$raw[2..($raw.Length - 3)])         # the image itself
+  $withFill.Add(0xFF)                                            # a fill byte before EOI
+  $withFill.AddRange([byte[]]$raw[($raw.Length - 2)..($raw.Length - 1)])
+  [IO.File]::WriteAllBytes($fill, $withFill.ToArray())
+  $fillHash = Join-Path $scratch 'fill.txt'
+  $r = Run-Hooked ("sig|{0}|0;;pagehash|{1}" -f $fill, $fillHash) (New-Case) $fillHash
+  $nothingStamped = ($r.Hashes.Count -eq $FixturePages -and $r.Hashes[0] -eq $ref.Hashes[0])
+  if ($nothingStamped) {
+    Fail 'JPEG fill bytes' 'the reader refused a decodable JPEG - nothing was stamped'
+  } elseif ($r.Hashes.Count -eq $FixturePages -and $r.Hashes[0] -eq $r2Hash) {
+    Pass 'a legal JPEG with 0xFF fill bytes before its markers is stamped like any other'
+  } else {
+    Fail 'JPEG fill bytes' "page 1 rasterizes differently from the same image without fill bytes"
+  }
+
   # A stamp recovered from the sidecar is in the page but not in the PDF, so
   # the document really is unsaved: Save has to do something.
   $recovered = New-Case

@@ -3217,8 +3217,13 @@ static bool looksLikeJpeg(const std::wstring& path) {
     size_t i = 2;
     while (i + 1 < b.size()) {
         if (b[i] != 0xFF) return false;
-        unsigned char m = b[i + 1];
-        i += 2;
+        // any number of 0xFF fill bytes may precede a marker (ITU T.81
+        // B.1.1.2), so a run is one marker, not a marker code of its own
+        size_t j = i + 1;
+        while (j < b.size() && b[j] == 0xFF) j++;
+        if (j >= b.size()) return false;
+        unsigned char m = b[j];
+        i = j + 1;
         if (m == 0xD9) return sawScan;                          // EOI ends the image
         if (m == 0x01 || (m >= 0xD0 && m <= 0xD7)) continue;    // TEM and restarts carry no length
         if (i + 1 >= b.size()) return false;
@@ -3227,10 +3232,18 @@ static bool looksLikeJpeg(const std::wstring& path) {
         i += len;
         if (m != 0xDA) continue;
         // SOS: entropy-coded data runs on until the next marker that is neither
-        // a stuffed FF00 nor a restart
+        // a stuffed FF00 nor a restart - and a fill run ahead of that marker
+        // belongs to the marker, not to the data
         sawScan = true;
-        while (i + 1 < b.size() &&
-               !(b[i] == 0xFF && b[i + 1] != 0x00 && (b[i + 1] < 0xD0 || b[i + 1] > 0xD7))) i++;
+        while (i < b.size()) {
+            if (b[i] != 0xFF) { i++; continue; }
+            size_t e = i + 1;
+            while (e < b.size() && b[e] == 0xFF) e++;
+            if (e >= b.size()) { i = b.size(); break; }   // trailing FFs: no EOI follows
+            if (b[e] == 0x00) { i = e + 1; continue; }    // a stuffed byte, not a marker
+            if (b[e] >= 0xD0 && b[e] <= 0xD7) { i = e + 1; continue; }   // a restart
+            break;                                       // a marker ends the entropy run
+        }
     }
     return false;                                               // ran out before an EOI
 }
