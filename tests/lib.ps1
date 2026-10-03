@@ -99,6 +99,14 @@ ${CMD_CUSTOM_HL_COLOR}  = 149   # Custom... on the default highlight colour
 ${CMD_CUSTOM_PIN_COLOR} = 169   # Custom... on the default pin colour
 ${CMD_CHECK_UPDATES}    = 170
 ${CMD_CLEAR_CUSTOM}     = 180   # clear the three custom palette slots
+${CMD_NIGHT}            = 200   # invert the page for dark reading (toggles)
+${CMD_OUTLINE}          = 201   # bookmarks side drawer (toggles)
+${CMD_THUMBS}           = 202   # thumbnails side drawer (toggles)
+${CMD_INSERT_SIG}       = 203   # pick a JPEG, then click the page
+${CMD_CLEAR_SIGS}       = 204   # drop every stamp from the in-memory doc
+${CMD_MERGE}            = 205   # add files to the end of this document
+${CMD_SPLIT}            = 206   # export a page range into a new file
+${CMD_REOPEN_LAST}      = 207   # open the document last.txt names
 
 # the arc.pdf fixture's page count, read out of the title assertions it feeds
 ${FixturePages} = 13

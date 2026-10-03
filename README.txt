@@ -23,13 +23,37 @@ Ctrl+Z and Ctrl+Y.
 Annotations never stack on top of each other and never block the page: a
 pin's editor stays inside the window, and clicking anywhere else closes it.
 
+PAGES
+The right-click menu opens two drawers beside the reader. Thumbnails shows
+a strip of page previews: click one to jump there, Ctrl+Up and Ctrl+Down to
+move the selected page, Delete to remove it, R to turn it. Outline lists the
+document's own bookmarks, indented, and a click goes to the page it names.
+
+Merge PDFs adds other files to the end of the document you are reading.
+Split pages exports a range - 2-5 or 1,3,8 - into a new PDF and leaves the
+original alone.
+
+Insert signature takes a JPEG and asks where to put it: the next click on a
+page drops the stamp there. Clear signatures takes them all away again. A
+stamp reaches the PDF when you save, and sits in the sidecar until then,
+exactly like a highlight.
+
+Night mode inverts the page for a dark screen and comes back that way after
+a restart.
+
+Advanced, at the bottom of the right-click menu, lists the heavy options -
+OCR, Word export, editing text in place, form creation, encryption, tabs.
+They are greyed on purpose: they need a different kind of program, and this
+one stays a reader you can copy onto a USB stick.
+
 SAVING
 With autosave on (the default) every change is written to a sidecar file
 under %APPDATA%\mnpdf named doc-<hash>.txt, and the PDF on disk is left
-untouched. Ctrl+S writes the highlights, pins and page rotations into the
-PDF itself with Save As under Ctrl+Shift+S. Settings, palette, window
-position and the last document you had open are remembered in the same
-folder, so the next start resumes exactly where you left off.
+untouched. Ctrl+S writes the highlights, pins, signature stamps and page
+rotations into the PDF itself with Save As under Ctrl+Shift+S. Settings,
+palette, night mode, window position and the last document you had open are
+remembered in the same folder, so the next start resumes exactly where you
+left off.
 
 HIDING THE TITLEBAR
 Hide titlebar removes the caption entirely. The window still moves when you

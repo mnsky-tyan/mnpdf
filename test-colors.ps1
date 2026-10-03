@@ -151,6 +151,16 @@ function AwaitPref([string]$Pattern, [int]$TimeoutMs = 5000) {
   } while ((Get-Date) -lt $deadline)
   return $false
 }
+# PrefLines keeps only the palette keys, so a preference outside that set
+# (night mode) is polled against the whole file
+function AwaitPrefRaw([string]$Pattern, [int]$TimeoutMs = 5000) {
+  $deadline = (Get-Date).AddMilliseconds($TimeoutMs)
+  do {
+    if ((Get-Content $appPref -Raw -ErrorAction SilentlyContinue) -match $Pattern) { return $true }
+    Start-Sleep -Milliseconds 100
+  } while ((Get-Date) -lt $deadline)
+  return $false
+}
 # type the six hex digits the way a reader does, one keystroke at a time
 # Open the box, replace what is in it with a typed entry, and commit it with
 # Enter, until the entry actually took. The app answers a focus loss it did not
@@ -490,7 +500,27 @@ try {
   if ($box -ne [IntPtr]::Zero) { Pass 'the pin colour menu takes a custom colour too' }
   else { Fail ('the pin colour menu takes a custom colour too ({0})' -f ((PrefLines) -join ' ')) }
 
-  # ---- case 8: it survives a quit and relaunch ---------------------------
+  # ---- case 8: night mode darkens the page and is remembered --------------
+  # The pixel measure is the suite's own: a painted page is a light sheet (lum
+  # over 200), the same page inverted is not. Nothing here names a colour or a
+  # pixel row, so it holds at any zoom on any screen.
+  AwaitPaintedPage $wnd
+  $dayLum = (ColourCount $wnd).lum
+  [void][MN]::PostMessageW($wnd, 0x0111, [IntPtr]$CMD_NIGHT, [IntPtr]::Zero)
+  [void](Await { (ColourCount $wnd).lum -lt 80 } 10000)
+  $nightLum = (ColourCount $wnd).lum
+  if ($nightLum -lt 80 -and $nightLum -lt ($dayLum / 2)) {
+    Pass ("night mode turns the page dark (lum {0:N0} -> {1:N0})" -f $dayLum, $nightLum)
+  } else {
+    Fail ("night mode turns the page dark (lum {0:N0} -> {1:N0})" -f $dayLum, $nightLum)
+  }
+  if (AwaitPrefRaw '(?m)^night=1\s*$') { Pass 'night mode is remembered in app.txt' }
+  else { Fail ('night mode is remembered in app.txt ({0})' -f ((Get-Content $appPref -Raw -ErrorAction SilentlyContinue) -replace "`n", ' | ')) }
+  # and back again, so the suite leaves the reader's own setting as it found it
+  [void][MN]::PostMessageW($wnd, 0x0111, [IntPtr]$CMD_NIGHT, [IntPtr]::Zero)
+  [void](Await { (ColourCount $wnd).lum -gt 200 } 10000)
+
+  # ---- case 9: the custom pin colour survives a quit and relaunch -------
   [void][MN]::PostMessageW($wnd, 0x0111, [IntPtr]$CMD_QUIT, [IntPtr]::Zero)
   for ($i = 0; $i -lt 60; $i++) { if ($proc.HasExited) { break }; Start-Sleep -Milliseconds 250 }
   if (-not $proc.HasExited) { $proc | Stop-Process -Force }

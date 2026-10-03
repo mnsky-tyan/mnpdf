@@ -45,6 +45,29 @@ operation rather than a loss of information.
 **Pages.** Rotate the current page clockwise or counter-clockwise from the
 right-click menu; the rotation persists with the document.
 
+**Page drawer.** *Thumbnails* (right-click menu) opens a strip of page
+previews beside the reader. Click one to jump to that page, `Ctrl+Up` /
+`Ctrl+Down` to move the selected page, `Delete` to remove it, and `R` to
+rotate it. *Outline* opens the document's own bookmarks, indented, and a
+click goes to the page it names.
+
+**Rearranging and combining.** *Merge PDFs* adds other files to the end of the
+document you are reading. *Split pages* exports a range - `2-5` or `1,3,8` -
+into a new PDF without touching the original.
+
+**Signing.** *Insert signature* takes a JPEG and asks where to put it; the
+next click on a page drops the stamp there. *Clear signatures* removes them
+all again. A stamp lives in the file once you save, and in the sidecar until
+then, exactly like a highlight.
+
+**Dark reading.** *Night mode* inverts the page for a dark screen and is
+remembered for the next start.
+
+**Advanced.** One more row in the right-click menu opens the heavy options -
+OCR, Word export, in-place text editing, form creation, encryption, tabs. They
+are listed and greyed: they need a different kind of program, and this one
+stays a reader you can copy onto a USB stick.
+
 **Printing.** `Ctrl+P` opens the standard Windows print dialog and prints
 clean pages. Annotations, highlights and pins stay in the file and on screen
 and are simply not printed.
@@ -80,8 +103,8 @@ Everything the app remembers is under `%APPDATA%\mnpdf`:
 
 | File | Contents |
 |---|---|
-| `app.txt` | titlebar, autosave, default highlight and pin colours, custom palette, window geometry (`winx`, `winy`, `winw`, `winh`, `winmax`), last update check |
-| `doc-<hash>.txt` | per-document sidecar: zoom, fit, current page, highlights, page rotations, pins, deleted marks |
+| `app.txt` | titlebar, autosave, default highlight and pin colours, custom palette, night mode, window geometry (`winx`, `winy`, `winw`, `winh`, `winmax`), last update check |
+| `doc-<hash>.txt` | per-document sidecar: zoom, fit, current page, highlights, page rotations, pins, signature stamps, deleted marks |
 | `last.txt` | the document that was open when you quit |
 
 With **autosave** on (the default) edits are written to the sidecar and the
@@ -105,13 +128,15 @@ sets up itself with `VsDevCmd.bat -arch=x64`. Output lands in `build/`.
 
 ## Tests
 
-Seven PowerShell suites drive the real application: they launch the built
+Eight PowerShell suites drive the real application: they launch the built
 binary, send it the same messages a reader's mouse and keyboard generate, and
-assert on the app's own state files, its window, its frame and (for a custom
-colour) the pixels it paints.
+assert on the app's own state files, its window, its frame, the pages it
+renders (as per-page raster checksums, so "that page moved" is a fact rather
+than a guess) and, for a custom colour and for night mode, the pixels it
+paints.
 
 ```
-bash scripts/gate-test.sh     # from WSL: builds, then runs all seven suites
+bash scripts/gate-test.sh     # from WSL: builds, then runs all eight suites
 ```
 
 Each suite gets its own `APPDATA` and `TEMP`, so nothing written by one can
@@ -123,6 +148,7 @@ unless it is set:
 |---|---|
 | `MNPDF_BACKGROUND` | app: start minimised, without stealing the foreground - every suite but `test-colors.ps1`. The app only checks that the variable exists, so a foreground suite needs it *removed*, not set to `0` |
 | `MNPDF_VERBOSE` | app: put the document name and page in the window title |
+| `MNPDF_HOOK` | app: at launch, run one page-editing step (`merge:<pdf>`, `sig:<jpeg>:<page>`, `split:<range>:<out.pdf>`, `delpage:<n>`, `movepage:<n>:<m>`, `rotatepage:<n>`, `pagehash:<file>`, `night:<0|1>`; `;;` chains steps) instead of waiting for a modal file dialog a posted-message harness cannot click |
 | `MNPDF_PRINT_PROBE` | app: at print time, write raster statistics to the given file instead of opening the modal dialog |
 | `MNPDF_GATE_EXE` | runner: the binary the suites drive, so a suite never hardcodes a path |
 | `MNPDF_GATE_STATE` | runner: the suite's private state directory (`APPDATA`/`TEMP` live under it) |
@@ -137,7 +163,7 @@ really types into the app's colour box, and a minimised owner can never give
 that popup the keyboard.
 
 On a plain Windows machine - and in CI - there is no `wslpath`, so
-`scripts/test-ci.ps1` is the same build and the same seven suites with no WSL in
+`scripts/test-ci.ps1` is the same build and the same eight suites with no WSL in
 the way. Both runners share one roster (`scripts/suites.txt`), one build recipe
 and one pass/fail rule (`scripts/gate-common.ps1`), so a suite cannot pass in
 WSL and behave differently in CI. It is what `.github/workflows/ci.yml` runs on
@@ -159,9 +185,9 @@ resource.h
 third_party/pdfium/   PDFium headers, import library, DLL and license
 tests/lib.ps1         shared test harness (window lookup, launch, waiting)
 test-*.ps1            feature suites (select-msg, features, suite2,
-                      continuous, release, captionless, colors)
+                      continuous, release, captionless, pageedit, colors)
 test-release.ps1      ZIP contract: version agreement with README.txt, file list
-scripts/gate-test.sh  WSL entry point: build and all seven suites
+scripts/gate-test.sh  WSL entry point: build and all eight suites
 scripts/test-ci.ps1   Windows/CI entry point: the same build and suites
 .github/workflows/ci.yml  runs test-ci.ps1 on a Windows runner
 ```
