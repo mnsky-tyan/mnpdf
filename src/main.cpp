@@ -20,6 +20,8 @@
 #include <psapi.h>
 #include <gdiplus.h>
 #include <winhttp.h>
+#include <shldisp.h>             // IShellDispatch: unpacks the release ZIP in place
+#include <ole2.h>
 #include <atomic>
 #include <thread>
 #include <ctime>
@@ -46,6 +48,8 @@
 #pragma comment(lib, "comdlg32.lib")
 #pragma comment(lib, "psapi.lib")
 #pragma comment(lib, "msimg32.lib")
+#pragma comment(lib, "ole32.lib")
+#pragma comment(lib, "oleaut32.lib")
 
 // ---- state ----
 static const wchar_t* const kAppVersion = L"2.2.0";
@@ -54,6 +58,12 @@ static const wchar_t* const kRepoPath = L"mnsky-tyan/mnpdf";
 static const std::wstring kLatestReleaseUrl =
     std::wstring(kGitHubRoot) + L"/" + kRepoPath + L"/releases/latest";
 static const UINT WM_MNPDF_UPDATE_RESULT = WM_APP + 1;
+static const UINT WM_MNPDF_UPDATE_STEP = WM_APP + 2;     // install progress, worker -> UI
+// The release ZIP is fetched by name, so the name is part of the release contract:
+// every release publishes mnpdf-win-x64-<tag>.zip or the updater has nothing to fetch.
+static const std::wstring kDownloadBaseUrl =
+    std::wstring(kGitHubRoot) + L"/" + kRepoPath + L"/releases/download/";
+static std::atomic<bool> gUpdateInstallRunning = false;
 static const int kUpdateCheckIntervalMin = 60;    // self-imposed: one request per hour
 static HWND gWnd = nullptr;
 static std::atomic<bool> gUpdateCheckRunning = false;
@@ -229,6 +239,8 @@ static bool doSaveAs();
 static void replaySigs();
 static void refreshDrawers();
 static void placeDrawers();
+static void placeDrawer(HWND drawer, int width, int side);
+static void placeBesideReader(HWND win, int width, int height, int side);
 
 static bool hlOverlap(const Hl& a, const Hl& b) {
     return a.page == b.page && a.start < b.start + b.count && b.start < a.start + a.count;
@@ -2161,34 +2173,572 @@ static std::wstring checkedAgoNote(int minutesAgo) {
     return b;
 }
 
-static void showUpdateResult(const UpdateResult& result, int minutesAgo = -1) {
+// ---- the update dialog ------------------------------------------------------
+// One action button carries the whole flow: it reads "Check for updates" until a
+// check finds a newer release, then "Update to vX.Y.Z", and installing is the
+// same button. A MessageBox could not do that - its buttons are a fixed Yes/No.
+static HWND gUpdateWnd = nullptr;
+static std::wstring gUpdateTag;                  // newer tag the last check found
+static bool gUpdateAvailable = false;            // ...and it really is newer
+static bool gUpdateBusy = false;                 // a check or an install is in flight
+
+enum { kUpdAction = 1, kUpdRelease = 2, kUpdClose = 3 };
+
+static LRESULT CALLBACK updateProc(HWND w, UINT m, WPARAM wp, LPARAM lp);
+static void openUpdateDialog();
+static void startUpdateCheck(bool manual);       // the Check button runs the same check
+
+static void closeUpdateDialog() {
+    if (gUpdateWnd) { HWND w = gUpdateWnd; gUpdateWnd = nullptr; DestroyWindow(w); }
+}
+
+static void updateDialogText(const std::wstring& text) {
+    if (gUpdateWnd) SetDlgItemTextW(gUpdateWnd, 100, text.c_str());
+}
+
+// the one button: Check for updates -> Update to vX.Y.Z, and back when there is
+// nothing to install
+static void updateDialogAction() {
+    if (!gUpdateWnd) return;
+    HWND b = GetDlgItem(gUpdateWnd, kUpdAction);
+    if (!b) return;
+    std::wstring label = L"Check for updates";
+    if (gUpdateAvailable && !gUpdateTag.empty())
+        label = L"Update to " + gUpdateTag;
+    SetWindowTextW(b, label.c_str());
+    EnableWindow(b, !gUpdateBusy);
+    EnableWindow(GetDlgItem(gUpdateWnd, kUpdRelease), TRUE);
+    EnableWindow(GetDlgItem(gUpdateWnd, kUpdClose), !gUpdateBusy);
+}
+
+static std::wstring updateFolder() {
+    const wchar_t* dir = _wgetenv(L"MNPDF_UPDATE_DIR");
+    if (dir && *dir) return dir;                 // the test seam: update a scratch copy
+    return moduleDirectory();
+}
+
+static std::wstring updateZipFor(const std::wstring& tag) {
+    wchar_t temp[MAX_PATH] = L"";
+    if (!GetTempPathW(MAX_PATH, temp)) return L"";
+    return std::wstring(temp) + L"mnpdf-update-" + tag + L".zip";
+}
+
+// The ZIP name is built from the tag, and that is the whole contract with the
+// release side. A payload already on disk stands in for the download (test seam).
+static std::wstring updateDownloadUrl(const std::wstring& tag) {
+    const wchar_t* local = _wgetenv(L"MNPDF_UPDATE_ZIP");
+    if (local && *local) return local;
+    return kDownloadBaseUrl + tag + L"/mnpdf-win-x64-" + tag + L".zip";
+}
+
+// ---- the install ------------------------------------------------------------
+struct UpdateStep {
+    bool finished = false;
+    bool ok = false;
+    bool relaunched = false;
+    std::wstring text;                            // what the dialog says when it ends
+};
+
+static void reportUpdateStep(const std::wstring& text, bool finished, bool ok, bool relaunched) {
+    HWND target = gWnd;
+    if (!target || !IsWindow(target) || gShuttingDown.load()) return;
+    UpdateStep* step = new UpdateStep{ finished, ok, relaunched, text };
+    if (!PostMessageW(target, WM_MNPDF_UPDATE_STEP, 0, (LPARAM)step)) delete step;
+}
+
+// Why a request never came back. WinHTTP has no WinHttpGetLastError: it leaves
+// the reason in the Win32 last error. The codes a user can act on sit in the
+// WinHTTP range, which carries no system message strings at all, so they are
+// named here; anything else falls back to the system text or the bare number.
+static std::wstring httpFailureText(DWORD code) {
+    switch (code) {
+    case ERROR_WINHTTP_NAME_NOT_RESOLVED: return L"the host name could not be resolved";
+    case ERROR_WINHTTP_CANNOT_CONNECT:     return L"the connection was refused or dropped";
+    case ERROR_WINHTTP_TIMEOUT:            return L"the connection timed out";
+    case ERROR_WINHTTP_SECURE_FAILURE:     return L"the secure connection to the host failed";
+    }
+    wchar_t* buf = nullptr;
+    DWORD n = FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM
+                             | FORMAT_MESSAGE_IGNORE_INSERTS, nullptr, code, 0,
+                             reinterpret_cast<wchar_t*>(&buf), 0, nullptr);
+    std::wstring text;
+    if (n && buf) text.assign(buf, n);
+    if (buf) LocalFree(buf);
+    while (!text.empty() && (text.back() == L'\r' || text.back() == L'\n' || text.back() == L' '))
+        text.pop_back();
+    if (text.empty()) text = L"error " + std::to_wstring(code);
+    return text;
+}
+
+// WinHTTP GET to a file, with progress. Redirects are followed because the release
+// download answers with one (github.com -> objects.githubusercontent.com).
+static bool downloadTo(const std::wstring& url, const std::wstring& path,
+                       std::wstring& error) {
+    const std::wstring agent = std::wstring(L"mnpdf/") + kAppVersion;
+    HINTERNET session = WinHttpOpen(agent.c_str(), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+                                    WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!session) { error = L"could not open the network"; return false; }
+    WinHttpSetTimeouts(session, 5000, 5000, 15000, 30000);
+    bool ok = false;
+    for (int attempt = 0; attempt < 2 && !ok; attempt++) {
+        HINTERNET connect = nullptr, request = nullptr;
+        std::wstring host = url, pathAndQuery = L"/";
+        size_t scheme = url.find(L"://");
+        if (scheme == std::wstring::npos) { error = L"the download address is malformed"; break; }
+        host = url.substr(scheme + 3);
+        size_t slash = host.find(L'/');
+        if (slash != std::wstring::npos) { pathAndQuery = host.substr(slash); host = host.substr(0, slash); }
+        connect = WinHttpConnect(session, host.c_str(), INTERNET_DEFAULT_HTTPS_PORT, 0);
+        if (connect) {
+            request = WinHttpOpenRequest(connect, L"GET", pathAndQuery.c_str(), nullptr,
+                                         WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
+                                         WINHTTP_FLAG_SECURE);
+        }
+        if (request && WinHttpSendRequest(request, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+                                          WINHTTP_NO_REQUEST_DATA, 0, 0, 0)
+            && WinHttpReceiveResponse(request, nullptr)) {
+            DWORD status = 0, size = sizeof(status);
+            if (WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                                    WINHTTP_HEADER_NAME_BY_INDEX, &status, &size,
+                                    WINHTTP_NO_HEADER_INDEX)
+                && status >= 200 && status < 300) {
+                DWORD total = 0, totalSize = sizeof(total);
+                WinHttpQueryHeaders(request, WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER,
+                                    WINHTTP_HEADER_NAME_BY_INDEX, &total, &totalSize,
+                                    WINHTTP_NO_HEADER_INDEX);
+                FILE* f = _wfopen(path.c_str(), L"wb");
+                if (f) {
+                    std::vector<BYTE> buf(65536);
+                    DWORD got = 0;
+                    bool writeOk = true;
+                    bool readOk = false;
+                    while (writeOk && WinHttpReadData(request, buf.data(), (DWORD)buf.size(), &got)) {
+                        if (!got) { readOk = true; break; }
+                        writeOk = fwrite(buf.data(), 1, got, f) == got;
+                        if (writeOk && total) {
+                            DWORD pct = (DWORD)(((__int64)ftell(f) * 100) / total);
+                            reportUpdateStep(L"Downloading the update... " + std::to_wstring(pct) + L"%",
+                                             false, false, false);
+                        }
+                    }
+                    long written = ftell(f);
+                    fclose(f);
+                    // a body that stops early is a cut download, not a smaller ZIP:
+                    // the swap would install whatever a partial archive still holds
+                    ok = writeOk && readOk && (total == 0 || written == (long)total);
+                    if (!writeOk) error = L"the download could not be written to disk";
+                    else if (!ok) error = L"the download was cut short before it finished";
+                } else {
+                    error = L"the download could not be written to disk";
+                }
+            } else {
+                wchar_t msg[160] = L"";
+                swprintf_s(msg, L"GitHub answered %u instead of the update", status);
+                error = msg;
+                if (status == 404) error += L" - the release ZIP is not published under that name";
+            }
+        } else {
+            // no connect, no request, or no response at all: the transport failed
+            error = L"the release host could not be reached - " + httpFailureText(GetLastError());
+        }
+        if (request) WinHttpCloseHandle(request);
+        if (connect) WinHttpCloseHandle(connect);
+        if (!ok && attempt == 0) Sleep(400);     // one retry: a stale TLS session is common
+    }
+    WinHttpCloseHandle(session);
+    return ok;
+}
+
+// A ZIP begins PK\3\4. Anything else is an error page or an HTML answer from a
+// proxy, and unpacking that would only produce nonsense in the app folder.
+static bool zipLooksReal(const std::wstring& path, std::wstring& error) {
+    FILE* f = _wfopen(path.c_str(), L"rb");
+    if (!f) { error = L"the downloaded file could not be reopened"; return false; }
+    unsigned char head[4] = { 0, 0, 0, 0 };
+    size_t got = fread(head, 1, 4, f);
+    fseek(f, 0, SEEK_END);
+    long total = ftell(f);
+    fclose(f);
+    if (got != 4 || head[0] != 'P' || head[1] != 'K' || head[2] != 3 || head[3] != 4) {
+        error = L"what arrived is not a ZIP file";
+        return false;
+    }
+    // pdfium.dll alone is over 7 MB, so a release that cannot fill half a megabyte
+    // is truncated
+    if (total < 512 * 1024) { error = L"the downloaded ZIP is incomplete"; return false; }
+    return true;
+}
+
+// Unpack with the shell's own ZIP handler (in-box, no extra dependency). CopyHere
+// is asynchronous, so the wait is on the file the app actually needs, held until
+// its size stops growing.
+static bool extractZip(const std::wstring& zip, const std::wstring& dir, std::wstring& error) {
+    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    IShellDispatch* shell = nullptr;
+    bool ok = false;
+    if (SUCCEEDED(CoCreateInstance(__uuidof(Shell), nullptr, CLSCTX_INPROC_SERVER,
+                                   __uuidof(IShellDispatch), (void**)&shell)) && shell) {
+        Folder* zipFolder = nullptr;
+        Folder* dstFolder = nullptr;
+        FolderItems* items = nullptr;
+        VARIANT vDir, vZip, vWhat, vFlags;
+        VariantInit(&vDir); VariantInit(&vZip); VariantInit(&vWhat); VariantInit(&vFlags);
+        vDir.vt = VT_BSTR; vDir.bstrVal = SysAllocString(dir.c_str());
+        vZip.vt = VT_BSTR; vZip.bstrVal = SysAllocString(zip.c_str());
+        vFlags.vt = VT_I4;
+        vFlags.lVal = 0x0004 | 0x0010 | 0x0400;    // silent, no confirmation, no error UI
+        if (SUCCEEDED(shell->NameSpace(vZip, &zipFolder)) && zipFolder
+            && SUCCEEDED(zipFolder->Items(&items)) && items
+            && SUCCEEDED(shell->NameSpace(vDir, &dstFolder)) && dstFolder) {
+            vWhat.vt = VT_DISPATCH;
+            vWhat.pdispVal = (IDispatch*)items;    // the whole collection, in one CopyHere
+            if (SUCCEEDED(dstFolder->CopyHere(vWhat, vFlags))) {
+                // both files the swap needs, not the exe alone: pdfium.dll is the
+                // bigger of the two and is still being written while the exe is
+                // already complete
+                const wchar_t* wanted[] = { L"mnpdf.exe", L"pdfium.dll" };
+                long last[2] = { -1, -1 };
+                bool done[2] = { false, false };
+                bool all = false;
+                for (int tries = 0; tries < 200 && !all; tries++) {   // up to ~20 s
+                    all = true;
+                    for (int i = 0; i < 2; i++) {
+                        if (done[i]) continue;
+                        all = false;
+                        WIN32_FILE_ATTRIBUTE_DATA data = {};
+                        std::wstring p = dir + L"\\" + wanted[i];
+                        if (GetFileAttributesExW(p.c_str(), GetFileExInfoStandard, &data)) {
+                            long size = (long)((((LONGLONG)data.nFileSizeHigh) << 32) | data.nFileSizeLow);
+                            if (size > 0 && size == last[i]) done[i] = true;
+                            else last[i] = size;
+                        }
+                    }
+                    if (!all) Sleep(100);
+                }
+                ok = done[0] && done[1];
+                if (!ok) error = L"the ZIP did not unpack into a usable mnpdf.exe and pdfium.dll";
+            } else {
+                error = L"the ZIP could not be unpacked";
+            }
+        } else {
+            error = L"Windows could not open the downloaded ZIP";
+        }
+        if (items) items->Release();
+        if (zipFolder) zipFolder->Release();
+        if (dstFolder) dstFolder->Release();
+        if (vDir.bstrVal) SysFreeString(vDir.bstrVal);
+        if (vZip.bstrVal) SysFreeString(vZip.bstrVal);
+    } else {
+        error = L"Windows could not open the downloaded ZIP";
+    }
+    if (shell) shell->Release();
+    CoUninitialize();
+    return ok;
+}
+
+// A running executable cannot be written over, but it can be renamed - that is
+// what makes self-replacement possible without a second program. The old file is
+// put back when the new one cannot be written.
+static bool swapFileIn(const std::wstring& staged, const std::wstring& target, std::wstring& error) {
+    std::wstring backup = target + L".old";
+    bool hadOld = GetFileAttributesW(target.c_str()) != INVALID_FILE_ATTRIBUTES;
+    if (hadOld && !MoveFileExW(target.c_str(), backup.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+        error = L"mnpdf.exe or pdfium.dll is locked by another program - close it and try again";
+        return false;
+    }
+    if (!CopyFileW(staged.c_str(), target.c_str(), FALSE)) {
+        if (hadOld) MoveFileExW(backup.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING);
+        error = L"the new file could not be written into the mnpdf folder";
+        return false;
+    }
+    return true;
+}
+
+// leftovers of a previous update: the renamed old copies, which the new instance
+// can delete because the old process is gone by then
+static void cleanupUpdateLeftovers() {
+    std::wstring dir = moduleDirectory();
+    const wchar_t* names[] = { L"mnpdf.exe", L"pdfium.dll" };
+    // A .old whose live file is gone is not garbage: a swap that was interrupted
+    // between the rename and the copy left the last working copy under that name,
+    // and deleting it would leave no mnpdf at all.
+    // The copy that restarted this one may still be shutting down with its old
+    // files still mapped, so deletion is retried for a few seconds before the
+    // leftovers are left for the next start.
+    for (int pass = 0; pass < 30; pass++) {
+        bool any = false;
+        for (const wchar_t* n : names) {
+            std::wstring live = dir + L"\\" + n;
+            std::wstring p = live + L".old";
+            if (GetFileAttributesW(live.c_str()) == INVALID_FILE_ATTRIBUTES) continue;
+            if (GetFileAttributesW(p.c_str()) != INVALID_FILE_ATTRIBUTES
+                && !DeleteFileW(p.c_str())) any = true;
+        }
+        if (!any) break;
+        Sleep(300);
+    }
+}
+
+// One thread does the whole install; the UI thread only ever hears about it.
+static void installUpdate(const std::wstring& tag) {
+    std::wstring zip = updateZipFor(tag);
+    std::wstring staging = zip.substr(0, zip.find_last_of(L"\\") + 1) + L"mnpdf-update-" + tag + L"\\";
+    std::wstring folder = updateFolder();
+    std::wstring error;
+    CreateDirectoryW(staging.c_str(), nullptr);
+    DeleteFileW(zip.c_str());
+
+    std::wstring url = updateDownloadUrl(tag);
+    reportUpdateStep(L"Downloading the update...", false, false, false);
+    bool ok;
+    if (url.size() > 4 && (url.compare(0, 4, L"http") == 0)) {
+        ok = downloadTo(url, zip, error);
+    } else {
+        ok = CopyFileW(url.c_str(), zip.c_str(), FALSE);      // payload already on disk
+        if (!ok) error = L"the update payload could not be read";
+    }
+    if (ok) ok = zipLooksReal(zip, error);
+    if (ok) {
+        reportUpdateStep(L"Unpacking the update...", false, false, false);
+        ok = extractZip(zip, staging, error);
+    }
+    if (ok) {
+        reportUpdateStep(L"Replacing mnpdf in\n" + folder + L" ...", false, false, false);
+        const wchar_t* files[] = { L"mnpdf.exe", L"pdfium.dll" };
+        int swapped = 0;
+        for (const wchar_t* n : files) {
+            std::wstring staged = staging + n;
+            if (GetFileAttributesW(staged.c_str()) == INVALID_FILE_ATTRIBUTES) {
+                error = L"the release ZIP does not contain " + std::wstring(n);
+                ok = false;
+                break;
+            }
+            ok = swapFileIn(staged, folder + L"\\" + n, error);
+            if (!ok) break;
+            swapped++;
+        }
+        // the two files are a matched pair, so a swap that stopped halfway puts
+        // the earlier one back before the failure is reported
+        if (!ok) {
+            for (int i = swapped - 1; i >= 0; i--)
+                MoveFileExW((folder + L"\\" + files[i] + L".old").c_str(),
+                            (folder + L"\\" + files[i]).c_str(), MOVEFILE_REPLACE_EXISTING);
+        }
+    }
+    if (ok) {
+        std::wstring exe = folder + L"\\mnpdf.exe";
+        reportUpdateStep(L"Starting mnpdf " + tag + L"...", false, false, true);
+        HINSTANCE started = ShellExecuteW(gWnd, L"open", exe.c_str(), nullptr,
+                                          folder.c_str(), SW_SHOWNORMAL);
+        ok = ((INT_PTR)started > 32);
+        if (!ok) error = L"the updated mnpdf could not be started";
+    }
+    // the scratch copy is of no use to anyone
+    DeleteFileW(zip.c_str());
+    RemoveDirectoryW(staging.c_str());
+    if (ok) {
+        reportUpdateStep(L"mnpdf " + tag + L" is installed.", true, true, true);
+    } else {
+        reportUpdateStep(L"The update did not go through: " + error, true, false, false);
+    }
+}
+
+static void startUpdateInstall(const std::wstring& tag) {
+    if (gUpdateInstallRunning.exchange(true)) return;
+    gUpdateBusy = true;
+    updateDialogAction();
+    updateDialogText(L"Installing mnpdf " + tag + L". Keep mnpdf open until it restarts.");
+    HWND target = gWnd;
+    std::thread([target, tag]() {
+        installUpdate(tag);
+        if (!target || !IsWindow(target) || gShuttingDown.load()) {
+            gUpdateInstallRunning.store(false);
+            return;
+        }
+        PostMessageW(target, WM_MNPDF_UPDATE_STEP, 1, 0);    // tidy up on the UI thread
+    }).detach();
+}
+
+// ---- the dialog -------------------------------------------------------------
+// The dialog's layout in 96-dpi pixels. The process is per-monitor dpi aware,
+// so a window sized from these numbers on a scaled monitor draws its button row
+// under the caption - clipped for a hand, alive for automation that drives by
+// id. Every rect is therefore derived from the window's own dpi, and a move to
+// a monitor with another dpi re-derives it.
+struct UpdChild { int id; int x, y, w, h; };
+static const UpdChild kUpdChildren[] = {
+    { 100,          14,  12, 372, 130 },     // the text
+    { kUpdAction,   14, 152, 176,  26 },
+    { kUpdRelease, 198, 152,  88,  26 },
+    { kUpdClose,   294, 152,  92,  26 },
+};
+static const int kUpdClientW = 400, kUpdClientH = 184;   // the client the layout fills
+
+static void layoutUpdateDialog(HWND w) {
+    const double k = GetDpiForWindow(w) / 96.0;
+    for (const UpdChild& c : kUpdChildren) {
+        HWND child = GetDlgItem(w, c.id);
+        if (child) SetWindowPos(child, nullptr, (int)(c.x * k), (int)(c.y * k),
+                                (int)(c.w * k), (int)(c.h * k), SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+}
+
+static LRESULT CALLBACK updateProc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
+    switch (m) {
+    case WM_CREATE: {
+        HINSTANCE inst = (HINSTANCE)GetWindowLongPtrW(gWnd, GWLP_HINSTANCE);
+        for (const UpdChild& c : kUpdChildren) {
+            const wchar_t* cls = c.id == 100 ? L"STATIC" : L"BUTTON";
+            const wchar_t* label = c.id == kUpdAction ? L"Check for updates"
+                                 : c.id == kUpdRelease ? L"Release page"
+                                 : c.id == kUpdClose ? L"Close" : L"";
+            DWORD style = c.id == 100 ? WS_CHILD | WS_VISIBLE
+                                      : WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON;
+            CreateWindowExW(0, cls, label, style, 0, 0, 0, 0,
+                            w, (HMENU)(INT_PTR)c.id, inst, nullptr);
+        }
+        layoutUpdateDialog(w);                        // the one place a child rect is derived
+        updateDialogText(L"Checking GitHub for a newer mnpdf...");
+        updateDialogAction();
+        return 0;
+    }
+    case WM_DPICHANGED: {
+        // the reader was dragged to another monitor: take the system's suggested
+        // rect and re-derive the child rects for the new dpi
+        RECT* sug = (RECT*)lp;
+        SetWindowPos(w, nullptr, sug->left, sug->top,
+                     sug->right - sug->left, sug->bottom - sug->top,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+        layoutUpdateDialog(w);
+        return 0;
+    }
+    case WM_COMMAND: {
+        int id = LOWORD(wp);
+        if (id == kUpdAction) {
+            if (gUpdateBusy) return 0;
+            if (gUpdateAvailable && !gUpdateTag.empty()) {
+                if (gDirty) {
+                    MessageBoxW(w, L"This document has unsaved changes.\n\n"
+                                   L"Save it (or close mnpdf) before installing an update.",
+                                L"mnpdf update", MB_OK | MB_ICONWARNING);
+                    return 0;
+                }
+                startUpdateInstall(gUpdateTag);  // the dialog stays: it carries the progress and the reason
+                return 0;
+            }
+            gUpdateBusy = true;
+            updateDialogAction();
+            updateDialogText(L"Checking GitHub for a newer mnpdf...");
+            startUpdateCheck(true);
+            return 0;
+        }
+        if (id == kUpdRelease) {
+            ShellExecuteW(gWnd, L"open", kLatestReleaseUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+            return 0;
+        }
+        if (id == kUpdClose) {
+            if (gUpdateBusy) return 0;
+            closeUpdateDialog();
+            return 0;
+        }
+        break;
+    }
+    case WM_CLOSE:
+        if (gUpdateBusy) return 0;                 // a check or install is in flight
+        closeUpdateDialog();
+        return 0;
+    case WM_DESTROY:
+        if (gUpdateWnd == w) gUpdateWnd = nullptr;
+        return 0;
+    }
+    return DefWindowProcW(w, m, wp, lp);
+}
+
+static void openUpdateDialog() {
+    if (gUpdateWnd) { SetForegroundWindow(gUpdateWnd); return; }
+    HINSTANCE inst = (HINSTANCE)GetWindowLongPtrW(gWnd, GWLP_HINSTANCE);
+    static bool reg = false;
+    if (!reg) {
+        WNDCLASSEXW wc = { sizeof(wc) };
+        wc.lpfnWndProc = updateProc;
+        wc.hInstance = inst;
+        wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+        wc.lpszClassName = L"MNUpdate";
+        RegisterClassExW(&wc);
+        reg = true;
+    }
+    // The layout is client-side and dpi-derived, so the window is sized from the
+    // client rectangle at the reader's dpi - the monitor the dialog will appear
+    // on - with the caption and borders added around it.
+    UINT dpi = gWnd ? GetDpiForWindow(gWnd) : 96;
+    double k = dpi / 96.0;
+    RECT want = { 0, 0, (int)(kUpdClientW * k), (int)(kUpdClientH * k) };
+    AdjustWindowRectExForDpi(&want, WS_POPUP | WS_CAPTION | WS_SYSMENU, FALSE,
+                             WS_EX_TOOLWINDOW, dpi);
+    int w = want.right - want.left, h = want.bottom - want.top;
+    gUpdateWnd = CreateWindowExW(WS_EX_TOOLWINDOW, L"MNUpdate", L"mnpdf updates",
+                                 WS_POPUP | WS_CAPTION | WS_SYSMENU, 0, 0, w, h,
+                                 gWnd, nullptr, inst, nullptr);
+    if (!gUpdateWnd) return;
+    placeBesideReader(gUpdateWnd, w, h, 1);
+    ShowWindow(gUpdateWnd, SW_SHOW);
+}
+
+// The dialog is the only place a check result is shown: the button is the answer.
+static void updateDialogResult(const UpdateResult& result, int minutesAgo) {
     if (!result.ok) {
-        if (result.manual)
-            MessageBoxW(gWnd, L"mnpdf could not check GitHub for updates. Try again later.",
-                        L"mnpdf updates", MB_OK | MB_ICONWARNING);
+        gUpdateAvailable = false;
+        gUpdateBusy = false;
+        gUpdateTag.clear();
+        updateDialogText(L"mnpdf could not reach GitHub to check for updates. Try again later.");
+        updateDialogAction();
         return;
     }
+    gUpdateTag = result.tag;
+    gUpdateAvailable = result.newer;
+    gUpdateBusy = false;
     if (!result.newer) {
-        if (result.manual) {
-            std::wstring text = L"mnpdf " + std::wstring(kAppVersion) + L" is up to date."
-                              + checkedAgoNote(minutesAgo);
-            MessageBoxW(gWnd, text.c_str(), L"mnpdf updates", MB_OK | MB_ICONINFORMATION);
-        }
+        std::wstring text = L"mnpdf " + std::wstring(kAppVersion) + L" is up to date."
+                          + checkedAgoNote(minutesAgo);
+        updateDialogText(text);
+        updateDialogAction();
         return;
     }
     std::wstring text = L"mnpdf " + std::wstring(kAppVersion) + L" -> " + result.tag
         + L" is available." + checkedAgoNote(minutesAgo) + L"\n\n"
-        + L"This is a portable ZIP update. Downloading it into another folder creates a second copy; it does not replace this copy.\n\n"
-        + L"To update this copy:\n"
-        + L"1. Open the official release page below.\n"
-        + L"2. Close mnpdf.\n"
-        + L"3. Extract the ZIP over:\n   " + moduleDirectory() + L"\n"
-        + L"4. Replace mnpdf.exe and pdfium.dll.\n\n"
-        + L"Your PDFs, notes, and settings are stored separately and will not be deleted.\n\n"
-        + L"Open the official release page now?";
-    if (MessageBoxW(gWnd, text.c_str(), L"mnpdf update available",
-                    MB_YESNO | MB_ICONINFORMATION) == IDYES)
-        ShellExecuteW(gWnd, L"open", kLatestReleaseUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        + L"Installing downloads the official ZIP and replaces mnpdf.exe and pdfium.dll in:\n   "
+        + updateFolder() + L"\n\n"
+        + L"Your PDFs, notes and settings are stored separately and are not touched.";
+    updateDialogText(text);
+    updateDialogAction();
+}
+
+// An install owns the dialog for its whole run: the text carries the progress
+// and, when the install fails, the reason. A check answer that lands in that
+// window must not retitle the dialog, re-enable its buttons or forget the tag
+// being installed, so both answer paths step aside while the swap runs.
+static bool updateDialogIsInstallChannel() { return gUpdateInstallRunning.load(); }
+
+static void showUpdateResult(const UpdateResult& result, int minutesAgo = -1) {
+    if (updateDialogIsInstallChannel()) return;
+    if (!result.manual && !result.newer && result.ok) return;   // a silent check with nothing to say
+    if (!result.manual && !result.ok) return;                   // ...and a silent one that failed
+    if (!gUpdateWnd) openUpdateDialog();
+    if (!gUpdateWnd) {                                          // no window: fall back to a box
+        if (result.ok && result.newer) {
+            std::wstring text = L"mnpdf " + std::wstring(kAppVersion) + L" -> " + result.tag
+                + L" is available.\n\nOpen the official release page now?";
+            if (MessageBoxW(gWnd, text.c_str(), L"mnpdf update available",
+                            MB_YESNO | MB_ICONINFORMATION) == IDYES)
+                ShellExecuteW(gWnd, L"open", kLatestReleaseUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        } else if (result.manual) {
+            MessageBoxW(gWnd, L"mnpdf could not check GitHub for updates. Try again later.",
+                        L"mnpdf updates", MB_OK | MB_ICONWARNING);
+        }
+        return;
+    }
+    updateDialogResult(result, minutesAgo);
 }
 
 static void showPendingUpdateResult() {
@@ -2203,6 +2753,7 @@ static void showPendingUpdateResult() {
 // a click inside the cooldown window is answered from what the last attempt
 // learned, so the user still gets a true answer and no request is spent
 static void reportCachedUpdateResult() {
+    if (updateDialogIsInstallChannel()) return;
     int ago = minutesSinceLastCheck();
     if (ago < 0) ago = 0;
     if (gLastUpdateTag.empty()) {                     // last attempt could not reach GitHub
@@ -2212,7 +2763,9 @@ static void reportCachedUpdateResult() {
                             L"Please try again in " + std::to_wstring(left) + L" minute";
         if (left != 1) text += L"s";
         text += L".";
-        MessageBoxW(gWnd, text.c_str(), L"mnpdf updates", MB_OK | MB_ICONWARNING);
+        updateDialogText(text);
+        gUpdateBusy = false;
+        updateDialogAction();
         return;
     }
     UpdateResult cached;
@@ -2325,16 +2878,18 @@ static void markSave() {
 
 // app-level prefs in %APPDATA%\mnpdf\app.txt: chrome toggles (titlebar, autosave),
 // the default highlight/pin colours, the custom #rrggbb slots (round-robin pointer
-// too), the update-check clock that keeps it to one request per interval, and the
-// frame geometry winx/winy/winw/winh/winmax the next launch recreates the window
-// with. Every call records the rect as it stands at that moment, so the WM_CLOSE
-// write is the one that survives a quit. The rect is read from GetWindowPlacement's
-// rcNormalPosition rather than GetWindowRect, because that is the rect the user left
-// the window in, whatever state the window is in - maximized, GetWindowRect reports
-// the monitor rect the system grew the window to, and minimized the iconic
-// placeholder at -32000,-32000 - and the same call carries the maximized flag as
-// showCmd == SW_SHOWMAXIMIZED or WPF_RESTORETOMAXIMIZED, so a window minimized from
-// a maximized one still comes back maximized.
+// too), the update-check clock that keeps it to one request per interval together
+// with the tag that check found (updtag - the tag the update button offers and an
+// install fetches), and the frame geometry winx/winy/winw/winh/winmax the next
+// launch recreates the window with. Every call records the rect as it stands at
+// that moment, so the WM_CLOSE write is the one that survives a quit. The rect is
+// read from GetWindowPlacement's rcNormalPosition rather than GetWindowRect,
+// because that is the rect the user left the window in, whatever state the window
+// is in - maximized, GetWindowRect reports the monitor rect the system grew the
+// window to, and minimized the iconic placeholder at -32000,-32000 - and the same
+// call carries the maximized flag as showCmd == SW_SHOWMAXIMIZED or
+// WPF_RESTORETOMAXIMIZED, so a window minimized from a maximized one still comes
+// back maximized.
 static void writeAppPref() {
     wchar_t dir[MAX_PATH];
     appDirW(dir, MAX_PATH);
@@ -3828,11 +4383,24 @@ static void dropThumb(int i) {
     if (gThumbBmps[i]) { DeleteObject(gThumbBmps[i]); gThumbBmps[i] = nullptr; }
 }
 
-// A drawer hangs off the reader's own rect, and that rect moves: a maximized
-// window leaves no screen beside it, so a drawer placed there is off screen and
-// unreachable while its menu row still reads as open. Both drawers go through
-// here, so a move or a resize lands them on the work area of the monitor the
-// reader is on.
+// A window placed beside the reader hangs off the reader's own rect, and that
+// rect moves: a maximized window leaves no screen beside it, so a window placed
+// there is off screen and unreachable while its menu row still reads as open.
+// Everything placed beside the reader goes through here, so a move or a resize
+// lands it on the work area of the monitor the reader is on.
+static void placeBesideReader(HWND win, int width, int height, int side) {
+    if (!win || !gWnd) return;
+    RECT wr;
+    GetWindowRect(gWnd, &wr);
+    MONITORINFO mi = { sizeof(mi) };
+    if (!GetMonitorInfoW(MonitorFromRect(&wr, MONITOR_DEFAULTTONEAREST), &mi)) return;
+    int x = side ? wr.right + kDrawerGap : wr.left - width - kDrawerGap;
+    SetWindowPos(win, nullptr,
+                 clampBox(x, width, mi.rcWork.left, mi.rcWork.right),
+                 clampBox(wr.top + 40, height, mi.rcWork.top, mi.rcWork.bottom),
+                 width, height, SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
 static void placeDrawer(HWND drawer, int width, int side) {
     if (!drawer || !gWnd) return;
     RECT wr;
@@ -3842,11 +4410,7 @@ static void placeDrawer(HWND drawer, int width, int side) {
     int h = wr.bottom - wr.top - 40;
     if (h > mi.rcWork.bottom - mi.rcWork.top) h = mi.rcWork.bottom - mi.rcWork.top;
     if (h < 200) h = 200;
-    int x = side ? wr.right + kDrawerGap : wr.left - width - kDrawerGap;
-    SetWindowPos(drawer, nullptr,
-                 clampBox(x, width, mi.rcWork.left, mi.rcWork.right),
-                 clampBox(wr.top + 40, h, mi.rcWork.top, mi.rcWork.bottom),
-                 width, h, SWP_NOZORDER | SWP_NOACTIVATE);
+    placeBesideReader(drawer, width, h, side);
 }
 
 static void placeDrawers() {
@@ -4487,7 +5051,15 @@ static void onCommand(HWND h, WPARAM wp) {
     case 118: doSave(); return;
     case 119: doSaveAs(); return;
     case 137: doPrint(); return;
-    case 170: startUpdateCheck(true); return;
+    case 170: {
+        // the menu runs the same check the dialog's own button runs, so it takes
+        // the dialog busy the same way, for the same reason
+        openUpdateDialog();
+        gUpdateBusy = true;
+        updateDialogAction();
+        startUpdateCheck(true);
+        return;
+    }
     case 130:                                   // add pin at the menu drop point
         if (gMenuPinPtPage >= 0) {
             addPinAt(gMenuPinPtPage, gMenuPinPtX, gMenuPinPtY);
@@ -4770,6 +5342,30 @@ static LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         }
         return DefWindowProcW(h, m, wp, lp);
     }
+    case WM_MNPDF_UPDATE_STEP: {
+        UpdateStep* step = (UpdateStep*)lp;
+        if (wp == 1) {                             // the worker is done; reset its flag
+            gUpdateInstallRunning.store(false);
+            return 0;
+        }
+        if (!step) return 0;
+        bool finished = step->finished, ok = step->ok, relaunched = step->relaunched;
+        std::wstring text = step->text;
+        delete step;
+        if (gUpdateWnd) {
+            if (finished && ok && relaunched) closeUpdateDialog();
+            else updateDialogText(text);
+        }
+        if (finished) {
+            gUpdateBusy = false;
+            if (ok && relaunched) {
+                PostMessageW(h, WM_CLOSE, 0, 0);   // the new copy takes over from here
+            } else if (gUpdateWnd) {
+                updateDialogAction();              // the button comes back, release page too
+            }
+        }
+        return 0;
+    }
     case WM_MNPDF_UPDATE_RESULT: {
         UpdateResult* result = (UpdateResult*)lp;
         if (result) {
@@ -4789,6 +5385,10 @@ static LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     }
     case WM_TIMER: onTimer(h, wp); return 0;
     case WM_CLOSE:
+        // quitting while the swap is in flight strands it between the rename and
+        // the copy, so the window stays until the worker reports back
+        if (gUpdateInstallRunning.load()) return 0;
+        closeUpdateDialog();                       // an update half-installed is not installed
         if (gEditPin >= 0) commitPinEdit();        // an open pin box saves first
         if (gAutosave) {
             writeSidecarNow();                     // edits survive in the sidecar: no prompt
@@ -4949,6 +5549,10 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int show) {
     // and title reads work - it is only ever minimized and inactive.
     ShowWindow(gWnd, background ? SW_SHOWMINNOACTIVE
                                 : (gWinMax ? SW_SHOWMAXIMIZED : show));
+    // the sweep retries for seconds against the copy that is still shutting down,
+    // so it runs off the start-up path instead of holding a window whose message
+    // loop has not started yet
+    std::thread([]() { cleanupUpdateLeftovers(); }).detach();   // a previous update's renamed copies
     startUpdateCheck(false);                         // notify only when a newer release exists
     MSG msg;
     for (;;) {
