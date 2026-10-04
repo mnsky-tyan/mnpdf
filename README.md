@@ -110,7 +110,7 @@ Everything the app remembers is under `%APPDATA%\mnpdf`:
 
 | File | Contents |
 |---|---|
-| `app.txt` | titlebar, autosave, default highlight and pin colours, custom palette, night mode, window geometry (`winx`, `winy`, `winw`, `winh`, `winmax`), last update check |
+| `app.txt` | titlebar, autosave, default highlight and pin colours, custom palette, night mode, window geometry (`winx`, `winy`, `winw`, `winh`, `winmax`), last update check (`updcheck`) and the newest tag it found (`updtag`) - the tag the update button offers and the one an install fetches |
 | `doc-<hash>.txt` | per-document sidecar: zoom, fit, current page, highlights, page rotations, pins, signature stamps, deleted marks |
 | `last.txt` | the document that was open when you quit |
 

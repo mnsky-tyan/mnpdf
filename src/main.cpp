@@ -2878,16 +2878,18 @@ static void markSave() {
 
 // app-level prefs in %APPDATA%\mnpdf\app.txt: chrome toggles (titlebar, autosave),
 // the default highlight/pin colours, the custom #rrggbb slots (round-robin pointer
-// too), the update-check clock that keeps it to one request per interval, and the
-// frame geometry winx/winy/winw/winh/winmax the next launch recreates the window
-// with. Every call records the rect as it stands at that moment, so the WM_CLOSE
-// write is the one that survives a quit. The rect is read from GetWindowPlacement's
-// rcNormalPosition rather than GetWindowRect, because that is the rect the user left
-// the window in, whatever state the window is in - maximized, GetWindowRect reports
-// the monitor rect the system grew the window to, and minimized the iconic
-// placeholder at -32000,-32000 - and the same call carries the maximized flag as
-// showCmd == SW_SHOWMAXIMIZED or WPF_RESTORETOMAXIMIZED, so a window minimized from
-// a maximized one still comes back maximized.
+// too), the update-check clock that keeps it to one request per interval together
+// with the tag that check found (updtag - the tag the update button offers and an
+// install fetches), and the frame geometry winx/winy/winw/winh/winmax the next
+// launch recreates the window with. Every call records the rect as it stands at
+// that moment, so the WM_CLOSE write is the one that survives a quit. The rect is
+// read from GetWindowPlacement's rcNormalPosition rather than GetWindowRect,
+// because that is the rect the user left the window in, whatever state the window
+// is in - maximized, GetWindowRect reports the monitor rect the system grew the
+// window to, and minimized the iconic placeholder at -32000,-32000 - and the same
+// call carries the maximized flag as showCmd == SW_SHOWMAXIMIZED or
+// WPF_RESTORETOMAXIMIZED, so a window minimized from a maximized one still comes
+// back maximized.
 static void writeAppPref() {
     wchar_t dir[MAX_PATH];
     appDirW(dir, MAX_PATH);
