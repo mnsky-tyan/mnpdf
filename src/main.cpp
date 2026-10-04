@@ -3565,6 +3565,10 @@ static void movePage(int from, int to) {
     order.erase(order.begin() + from);
     order.insert(order.begin() + to, v);
     replaceDocByOrder(order);                      // adoptDoc refreshes the drawers
+    // The selection follows the page that moved. It cannot stay on the index
+    // the view happens to sit on: that index now holds a different page, so a
+    // second Ctrl+Up would move that one instead and the repeat looked broken.
+    gThumbSel = to;
 }
 
 // the reader picks the signature's spot; the click never reaches the text layer
@@ -3917,7 +3921,9 @@ static void invalidateThumbDrawer() {
 
 static void refreshThumbDrawer() {
     if (!gThumbWnd) return;
-    gThumbSel = gPageIndex;
+    // an edit moves pages under the selection, so the selection is only
+    // replaced when the page it named is gone (delete, merge, a new document)
+    if (gThumbSel < 0 || gThumbSel >= gDocPages) gThumbSel = gPageIndex;
     layoutThumbs();
     invalidateThumbDrawer();
 }
