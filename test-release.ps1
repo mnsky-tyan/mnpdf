@@ -282,7 +282,12 @@ try {
       if (Test-Path (Join-Path $root 'app\mnpdf.exe')) {
         $afterSize = (Get-Item (Join-Path $root 'app\mnpdf.exe')).Length
       }
-      $newp = @(Get-Process mnpdf -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne $p.Id })
+      # Only the copy this test installed may be touched: a process is the
+      # restarted reader iff its image is the scratch exe. Anything else with
+      # the same name belongs to the user and is never killed.
+      $scratchExe = Join-Path $root 'app\mnpdf.exe'
+      $newp = @(Get-Process mnpdf -ErrorAction SilentlyContinue |
+        Where-Object { $_.Id -ne $p.Id -and $_.Path -eq $scratchExe })
       # the restarted copy sweeps the renamed old files itself; the old process
       # may still be exiting, so the sweep is given the same window it allows
       [void](Await { @(Get-ChildItem (Join-Path $root 'app') -Filter '*.old' -ErrorAction SilentlyContinue).Count -eq 0 } 12000)

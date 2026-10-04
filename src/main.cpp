@@ -2560,20 +2560,57 @@ static void startUpdateInstall(const std::wstring& tag) {
 }
 
 // ---- the dialog -------------------------------------------------------------
+// The dialog's layout in 96-dpi pixels. The process is per-monitor dpi aware,
+// so a window sized from these numbers on a scaled monitor draws its button row
+// under the caption - clipped for a hand, alive for automation that drives by
+// id. Every rect is therefore derived from the window's own dpi, and a move to
+// a monitor with another dpi re-derives it.
+struct UpdChild { int id; int x, y, w, h; };
+static const UpdChild kUpdChildren[] = {
+    { 100,          14,  12, 372, 130 },     // the text
+    { kUpdAction,   14, 152, 176,  26 },
+    { kUpdRelease, 198, 152,  88,  26 },
+    { kUpdClose,   294, 152,  92,  26 },
+};
+static const int kUpdClientW = 400, kUpdClientH = 184;   // the client the layout fills
+
+static void layoutUpdateDialog(HWND w) {
+    const double k = GetDpiForWindow(w) / 96.0;
+    for (const UpdChild& c : kUpdChildren) {
+        HWND child = GetDlgItem(w, c.id);
+        if (child) SetWindowPos(child, nullptr, (int)(c.x * k), (int)(c.y * k),
+                                (int)(c.w * k), (int)(c.h * k), SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+}
+
 static LRESULT CALLBACK updateProc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
     switch (m) {
     case WM_CREATE: {
         HINSTANCE inst = (HINSTANCE)GetWindowLongPtrW(gWnd, GWLP_HINSTANCE);
-        CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE,
-                        14, 12, 372, 130, w, (HMENU)100, inst, nullptr);
-        CreateWindowExW(0, L"BUTTON", L"Check for updates", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
-                        14, 152, 176, 26, w, (HMENU)kUpdAction, inst, nullptr);
-        CreateWindowExW(0, L"BUTTON", L"Release page", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
-                        198, 152, 88, 26, w, (HMENU)kUpdRelease, inst, nullptr);
-        CreateWindowExW(0, L"BUTTON", L"Close", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
-                        294, 152, 92, 26, w, (HMENU)kUpdClose, inst, nullptr);
+        for (const UpdChild& c : kUpdChildren) {
+            const wchar_t* cls = c.id == 100 ? L"STATIC" : L"BUTTON";
+            const wchar_t* label = c.id == kUpdAction ? L"Check for updates"
+                                 : c.id == kUpdRelease ? L"Release page"
+                                 : c.id == kUpdClose ? L"Close" : L"";
+            DWORD style = c.id == 100 ? WS_CHILD | WS_VISIBLE
+                                      : WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON;
+            const double k = GetDpiForWindow(w) / 96.0;
+            CreateWindowExW(0, cls, label, style,
+                            (int)(c.x * k), (int)(c.y * k), (int)(c.w * k), (int)(c.h * k),
+                            w, (HMENU)(INT_PTR)c.id, inst, nullptr);
+        }
         updateDialogText(L"Checking GitHub for a newer mnpdf...");
         updateDialogAction();
+        return 0;
+    }
+    case WM_DPICHANGED: {
+        // the reader was dragged to another monitor: take the system's suggested
+        // rect and re-derive the child rects for the new dpi
+        RECT* sug = (RECT*)lp;
+        SetWindowPos(w, nullptr, sug->left, sug->top,
+                     sug->right - sug->left, sug->bottom - sug->top,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+        layoutUpdateDialog(w);
         return 0;
     }
     case WM_COMMAND: {
@@ -2632,7 +2669,15 @@ static void openUpdateDialog() {
         RegisterClassExW(&wc);
         reg = true;
     }
-    int w = 400, h = 196;
+    // The layout is client-side and dpi-derived, so the window is sized from the
+    // client rectangle at the reader's dpi - the monitor the dialog will appear
+    // on - with the caption and borders added around it.
+    UINT dpi = gWnd ? GetDpiForWindow(gWnd) : 96;
+    double k = dpi / 96.0;
+    RECT want = { 0, 0, (int)(kUpdClientW * k), (int)(kUpdClientH * k) };
+    AdjustWindowRectExForDpi(&want, WS_POPUP | WS_CAPTION | WS_SYSMENU, FALSE,
+                             WS_EX_TOOLWINDOW, dpi);
+    int w = want.right - want.left, h = want.bottom - want.top;
     gUpdateWnd = CreateWindowExW(WS_EX_TOOLWINDOW, L"MNUpdate", L"mnpdf updates",
                                  WS_POPUP | WS_CAPTION | WS_SYSMENU, 0, 0, w, h,
                                  gWnd, nullptr, inst, nullptr);
