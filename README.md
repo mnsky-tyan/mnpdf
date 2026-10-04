@@ -19,10 +19,12 @@ executable - the two are a matched pair. There is no installer, nothing is
 registered, and the folder can be copied to another machine or a USB stick
 as-is.
 
-To move to a newer version, extract the new ZIP over the old folder. The app
-tells you when a newer release exists (at most one check per hour) and
-explains that updating is a manual, portable step - it never downloads or
-overwrites anything itself.
+The app tells you when a newer release exists (at most one check per hour),
+and the check button then becomes an update button: it downloads the official
+ZIP, replaces `mnpdf.exe` and `pdfium.dll` in the folder the app runs from and
+restarts. An unsaved document blocks the swap until you save it, and a failed
+download changes nothing. Extracting the new ZIP over the old folder by hand
+works exactly as before.
 
 ## What it does
 
@@ -208,7 +210,15 @@ not:
   portable ZIP carries
 
 A release is a tag plus a ZIP built from exactly four files: `mnpdf.exe`,
-`pdfium.dll`, `README.txt` and `PDFIUM-LICENSE.txt`.
+`pdfium.dll`, `README.txt` and `PDFIUM-LICENSE.txt`. The ZIP is published as
+`mnpdf-win-x64-<tag>.zip` - that name is what the updater requests, so it is
+part of the same contract.
+
+The updater's two test seams are documented here because they are part of the
+behaviour: `MNPDF_UPDATE_ZIP` serves the payload from a local ZIP instead of
+the network, and `MNPDF_UPDATE_DIR` points the swap at a different folder than
+the running executable's. `test-release.ps1` uses both to drive a real update
+against a scratch copy.
 
 ## License
 

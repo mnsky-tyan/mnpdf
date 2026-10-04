@@ -1,14 +1,17 @@
-# Release-flow check. Two release mistakes this catches:
+# Release-flow check. Three release mistakes this catches:
 #   1. a binary whose self-reported version disagrees with the shipped README
 #      (v2.0.2 shipped old code under the current version and told users they
 #      were up to date - the version claim must match the release contract)
-#   2. an update notice that stops explaining the portable-ZIP flow
-# Everything is observed through the app's own UI (the update dialog), driven
-# by posted messages. README.txt is the exact file the release ZIP ships, so it
-# is the version contract: bump one without the other and this fails.
-# the MessageBox body is NOT in any child window's text (WM_GETTEXTLEN on the
-# static is 0 on this shell, and cross-process GetWindowTextW is blind on
-# controls) - UI Automation is the reader that actually sees the text
+#   2. an update flow whose answer does not say what installing will do
+#   3. an updater that cannot actually update the app: the full install is
+#      driven here against a scratch copy, with the ZIP payload served locally
+#      (MNPDF_UPDATE_ZIP) and the target folder pointed at the copy
+#      (MNPDF_UPDATE_DIR), so the machine's real mnpdf is never touched
+# Everything is observed through the app's own update dialog, driven by posted
+# messages. README.txt is the exact file the release ZIP ships, so it is the
+# version contract: bump one without the other and this fails.
+# Control text is read with WM_GETTEXT: cross-process GetWindowTextW answers
+# with the creation text, and both the static and the button change at runtime
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
 . "$PSScriptRoot\tests\lib.ps1"   # one definition of the app.txt forge/restore rule
 Add-Type -TypeDefinition @"
@@ -44,6 +47,25 @@ function FindDialog([int]$ProcId, [string]$TitlePat) {
     $true }
   [void][R]::EnumWindows($cb, [IntPtr]::Zero)
   return $script:hit
+}
+
+# exact-title variant: the refusal box is titled 'mnpdf update', one 's' away
+# from the dialog it is spawned from
+function FindDialogExact([int]$ProcId, [string]$Title) {
+  $script:fxPid = $ProcId
+  $script:fxTitle = $Title
+  $script:fxHit = [IntPtr]::Zero
+  $cb = [EnumWindowsProcRel]{ param($w, $n)
+    $owner = 0
+    [void][MN]::GetWindowThreadProcessId($w, [ref]$owner)
+    if ($owner -eq $script:fxPid) {
+      $t = New-Object System.Text.StringBuilder 256
+      [void][MN]::GetWindowTextW($w, $t, 256)
+      if ($t.ToString() -eq $script:fxTitle) { $script:fxHit = $w; return $false }
+    }
+    $true }
+  [void][R]::EnumWindows($cb, [IntPtr]::Zero)
+  return $script:fxHit
 }
 
 function DialogBody([IntPtr]$Dlg) {
@@ -102,15 +124,17 @@ Assert-NoRunningApp
 # currently a forge, so it is discarded rather than adopted, on every run start
 # and every restore path. (tests/lib.ps1 owns all of that machinery.)
 Init-PrefForge $appPref 'release'
-function Run-Case([string]$Name, [string]$Tag, [string]$WantTitle, [string[]]$WantSnips, [int]$DismissId) {
+# One state, one dialog: the click is answered from a forged completed check
+# (no network), the dialog is found by title, and its body and action button
+# are read with WM_GETTEXT. $BtnOut hands the button text to the caller.
+function Run-Case([string]$Name, [string]$Tag, [string[]]$WantSnips, [string]$WantButton) {
   # forge a completed check from 5 minutes ago that remembered $Tag, so the
   # click is answered from cache: no network, deterministic dialog. The tag is
   # passed explicitly here; the shipped-README default lives in tests/lib.ps1.
   $now = Set-ForgedAppPref 300 $Tag
-  # the app writes doc-<fnv1a(path)>.txt and last.txt for autosave on every quit, and
-  # autosave is forged on below: run on a disposable copy in build\ so the pristine
-  # fixture in tests\ - a tracked file every suite reads - is never the one that gets
-  # written to. Copied before the launch, the way every other suite does it.
+  # the app writes doc-<fnv1a(path)>.txt and last.txt for autosave on every quit,
+  # and autosave is forged on: run on a disposable copy in build\ so the pristine
+  # fixture in tests\ is never the one that gets written to.
   Copy-Item -LiteralPath (Join-Path $repo 'tests\arc.pdf') -Destination $doc -Force
   $p = $null
   try {
@@ -119,30 +143,33 @@ function Run-Case([string]$Name, [string]$Tag, [string]$WantTitle, [string[]]$Wa
       return
     }
     # Start-App carries the same quoting rule as Launch in tests\lib.ps1: one argv
-    # entry, or the app parks in the open dialog and the update-check click never lands
+    # entry, or the app parks in the open dialog and the update click never lands
     try { $p = Start-App $exe $doc }
     catch {
       Fail $Name ("app never showed a main window ({0})" -f $_.Exception.Message)
       return
     }
     [void][MN]::PostMessageW((FindAppWindow $p.Id), 0x0111, [IntPtr]$CMD_CHECK_UPDATES, [IntPtr]::Zero)   # Check for updates
-    if (-not (Await { (FindDialog $p.Id $WantTitle) -ne [IntPtr]::Zero } 15000)) {
-      Fail $Name ("no '{0}' dialog after the click" -f $WantTitle)
+    if (-not (Await { (FindDialog $p.Id 'mnpdf updates') -ne [IntPtr]::Zero } 15000)) {
+      Fail $Name 'no mnpdf updates dialog after the click'
       return
     }
-    $body = DialogBody (FindDialog $p.Id $WantTitle)
+    $dlg = FindDialog $p.Id 'mnpdf updates'
+    $body = ControlText ([R]::GetDlgItem($dlg, 100))
+    $btn = ControlText ([R]::GetDlgItem($dlg, 1))
     $missing = @($WantSnips | Where-Object { $body -notmatch [regex]::Escape($_) })
     if ($missing.Count) {
       Fail $Name ("dialog body is missing: {0}" -f ($missing -join ' | '))
-      Write-Output ("  body was: " + ($body -replace "`n", ' / '))
+      Write-Output ("  body was: " + ($body -replace [string][char]10, ' / '))
+    } elseif ($btn -ne $WantButton) {
+      Fail $Name ("the action button reads '{0}', not '{1}'" -f $btn, $WantButton)
     } else {
       Pass $Name
     }
-    # dismiss with the intended button (No on the yes/no prompt, so no browser opens)
-    $dlg = FindDialog $p.Id $WantTitle
-    $btn = [R]::GetDlgItem($dlg, $DismissId)
-    if ($btn -ne [IntPtr]::Zero) { [void][MN]::SendMessageW($btn, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero) }   # BM_CLICK
-    [void](Await { (FindDialog $p.Id $WantTitle) -eq [IntPtr]::Zero } 8000)
+    # dismiss with the dialog's own Close button: a test never opens the browser
+    $closeBtn = [R]::GetDlgItem($dlg, 3)
+    if ($closeBtn -ne [IntPtr]::Zero) { [void][MN]::SendMessageW($closeBtn, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero) }   # BM_CLICK
+    [void](Await { (FindDialog $p.Id 'mnpdf updates') -eq [IntPtr]::Zero } 8000)
   } finally {
     Stop-OwnedApp $p          # close only this test's own process, gracefully
     Restore-AppPref           # leave the user's update state exactly as we found it, on every path
@@ -166,18 +193,124 @@ try {
     if (-not (Test-Path -LiteralPath (Join-Path $repo $f))) { Fail 'release file list' "$f is missing from the repo root - the ZIP would ship without it"; exit 1 }
   }
 
-  Run-Case 'update notice explains the portable-ZIP flow' 'v9.9.9' 'mnpdf update available' @(
+  # a newer remembered tag turns the action button into the update button, and
+  # the body says exactly what installing will do to this folder
+  Run-Case 'an available update turns the check button into the update button' 'v9.9.9' @(
     ("mnpdf {0} -> v9.9.9 is available." -f $expected)   # binary's version claim == release contract
-    'This is a portable ZIP update'
-    'does not replace this copy'
-    (Split-Path $exe -Parent)                            # names the exact folder to extract over
+    'replaces mnpdf.exe and pdfium.dll in:'
+    $exeDir                                              # names the exact folder it will update
     '(Last checked'                                      # a cached answer says when it last checked
-  ) 7                                                    # IDNO: never open the browser from a test
+    'are not touched'                                    # and says what it will not touch
+  ) ('Update to v9.9.9')
 
-  Run-Case 'up-to-date answer names the same version' ("v{0}" -f $expected) 'mnpdf updates' @(
+  Run-Case 'an up-to-date answer leaves the button a check button' ("v{0}" -f $expected) @(
     ("mnpdf {0} is up to date." -f $expected)
     '(Last checked'
-  ) 1                                                    # IDOK
+  ) 'Check for updates'
+
+  # An unsaved document must not be replaced under the user: the pin makes the
+  # document dirty, and the update click has to be refused with the reason.
+  Copy-Item -LiteralPath (Join-Path $repo 'tests\arc.pdf') -Destination $doc -Force
+  $now = Set-ForgedAppPref 300 'v9.9.9'
+  $p = $null
+  try {
+    $p = Start-App $exe $doc
+    $main = FindAppWindow $p.Id
+    [void][MN]::PostMessageW($main, 0x0111, [IntPtr]$CMD_CHECK_UPDATES, [IntPtr]::Zero)
+    if (-not (Await { (FindDialog $p.Id 'mnpdf updates') -ne [IntPtr]::Zero } 15000)) {
+      Fail 'an unsaved document is not updated under the user' 'no update dialog'
+    } else {
+      $dlg = FindDialog $p.Id 'mnpdf updates' 
+      [void](Await { (ControlText ([R]::GetDlgItem((FindDialog $p.Id 'mnpdf updates'), 1))) -eq 'Update to v9.9.9' } 8000)
+      [void][MN]::PostMessageW($main, 0x0111, [IntPtr]$CMD_ROTATE_CW, [IntPtr]::Zero)    # dirty the document
+      Start-Sleep -Milliseconds 300
+      # The refusal is a modal box, so the click is POSTED: a sent BM_CLICK would
+      # block until the box the click itself raised is dismissed.
+      [void][MN]::PostMessageW([R]::GetDlgItem((FindDialog $p.Id 'mnpdf updates'), 1), 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)
+      $warn = [IntPtr]::Zero
+      if (-not (Await { (FindDialogExact $p.Id 'mnpdf update') -ne [IntPtr]::Zero } 8000)) {
+        Fail 'an unsaved document is not updated under the user' 'no refusal for an unsaved document'
+      } else {
+        $warn = FindDialogExact $p.Id 'mnpdf update'
+        $warnBody = ControlText ([R]::GetDlgItem($warn, 0xFFFF))
+        if ($warnBody -match 'unsaved') { Pass 'an unsaved document is not updated under the user' }
+        else {
+          Fail 'an unsaved document is not updated under the user' ("the refusal says: '{0}'" -f $warnBody)
+          Write-Output ("  warning text: " + ($warnBody -replace [string][char]10, ' / '))
+        }
+        [void][MN]::SendMessageW([R]::GetDlgItem($warn, 2), 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)    # IDOK
+      }
+      if ((FindDialog $p.Id 'mnpdf updates') -eq [IntPtr]::Zero) {
+        Fail 'an unsaved document is not updated under the user' 'the update dialog closed anyway'
+      }
+    }
+  } finally {
+    Stop-OwnedApp $p
+    Restore-AppPref
+  }
+
+  # The install itself, end to end, against a scratch copy: the payload arrives
+  # from a local ZIP (the MNPDF_UPDATE_ZIP seam), the target folder is the copy
+  # (MNPDF_UPDATE_DIR), and the proof is the replaced exe, a restarted process
+  # and no .old copies left behind.
+  $root = Join-Path $env:TEMP ('mnpdf-selfupdate-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+  foreach ($d in 'app', 'payload\stage', 'state\mnpdf', 'tmp') {
+    New-Item -ItemType Directory -Force -Path (Join-Path $root $d) | Out-Null
+  }
+  Copy-Item -LiteralPath $exe -Destination (Join-Path $root 'app\mnpdf.exe')
+  Copy-Item -LiteralPath (Join-Path $exeDir 'pdfium.dll') -Destination (Join-Path $root 'app\pdfium.dll')
+  Copy-Item -LiteralPath (Join-Path $repo 'tests\arc.pdf') -Destination (Join-Path $root 'app\a.pdf')
+  $beforeSize = (Get-Item (Join-Path $root 'app\mnpdf.exe')).Length
+  $stage = Join-Path $root 'payload\stage'
+  Copy-Item -LiteralPath $exe -Destination (Join-Path $stage 'mnpdf.exe')
+  Copy-Item -LiteralPath (Join-Path $exeDir 'pdfium.dll') -Destination (Join-Path $stage 'pdfium.dll')
+  $fs = [System.IO.File]::OpenWrite((Join-Path $stage 'mnpdf.exe')); $fs.Seek(0, 'End') | Out-Null
+  $fs.Write((New-Object byte[] 1048576), 0, 1048576); $fs.Close()
+  Compress-Archive -Path (Join-Path $stage '*') -DestinationPath (Join-Path $root 'payload\update.zip') -Force
+  $payloadSize = (Get-Item (Join-Path $stage 'mnpdf.exe')).Length
+  $updcheck = [DateTimeOffset]::UtcNow.AddMinutes(-5).ToUnixTimeSeconds()
+  Set-Content -LiteralPath (Join-Path $root 'state\mnpdf\app.txt') `
+    -Value "titlebar=1`nautosave=1`nupdcheck=$updcheck`nupdtag=v9.9.9`nverbose=1" -Encoding ASCII
+  $env:MNPDF_UPDATE_ZIP = Join-Path $root 'payload\update.zip'
+  $env:MNPDF_UPDATE_DIR = Join-Path $root 'app'
+  $realAppdata = $env:APPDATA; $realTemp = $env:TEMP
+  $env:APPDATA = Join-Path $root 'state'
+  $env:TEMP = Join-Path $root 'tmp'
+  $p = $null
+  try {
+    $p = Start-App (Join-Path $root 'app\mnpdf.exe') (Join-Path $root 'app\a.pdf')
+    [void][MN]::PostMessageW((FindAppWindow $p.Id), 0x0111, [IntPtr]$CMD_CHECK_UPDATES, [IntPtr]::Zero)
+    if (-not (Await { (FindDialog $p.Id 'mnpdf updates') -ne [IntPtr]::Zero } 15000)) {
+      Fail 'an update installs itself and restarts the reader' 'no update dialog in the scratch copy'
+    } else {
+      $dlg = FindDialog $p.Id 'mnpdf updates' 
+      [void](Await { (ControlText ([R]::GetDlgItem($dlg, 1))) -eq 'Update to v9.9.9' } 8000)
+      [void][MN]::SendMessageW([R]::GetDlgItem($dlg, 1), 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)
+      $oldGone = Await { try { $p.Refresh(); $p.HasExited } catch { $true } } 40000
+      $afterSize = 0
+      if (Test-Path (Join-Path $root 'app\mnpdf.exe')) {
+        $afterSize = (Get-Item (Join-Path $root 'app\mnpdf.exe')).Length
+      }
+      $newp = @(Get-Process mnpdf -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne $p.Id })
+      # the restarted copy sweeps the renamed old files itself; the old process
+      # may still be exiting, so the sweep is given the same window it allows
+      [void](Await { @(Get-ChildItem (Join-Path $root 'app') -Filter '*.old' -ErrorAction SilentlyContinue).Count -eq 0 } 12000)
+      $leftovers = @(Get-ChildItem (Join-Path $root 'app') -Filter '*.old' -ErrorAction SilentlyContinue).Count
+      if ($oldGone -and $afterSize -eq $payloadSize -and $newp.Count -ge 1 -and $leftovers -eq 0) {
+        Pass 'an update installs itself and restarts the reader'
+      } else {
+        Fail 'an update installs itself and restarts the reader' `
+          ("old exited: {0}; exe {1} -> {2} bytes (payload {3}); restarted: {4}; .old left: {5}" -f
+           $oldGone, $beforeSize, $afterSize, $payloadSize, $newp.Count, $leftovers)
+      }
+      if ($newp.Count -ge 1) { try { $newp | Stop-Process -Force } catch {} }
+    }
+  } finally {
+    Stop-OwnedApp $p
+    $env:MNPDF_UPDATE_ZIP = $null; $env:MNPDF_UPDATE_DIR = $null
+    $env:APPDATA = $realAppdata; $env:TEMP = $realTemp
+    Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+  }
 } finally {
   Restore-AppPref          # leave the user's update state exactly as we found it, on every path
   Remove-Item -LiteralPath $script:prefBackup,$script:prefMissing -Force -ErrorAction SilentlyContinue
