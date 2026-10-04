@@ -148,7 +148,7 @@ bash scripts/gate-test.sh     # from WSL: builds, then runs all eight suites
 ```
 
 Each suite gets its own `APPDATA` and `TEMP`, so nothing written by one can
-reach the next. Six environment variables are the seams of this setup - three
+reach the next. Nine environment variables are the seams of this setup - six
 read by the app, three by the runner plumbing - and none of them does anything
 unless it is set:
 
@@ -158,6 +158,8 @@ unless it is set:
 | `MNPDF_VERBOSE` | app: put the document name and page in the window title |
 | `MNPDF_HOOK` | app: at launch, run one page-editing step (`merge\|<pdf>`, `sig\|<jpeg>\|<page>`, `split\|<range>\|<out.pdf>`, `delpage\|<n>`, `movepage\|<n>\|<m>`, `rotatepage\|<n>\|<+1\|-1>`, `open\|<pdf>`, `clearsigs`, `pagehash\|<file>`, `night\|<0\|1>`; `;;` chains steps) instead of waiting for a modal file dialog a posted-message harness cannot click |
 | `MNPDF_PRINT_PROBE` | app: at print time, write raster statistics to the given file instead of opening the modal dialog |
+| `MNPDF_UPDATE_ZIP` | app: the update payload as a local ZIP path (or URL) instead of the GitHub download, so an install can be driven with no network |
+| `MNPDF_UPDATE_DIR` | app: the folder an update swaps into, instead of the folder the running executable is in - the seam that points an install at a scratch copy |
 | `MNPDF_GATE_EXE` | runner: the binary the suites drive, so a suite never hardcodes a path |
 | `MNPDF_GATE_STATE` | runner: the suite's private state directory (`APPDATA`/`TEMP` live under it) |
 | `MNPDF_GATE_SUITE` | runner: which suite script to run |
@@ -182,7 +184,9 @@ powershell -ExecutionPolicy Bypass -File scripts\test-ci.ps1
 ```
 
 `test-release.ps1` on its own is the release contract: the binary's version,
-the README's first line and the four files a release ZIP must contain.
+the README's first line, the four files a release ZIP must contain, and the
+update flow itself - what the dialog answers, a full install against a scratch
+copy, and an update that fails with a reason.
 
 ## Repository layout
 
@@ -194,7 +198,8 @@ third_party/pdfium/   PDFium headers, import library, DLL and license
 tests/lib.ps1         shared test harness (window lookup, launch, waiting)
 test-*.ps1            feature suites (select-msg, features, suite2,
                       continuous, release, captionless, pageedit, colors)
-test-release.ps1      ZIP contract: version agreement with README.txt, file list
+test-release.ps1      release contract: version agreement with README.txt, the
+                      ZIP file list, the update dialog, a full self-install
 scripts/gate-test.sh  WSL entry point: build and all eight suites
 scripts/test-ci.ps1   Windows/CI entry point: the same build and suites
 .github/workflows/ci.yml  runs test-ci.ps1 on a Windows runner
@@ -205,7 +210,7 @@ scripts/test-ci.ps1   Windows/CI entry point: the same build and suites
 Two places must agree on the version, and `test-release.ps1` fails if they do
 not:
 
-- `kAppVersion` in `src/main.cpp:49`
+- `kAppVersion` in `src/main.cpp:55`
 - the first line of `README.txt` - `mnpdf vX.Y.Z` - which is also the file the
   portable ZIP carries
 
@@ -214,11 +219,9 @@ A release is a tag plus a ZIP built from exactly four files: `mnpdf.exe`,
 `mnpdf-win-x64-<tag>.zip` - that name is what the updater requests, so it is
 part of the same contract.
 
-The updater's two test seams are documented here because they are part of the
-behaviour: `MNPDF_UPDATE_ZIP` serves the payload from a local ZIP instead of
-the network, and `MNPDF_UPDATE_DIR` points the swap at a different folder than
-the running executable's. `test-release.ps1` uses both to drive a real update
-against a scratch copy.
+`test-release.ps1` installs through both update seams (`MNPDF_UPDATE_ZIP` and
+`MNPDF_UPDATE_DIR`, in the table above) against a scratch copy, so the whole
+flow runs with no network and without the machine's own reader as its subject.
 
 ## License
 

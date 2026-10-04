@@ -210,7 +210,7 @@ try {
     if (-not (Await { (FindDialog $p.Id 'mnpdf updates') -ne [IntPtr]::Zero } 15000)) {
       Fail 'an unsaved document is not updated under the user' 'no update dialog'
     } else {
-      $dlg = FindDialog $p.Id 'mnpdf updates' 
+      $dlg = FindDialog $p.Id 'mnpdf updates'
       [void](Await { (ControlText ([R]::GetDlgItem((FindDialog $p.Id 'mnpdf updates'), 1))) -eq 'Update to v9.9.9' } 8000)
       [void][MN]::PostMessageW($main, 0x0111, [IntPtr]$CMD_ROTATE_CW, [IntPtr]::Zero)    # dirty the document
       Start-Sleep -Milliseconds 300
@@ -274,7 +274,7 @@ try {
     if (-not (Await { (FindDialog $p.Id 'mnpdf updates') -ne [IntPtr]::Zero } 15000)) {
       Fail 'an update installs itself and restarts the reader' 'no update dialog in the scratch copy'
     } else {
-      $dlg = FindDialog $p.Id 'mnpdf updates' 
+      $dlg = FindDialog $p.Id 'mnpdf updates'
       [void](Await { (ControlText ([R]::GetDlgItem($dlg, 1))) -eq 'Update to v9.9.9' } 8000)
       [void][MN]::SendMessageW([R]::GetDlgItem($dlg, 1), 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)
       $oldGone = Await { try { $p.Refresh(); $p.HasExited } catch { $true } } 40000
