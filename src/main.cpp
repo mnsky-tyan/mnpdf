@@ -240,6 +240,7 @@ static void replaySigs();
 static void refreshDrawers();
 static void placeDrawers();
 static void placeDrawer(HWND drawer, int width, int side);
+static void placeBesideReader(HWND win, int width, int height, int side);
 
 static bool hlOverlap(const Hl& a, const Hl& b) {
     return a.page == b.page && a.start < b.start + b.count && b.start < a.start + a.count;
@@ -2207,6 +2208,7 @@ static void updateDialogAction() {
     SetWindowTextW(b, label.c_str());
     EnableWindow(b, !gUpdateBusy);
     EnableWindow(GetDlgItem(gUpdateWnd, kUpdRelease), TRUE);
+    EnableWindow(GetDlgItem(gUpdateWnd, kUpdClose), !gUpdateBusy);
 }
 
 static std::wstring updateFolder() {
@@ -2285,18 +2287,23 @@ static bool downloadTo(const std::wstring& url, const std::wstring& path,
                     std::vector<BYTE> buf(65536);
                     DWORD got = 0;
                     bool writeOk = true;
+                    bool readOk = false;
                     while (writeOk && WinHttpReadData(request, buf.data(), (DWORD)buf.size(), &got)) {
-                        if (!got) break;
+                        if (!got) { readOk = true; break; }
                         writeOk = fwrite(buf.data(), 1, got, f) == got;
-                        if (total) {
+                        if (writeOk && total) {
                             DWORD pct = (DWORD)(((__int64)ftell(f) * 100) / total);
                             reportUpdateStep(L"Downloading the update... " + std::to_wstring(pct) + L"%",
                                              false, false, false);
                         }
                     }
+                    long written = ftell(f);
                     fclose(f);
-                    ok = writeOk;
-                    if (!ok) error = L"the download could not be written to disk";
+                    // a body that stops early is a cut download, not a smaller ZIP:
+                    // the swap would install whatever a partial archive still holds
+                    ok = writeOk && readOk && (total == 0 || written == (long)total);
+                    if (!writeOk) error = L"the download could not be written to disk";
+                    else if (!ok) error = L"the download was cut short before it finished";
                 } else {
                     error = L"the download could not be written to disk";
                 }
@@ -2322,7 +2329,6 @@ static bool zipLooksReal(const std::wstring& path, std::wstring& error) {
     if (!f) { error = L"the downloaded file could not be reopened"; return false; }
     unsigned char head[4] = { 0, 0, 0, 0 };
     size_t got = fread(head, 1, 4, f);
-    long size = ftell(f);
     fseek(f, 0, SEEK_END);
     long total = ftell(f);
     fclose(f);
@@ -2333,7 +2339,6 @@ static bool zipLooksReal(const std::wstring& path, std::wstring& error) {
     // pdfium.dll alone is over 7 MB, so a release that cannot fill half a megabyte
     // is truncated
     if (total < 512 * 1024) { error = L"the downloaded ZIP is incomplete"; return false; }
-    (void)size;
     return true;
 }
 
@@ -2361,18 +2366,30 @@ static bool extractZip(const std::wstring& zip, const std::wstring& dir, std::ws
             vWhat.vt = VT_DISPATCH;
             vWhat.pdispVal = (IDispatch*)items;    // the whole collection, in one CopyHere
             if (SUCCEEDED(dstFolder->CopyHere(vWhat, vFlags))) {
-                const std::wstring wanted = dir + L"\\mnpdf.exe";
-                long last = -1;
-                for (int tries = 0; tries < 200; tries++) {          // up to ~20 s
-                    WIN32_FILE_ATTRIBUTE_DATA data = {};
-                    if (GetFileAttributesExW(wanted.c_str(), GetFileExInfoStandard, &data)) {
-                        long size = (long)((((LONGLONG)data.nFileSizeHigh) << 32) | data.nFileSizeLow);
-                        if (size > 0 && size == last) { ok = true; break; }
-                        last = size;
+                // both files the swap needs, not the exe alone: pdfium.dll is the
+                // bigger of the two and is still being written while the exe is
+                // already complete
+                const wchar_t* wanted[] = { L"mnpdf.exe", L"pdfium.dll" };
+                long last[2] = { -1, -1 };
+                bool done[2] = { false, false };
+                bool all = false;
+                for (int tries = 0; tries < 200 && !all; tries++) {   // up to ~20 s
+                    all = true;
+                    for (int i = 0; i < 2; i++) {
+                        if (done[i]) continue;
+                        all = false;
+                        WIN32_FILE_ATTRIBUTE_DATA data = {};
+                        std::wstring p = dir + L"\\" + wanted[i];
+                        if (GetFileAttributesExW(p.c_str(), GetFileExInfoStandard, &data)) {
+                            long size = (long)((((LONGLONG)data.nFileSizeHigh) << 32) | data.nFileSizeLow);
+                            if (size > 0 && size == last[i]) done[i] = true;
+                            else last[i] = size;
+                        }
                     }
-                    Sleep(100);
+                    if (!all) Sleep(100);
                 }
-                if (!ok) error = L"the ZIP did not unpack into a usable mnpdf.exe";
+                ok = done[0] && done[1];
+                if (!ok) error = L"the ZIP did not unpack into a usable mnpdf.exe and pdfium.dll";
             } else {
                 error = L"the ZIP could not be unpacked";
             }
@@ -2414,14 +2431,19 @@ static bool swapFileIn(const std::wstring& staged, const std::wstring& target, s
 // can delete because the old process is gone by then
 static void cleanupUpdateLeftovers() {
     std::wstring dir = moduleDirectory();
-    const wchar_t* names[] = { L"mnpdf.exe.old", L"pdfium.dll.old" };
+    const wchar_t* names[] = { L"mnpdf.exe", L"pdfium.dll" };
+    // A .old whose live file is gone is not garbage: a swap that was interrupted
+    // between the rename and the copy left the last working copy under that name,
+    // and deleting it would leave no mnpdf at all.
     // The copy that restarted this one may still be shutting down with its old
     // files still mapped, so deletion is retried for a few seconds before the
     // leftovers are left for the next start.
     for (int pass = 0; pass < 30; pass++) {
         bool any = false;
         for (const wchar_t* n : names) {
-            std::wstring p = dir + L"\\" + n;
+            std::wstring live = dir + L"\\" + n;
+            std::wstring p = live + L".old";
+            if (GetFileAttributesW(live.c_str()) == INVALID_FILE_ATTRIBUTES) continue;
             if (GetFileAttributesW(p.c_str()) != INVALID_FILE_ATTRIBUTES
                 && !DeleteFileW(p.c_str())) any = true;
         }
@@ -2456,11 +2478,24 @@ static void installUpdate(const std::wstring& tag) {
     if (ok) {
         reportUpdateStep(L"Replacing mnpdf in\n" + folder + L" ...", false, false, false);
         const wchar_t* files[] = { L"mnpdf.exe", L"pdfium.dll" };
+        int swapped = 0;
         for (const wchar_t* n : files) {
             std::wstring staged = staging + n;
-            if (GetFileAttributesW(staged.c_str()) == INVALID_FILE_ATTRIBUTES) continue;
+            if (GetFileAttributesW(staged.c_str()) == INVALID_FILE_ATTRIBUTES) {
+                error = L"the release ZIP does not contain " + std::wstring(n);
+                ok = false;
+                break;
+            }
             ok = swapFileIn(staged, folder + L"\\" + n, error);
             if (!ok) break;
+            swapped++;
+        }
+        // the two files are a matched pair, so a swap that stopped halfway puts
+        // the earlier one back before the failure is reported
+        if (!ok) {
+            for (int i = swapped - 1; i >= 0; i--)
+                MoveFileExW((folder + L"\\" + files[i] + L".old").c_str(),
+                            (folder + L"\\" + files[i]).c_str(), MOVEFILE_REPLACE_EXISTING);
         }
     }
     if (ok) {
@@ -2525,8 +2560,7 @@ static LRESULT CALLBACK updateProc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
                                 L"mnpdf update", MB_OK | MB_ICONWARNING);
                     return 0;
                 }
-                closeUpdateDialog();
-                startUpdateInstall(gUpdateTag);
+                startUpdateInstall(gUpdateTag);  // the dialog stays: it carries the progress and the reason
                 return 0;
             }
             gUpdateBusy = true;
@@ -2539,7 +2573,11 @@ static LRESULT CALLBACK updateProc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
             ShellExecuteW(gWnd, L"open", kLatestReleaseUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
             return 0;
         }
-        if (id == kUpdClose) { closeUpdateDialog(); return 0; }
+        if (id == kUpdClose) {
+            if (gUpdateBusy) return 0;
+            closeUpdateDialog();
+            return 0;
+        }
         break;
     }
     case WM_CLOSE:
@@ -2567,14 +2605,12 @@ static void openUpdateDialog() {
         RegisterClassExW(&wc);
         reg = true;
     }
-    RECT wr;
-    GetWindowRect(gWnd, &wr);
     int w = 400, h = 196;
     gUpdateWnd = CreateWindowExW(WS_EX_TOOLWINDOW, L"MNUpdate", L"mnpdf updates",
                                  WS_POPUP | WS_CAPTION | WS_SYSMENU, 0, 0, w, h,
                                  gWnd, nullptr, inst, nullptr);
     if (!gUpdateWnd) return;
-    placeDrawer(gUpdateWnd, w, h);
+    placeBesideReader(gUpdateWnd, w, h, 1);
     ShowWindow(gUpdateWnd, SW_SHOW);
 }
 
@@ -4266,11 +4302,24 @@ static void dropThumb(int i) {
     if (gThumbBmps[i]) { DeleteObject(gThumbBmps[i]); gThumbBmps[i] = nullptr; }
 }
 
-// A drawer hangs off the reader's own rect, and that rect moves: a maximized
-// window leaves no screen beside it, so a drawer placed there is off screen and
-// unreachable while its menu row still reads as open. Both drawers go through
-// here, so a move or a resize lands them on the work area of the monitor the
-// reader is on.
+// A window placed beside the reader hangs off the reader's own rect, and that
+// rect moves: a maximized window leaves no screen beside it, so a window placed
+// there is off screen and unreachable while its menu row still reads as open.
+// Everything placed beside the reader goes through here, so a move or a resize
+// lands it on the work area of the monitor the reader is on.
+static void placeBesideReader(HWND win, int width, int height, int side) {
+    if (!win || !gWnd) return;
+    RECT wr;
+    GetWindowRect(gWnd, &wr);
+    MONITORINFO mi = { sizeof(mi) };
+    if (!GetMonitorInfoW(MonitorFromRect(&wr, MONITOR_DEFAULTTONEAREST), &mi)) return;
+    int x = side ? wr.right + kDrawerGap : wr.left - width - kDrawerGap;
+    SetWindowPos(win, nullptr,
+                 clampBox(x, width, mi.rcWork.left, mi.rcWork.right),
+                 clampBox(wr.top + 40, height, mi.rcWork.top, mi.rcWork.bottom),
+                 width, height, SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
 static void placeDrawer(HWND drawer, int width, int side) {
     if (!drawer || !gWnd) return;
     RECT wr;
@@ -4280,11 +4329,7 @@ static void placeDrawer(HWND drawer, int width, int side) {
     int h = wr.bottom - wr.top - 40;
     if (h > mi.rcWork.bottom - mi.rcWork.top) h = mi.rcWork.bottom - mi.rcWork.top;
     if (h < 200) h = 200;
-    int x = side ? wr.right + kDrawerGap : wr.left - width - kDrawerGap;
-    SetWindowPos(drawer, nullptr,
-                 clampBox(x, width, mi.rcWork.left, mi.rcWork.right),
-                 clampBox(wr.top + 40, h, mi.rcWork.top, mi.rcWork.bottom),
-                 width, h, SWP_NOZORDER | SWP_NOACTIVATE);
+    placeBesideReader(drawer, width, h, side);
 }
 
 static void placeDrawers() {
@@ -5251,6 +5296,9 @@ static LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     }
     case WM_TIMER: onTimer(h, wp); return 0;
     case WM_CLOSE:
+        // quitting while the swap is in flight strands it between the rename and
+        // the copy, so the window stays until the worker reports back
+        if (gUpdateInstallRunning.load()) return 0;
         closeUpdateDialog();                       // an update half-installed is not installed
         if (gEditPin >= 0) commitPinEdit();        // an open pin box saves first
         if (gAutosave) {
@@ -5412,7 +5460,10 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int show) {
     // and title reads work - it is only ever minimized and inactive.
     ShowWindow(gWnd, background ? SW_SHOWMINNOACTIVE
                                 : (gWinMax ? SW_SHOWMAXIMIZED : show));
-    cleanupUpdateLeftovers();                        // a previous update's renamed copies
+    // the sweep retries for seconds against the copy that is still shutting down,
+    // so it runs off the start-up path instead of holding a window whose message
+    // loop has not started yet
+    std::thread([]() { cleanupUpdateLeftovers(); }).detach();   // a previous update's renamed copies
     startUpdateCheck(false);                         // notify only when a newer release exists
     MSG msg;
     for (;;) {

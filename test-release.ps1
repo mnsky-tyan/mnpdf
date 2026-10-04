@@ -12,7 +12,6 @@
 # version contract: bump one without the other and this fails.
 # Control text is read with WM_GETTEXT: cross-process GetWindowTextW answers
 # with the creation text, and both the static and the button change at runtime
-Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
 . "$PSScriptRoot\tests\lib.ps1"   # one definition of the app.txt forge/restore rule
 Add-Type -TypeDefinition @"
 using System;
@@ -66,18 +65,6 @@ function FindDialogExact([int]$ProcId, [string]$Title) {
     $true }
   [void][R]::EnumWindows($cb, [IntPtr]::Zero)
   return $script:fxHit
-}
-
-function DialogBody([IntPtr]$Dlg) {
-  $root = [System.Windows.Automation.AutomationElement]::FromHandle($Dlg)
-  $all = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants,
-                       [System.Windows.Automation.Condition]::TrueCondition)
-  $parts = New-Object System.Collections.Generic.List[string]
-  foreach ($e in $all) {
-    $n = $e.Current.Name
-    if ($n) { [void]$parts.Add($n) }
-  }
-  return ($parts -join "`n")
 }
 
 # close ONLY the process this test launched: a graceful WM_CLOSE so the app's
@@ -238,7 +225,8 @@ try {
           Fail 'an unsaved document is not updated under the user' ("the refusal says: '{0}'" -f $warnBody)
           Write-Output ("  warning text: " + ($warnBody -replace [string][char]10, ' / '))
         }
-        [void][MN]::SendMessageW([R]::GetDlgItem($warn, 2), 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)    # IDOK
+        # the refusal is MB_OK, so it has exactly one button
+        [void][MN]::SendMessageW([R]::GetDlgItem($warn, 1), 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)    # IDOK
       }
       if ((FindDialog $p.Id 'mnpdf updates') -eq [IntPtr]::Zero) {
         Fail 'an unsaved document is not updated under the user' 'the update dialog closed anyway'
