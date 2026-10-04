@@ -284,10 +284,15 @@ try {
       }
       # Only the copy this test installed may be touched: a process is the
       # restarted reader iff its image is the scratch exe. Anything else with
-      # the same name belongs to the user and is never killed.
+      # the same name belongs to the user and is never killed. A process this
+      # user cannot open has no readable image path, so it counts as "not the
+      # scratch copy" - the rule scripts\gate-common.ps1 applies when it filters
+      # leaked instances.
       $scratchExe = Join-Path $root 'app\mnpdf.exe'
-      $newp = @(Get-Process mnpdf -ErrorAction SilentlyContinue |
-        Where-Object { $_.Id -ne $p.Id -and $_.Path -eq $scratchExe })
+      $newp = @(Get-Process mnpdf -ErrorAction SilentlyContinue | Where-Object {
+        if ($_.Id -eq $p.Id) { return $false }
+        try { $_.Path -eq $scratchExe } catch { $false }
+      })
       # the restarted copy sweeps the renamed old files itself; the old process
       # may still be exiting, so the sweep is given the same window it allows
       [void](Await { @(Get-ChildItem (Join-Path $root 'app') -Filter '*.old' -ErrorAction SilentlyContinue).Count -eq 0 } 12000)

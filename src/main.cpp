@@ -2594,11 +2594,10 @@ static LRESULT CALLBACK updateProc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
                                  : c.id == kUpdClose ? L"Close" : L"";
             DWORD style = c.id == 100 ? WS_CHILD | WS_VISIBLE
                                       : WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON;
-            const double k = GetDpiForWindow(w) / 96.0;
-            CreateWindowExW(0, cls, label, style,
-                            (int)(c.x * k), (int)(c.y * k), (int)(c.w * k), (int)(c.h * k),
+            CreateWindowExW(0, cls, label, style, 0, 0, 0, 0,
                             w, (HMENU)(INT_PTR)c.id, inst, nullptr);
         }
+        layoutUpdateDialog(w);                        // the one place a child rect is derived
         updateDialogText(L"Checking GitHub for a newer mnpdf...");
         updateDialogAction();
         return 0;
@@ -2715,7 +2714,14 @@ static void updateDialogResult(const UpdateResult& result, int minutesAgo) {
     updateDialogAction();
 }
 
+// An install owns the dialog for its whole run: the text carries the progress
+// and, when the install fails, the reason. A check answer that lands in that
+// window must not retitle the dialog, re-enable its buttons or forget the tag
+// being installed, so both answer paths step aside while the swap runs.
+static bool updateDialogIsInstallChannel() { return gUpdateInstallRunning.load(); }
+
 static void showUpdateResult(const UpdateResult& result, int minutesAgo = -1) {
+    if (updateDialogIsInstallChannel()) return;
     if (!result.manual && !result.newer && result.ok) return;   // a silent check with nothing to say
     if (!result.manual && !result.ok) return;                   // ...and a silent one that failed
     if (!gUpdateWnd) openUpdateDialog();
@@ -2747,6 +2753,7 @@ static void showPendingUpdateResult() {
 // a click inside the cooldown window is answered from what the last attempt
 // learned, so the user still gets a true answer and no request is spent
 static void reportCachedUpdateResult() {
+    if (updateDialogIsInstallChannel()) return;
     int ago = minutesSinceLastCheck();
     if (ago < 0) ago = 0;
     if (gLastUpdateTag.empty()) {                     // last attempt could not reach GitHub
@@ -5042,7 +5049,15 @@ static void onCommand(HWND h, WPARAM wp) {
     case 118: doSave(); return;
     case 119: doSaveAs(); return;
     case 137: doPrint(); return;
-    case 170: openUpdateDialog(); startUpdateCheck(true); return;
+    case 170: {
+        // the menu runs the same check the dialog's own button runs, so it takes
+        // the dialog busy the same way, for the same reason
+        openUpdateDialog();
+        gUpdateBusy = true;
+        updateDialogAction();
+        startUpdateCheck(true);
+        return;
+    }
     case 130:                                   // add pin at the menu drop point
         if (gMenuPinPtPage >= 0) {
             addPinAt(gMenuPinPtPage, gMenuPinPtX, gMenuPinPtY);
