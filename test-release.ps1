@@ -1,4 +1,4 @@
-# Release-flow check. Three release mistakes this catches:
+# Release-flow check. Four release mistakes this catches:
 #   1. a binary whose self-reported version disagrees with the shipped README
 #      (v2.0.2 shipped old code under the current version and told users they
 #      were up to date - the version claim must match the release contract)
@@ -7,6 +7,9 @@
 #      driven here against a scratch copy, with the ZIP payload served locally
 #      (MNPDF_UPDATE_ZIP) and the target folder pointed at the copy
 #      (MNPDF_UPDATE_DIR), so the machine's real mnpdf is never touched
+#   4. an update that fails for a reason it never states: the same scratch copy
+#      is pointed at a release host nothing answers on, and the dialog has to
+#      name the reason while both files in the folder come back untouched
 # Everything is observed through the app's own update dialog, driven by posted
 # messages. README.txt is the exact file the release ZIP ships, so it is the
 # version contract: bump one without the other and this fails.
@@ -298,6 +301,60 @@ try {
     $env:MNPDF_UPDATE_ZIP = $null; $env:MNPDF_UPDATE_DIR = $null
     $env:APPDATA = $realAppdata; $env:TEMP = $realTemp
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+  }
+
+  # The failure half of the same flow: the payload seam is pointed at a release
+  # host nothing answers on (no listener on loopback https), so the download
+  # never completes. Nothing in the folder may change, and the dialog has to name
+  # the reason - a failure that reports no reason at all says nothing to the user.
+  $netRoot = Join-Path $env:TEMP ('mnpdf-unreachable-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+  foreach ($d in 'app', 'state\mnpdf', 'tmp') { New-Item -ItemType Directory -Force -Path (Join-Path $netRoot $d) | Out-Null }
+  Copy-Item -LiteralPath $exe -Destination (Join-Path $netRoot 'app\mnpdf.exe')
+  Copy-Item -LiteralPath (Join-Path $exeDir 'pdfium.dll') -Destination (Join-Path $netRoot 'app\pdfium.dll')
+  Copy-Item -LiteralPath (Join-Path $repo 'tests\arc.pdf') -Destination (Join-Path $netRoot 'app\a.pdf')
+  $netBefore = @{}
+  foreach ($f in 'mnpdf.exe', 'pdfium.dll') {
+    $netBefore[$f] = (Get-FileHash -LiteralPath (Join-Path $netRoot ('app\' + $f)) -Algorithm SHA256).Hash
+  }
+  $updcheck = [DateTimeOffset]::UtcNow.AddMinutes(-5).ToUnixTimeSeconds()
+  Set-Content -LiteralPath (Join-Path $netRoot 'state\mnpdf\app.txt') `
+    -Value "titlebar=1`nautosave=1`nupdcheck=$updcheck`nupdtag=v9.9.9" -Encoding ASCII
+  $env:MNPDF_UPDATE_ZIP = 'https://127.0.0.1/mnpdf-win-x64-v9.9.9.zip'
+  $env:MNPDF_UPDATE_DIR = Join-Path $netRoot 'app'
+  $netAppdata = $env:APPDATA; $netTemp = $env:TEMP
+  $env:APPDATA = Join-Path $netRoot 'state'; $env:TEMP = Join-Path $netRoot 'tmp'
+  $p = $null
+  try {
+    $p = Start-App (Join-Path $netRoot 'app\mnpdf.exe') (Join-Path $netRoot 'app\a.pdf')
+    [void][MN]::PostMessageW((FindAppWindow $p.Id), 0x0111, [IntPtr]$CMD_CHECK_UPDATES, [IntPtr]::Zero)
+    if (-not (Await { (FindDialog $p.Id 'mnpdf updates') -ne [IntPtr]::Zero } 15000)) {
+      Fail 'an update that cannot reach the release host says why' 'no update dialog in the scratch copy'
+    } else {
+      $dlg = FindDialog $p.Id 'mnpdf updates'
+      [void](Await { (ControlText ([R]::GetDlgItem($dlg, 1))) -eq 'Update to v9.9.9' } 8000)
+      [void][MN]::SendMessageW([R]::GetDlgItem($dlg, 1), 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)
+      [void](Await { (ControlText ([R]::GetDlgItem($dlg, 100))) -match 'did not go through' } 40000)
+      $body = ControlText ([R]::GetDlgItem($dlg, 100))
+      $touched = @()
+      foreach ($f in 'mnpdf.exe', 'pdfium.dll') {
+        if ((Get-FileHash -LiteralPath (Join-Path $netRoot ('app\' + $f)) -Algorithm SHA256).Hash -ne $netBefore[$f]) { $touched += $f }
+      }
+      $left = @(Get-ChildItem (Join-Path $netRoot 'app') -Filter '*.old' -ErrorAction SilentlyContinue).Count
+      if ($body -notmatch '^The update did not go through:\s*\S') {
+        Fail 'an update that cannot reach the release host says why' ("the dialog names no reason: '{0}'" -f $body)
+        Write-Output ("  dialog body: " + ($body -replace [string][char]10, ' / '))
+      } elseif ($touched.Count -or $left -ne 0 -or $p.HasExited) {
+        Fail 'an update that cannot reach the release host says why' `
+          ("changed: {0}; .old left: {1}; app still running: {2}" -f ($touched -join ','), $left, (-not $p.HasExited))
+      } else {
+        Pass 'an update that cannot reach the release host says why'
+      }
+    }
+  } finally {
+    Stop-OwnedApp $p
+    $env:MNPDF_UPDATE_ZIP = $null; $env:MNPDF_UPDATE_DIR = $null
+    $env:APPDATA = $netAppdata; $env:TEMP = $netTemp
+    Remove-Item -LiteralPath $netRoot -Recurse -Force -ErrorAction SilentlyContinue
   }
 } finally {
   Restore-AppPref          # leave the user's update state exactly as we found it, on every path

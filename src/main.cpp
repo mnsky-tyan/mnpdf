@@ -2246,6 +2246,30 @@ static void reportUpdateStep(const std::wstring& text, bool finished, bool ok, b
     if (!PostMessageW(target, WM_MNPDF_UPDATE_STEP, 0, (LPARAM)step)) delete step;
 }
 
+// Why a request never came back. WinHTTP has no WinHttpGetLastError: it leaves
+// the reason in the Win32 last error. The codes a user can act on sit in the
+// WinHTTP range, which carries no system message strings at all, so they are
+// named here; anything else falls back to the system text or the bare number.
+static std::wstring httpFailureText(DWORD code) {
+    switch (code) {
+    case ERROR_WINHTTP_NAME_NOT_RESOLVED: return L"the host name could not be resolved";
+    case ERROR_WINHTTP_CANNOT_CONNECT:     return L"the connection was refused or dropped";
+    case ERROR_WINHTTP_TIMEOUT:            return L"the connection timed out";
+    case ERROR_WINHTTP_SECURE_FAILURE:     return L"the secure connection to the host failed";
+    }
+    wchar_t* buf = nullptr;
+    DWORD n = FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM
+                             | FORMAT_MESSAGE_IGNORE_INSERTS, nullptr, code, 0,
+                             reinterpret_cast<wchar_t*>(&buf), 0, nullptr);
+    std::wstring text;
+    if (n && buf) text.assign(buf, n);
+    if (buf) LocalFree(buf);
+    while (!text.empty() && (text.back() == L'\r' || text.back() == L'\n' || text.back() == L' '))
+        text.pop_back();
+    if (text.empty()) text = L"error " + std::to_wstring(code);
+    return text;
+}
+
 // WinHTTP GET to a file, with progress. Redirects are followed because the release
 // download answers with one (github.com -> objects.githubusercontent.com).
 static bool downloadTo(const std::wstring& url, const std::wstring& path,
@@ -2313,6 +2337,9 @@ static bool downloadTo(const std::wstring& url, const std::wstring& path,
                 error = msg;
                 if (status == 404) error += L" - the release ZIP is not published under that name";
             }
+        } else {
+            // no connect, no request, or no response at all: the transport failed
+            error = L"the release host could not be reached - " + httpFailureText(GetLastError());
         }
         if (request) WinHttpCloseHandle(request);
         if (connect) WinHttpCloseHandle(connect);
