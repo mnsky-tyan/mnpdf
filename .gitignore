@@ -2,3 +2,7 @@ build/
 shot*.png
 AGENTS.md
 .no-mistakes.yaml
+# agent-side notes and research: kept out of the repository on purpose, the
+# reader ships from the root files
+docs/
+research/
