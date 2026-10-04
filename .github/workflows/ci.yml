@@ -16,7 +16,7 @@ jobs:
       # The suites are PowerShell and drive the real app: they need a Windows
       # session, a per-suite APPDATA, and a freshly built binary. scripts/
       # gate-test.sh is the WSL convenience wrapper for local runs; this is the
-      # same seven suites with no WSL in the way.
+      # same eight suites with no WSL in the way.
       - name: Build and run the seven suites
         shell: cmd
         run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test-ci.ps1

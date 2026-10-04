@@ -3857,7 +3857,7 @@ static int thumbListHeight() {
 }
 
 // client y -> page index under it, or -1
-static int thumbAt(int x, int y) {
+static int thumbAt(int y) {
     int cy = 4 - (int)gThumbScroll;
     for (size_t i = 0; i < gThumbHs.size(); i++) {
         if (y >= cy && y < cy + gThumbHs[i]) return (int)i;
@@ -3932,7 +3932,6 @@ static LRESULT CALLBACK thumbProc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
         FillRect(dc, &rc, (HBRUSH)(COLOR_BTNFACE + 1));
         HDC mem = CreateCompatibleDC(dc);
         int cy = 4 - (int)gThumbScroll;
-        HFONT f = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
         SetBkMode(dc, TRANSPARENT);
         for (size_t i = 0; i < gThumbBmps.size(); i++) {
             int th = gThumbHs[i];
@@ -3960,8 +3959,8 @@ static LRESULT CALLBACK thumbProc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
         return 0;
     }
     case WM_LBUTTONDOWN: {
-        int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
-        int idx = thumbAt(x, y);
+        int y = GET_Y_LPARAM(lp);
+        int idx = thumbAt(y);
         if (idx >= 0) {
             gThumbSel = idx;
             openPageAt(idx);

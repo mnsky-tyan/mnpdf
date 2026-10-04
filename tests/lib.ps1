@@ -106,12 +106,12 @@ ${CMD_INSERT_SIG}       = 203   # pick a JPEG, then click the page
 ${CMD_CLEAR_SIGS}       = 204   # drop every stamp from the in-memory doc
 ${CMD_MERGE}            = 205   # add files to the end of this document
 ${CMD_SPLIT}            = 206   # export a page range into a new file
-${CMD_REOPEN_LAST}      = 207   # open the document last.txt names
+${CMD_REOPEN_LAST}      = 207   # open the document this one replaced
 
 # the arc.pdf fixture's page count, read out of the title assertions it feeds
 ${FixturePages} = 13
 
-# ---- PASS/FAIL bookkeeping (one convention for all seven suites) ---------
+# ---- PASS/FAIL bookkeeping (one convention for all eight suites) ---------
 $script:failures = New-Object System.Collections.Generic.List[string]
 
 function Pass([string]$Name) { Write-Output ("PASS {0}" -f $Name) }

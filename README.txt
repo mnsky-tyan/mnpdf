@@ -26,12 +26,17 @@ pin's editor stays inside the window, and clicking anywhere else closes it.
 PAGES
 The right-click menu opens two drawers beside the reader. Thumbnails shows
 a strip of page previews: click one to jump there, Ctrl+Up and Ctrl+Down to
-move the selected page, Delete to remove it, R to turn it. Outline lists the
-document's own bookmarks, indented, and a click goes to the page it names.
+move the selected page, Delete to remove it, R to turn it. Outline panel
+lists the document's own bookmarks, indented, and a click goes to the page
+it names.
 
 Merge PDFs adds other files to the end of the document you are reading.
 Split pages exports a range - 2-5 or 1,3,8 - into a new PDF and leaves the
 original alone.
+
+Reopen last document goes back to the document the current one replaced, so
+opening the wrong file by mistake costs one click to undo. It spans this
+session only.
 
 Insert signature takes a JPEG and asks where to put it: the next click on a
 page drops the stamp there. Clear signatures takes them all away again. A

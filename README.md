@@ -48,7 +48,7 @@ right-click menu; the rotation persists with the document.
 **Page drawer.** *Thumbnails* (right-click menu) opens a strip of page
 previews beside the reader. Click one to jump to that page, `Ctrl+Up` /
 `Ctrl+Down` to move the selected page, `Delete` to remove it, and `R` to
-rotate it. *Outline* opens the document's own bookmarks, indented, and a
+rotate it. *Outline panel* opens the document's own bookmarks, indented, and a
 click goes to the page it names.
 
 **Rearranging and combining.** *Merge PDFs* adds other files to the end of the
@@ -63,6 +63,10 @@ sidecar until then, exactly like a highlight.
 
 **Dark reading.** *Night mode* inverts the page for a dark screen and is
 remembered for the next start.
+
+**Coming back.** *Reopen last document* opens the document the current one
+replaced - the one you had a moment ago - so opening the wrong file by
+mistake costs one click to undo. It spans this session only.
 
 **Advanced.** One more row in the right-click menu opens the heavy options -
 OCR, Word export, in-place text editing, form creation, encryption, tabs. They
@@ -110,9 +114,10 @@ Everything the app remembers is under `%APPDATA%\mnpdf`:
 
 With **autosave** on (the default) edits are written to the sidecar and the
 PDF on disk is left untouched. `Ctrl+S` is the point where the marks move
-*into* the file: the highlights, pins and rotations are written into the PDF
-and the file is reloaded from what was saved. Undo therefore works on your
-session's edits, and the sidecar keeps them recoverable while autosave is on.
+*into* the file: the highlights, pins, signature stamps and rotations are
+written into the PDF and the file is reloaded from what was saved. Undo
+therefore works on your session's edits, and the sidecar keeps them
+recoverable while autosave is on.
 
 ## Building
 
