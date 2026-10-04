@@ -1,4 +1,4 @@
-mnpdf v2.2.0 - Windows x64 portable release
+mnpdf v2.3.0 - Windows x64 portable release
 
 Run mnpdf.exe. Keep pdfium.dll in the same folder.
 
