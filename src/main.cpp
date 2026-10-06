@@ -192,6 +192,16 @@ static bool gNight = false;                      // invert the page for dark rea
 static bool gThumbsOn = false;                   // thumbnails side drawer visible
 static bool gOutlineOn = false;                  // bookmarks side drawer visible
 
+// Several copies of the reader may run at once, one document each, and they
+// would otherwise fight over the two shared files in %APPDATA%\mnpdf: app.txt
+// (preferences and the saved window rect) and last.txt (the document a plain
+// launch reopens). The FIRST process to create a well-known mutex owns those
+// files; later processes read them at startup but never write them. That leaves
+// each window's geometry and preferences intact instead of last-quit-wins, and
+// keeps a second launch from overwriting the document last.txt remembers.
+static bool gPrimaryInstance = true;
+static HANDLE gInstanceMutex = nullptr;
+
 // a signature stamp: a JPEG dropped into the live gDoc as a page object, so it
 // renders, prints and saves through the paths that already exist. The sidecar
 // keeps "sig=page,cx,cy,w,h,path" lines for the file as it is on disk
@@ -2861,14 +2871,19 @@ static void writeSidecarNow() {
         }
         fclose(fp);
     }
-    wchar_t dir[MAX_PATH];
-    appDirW(dir, MAX_PATH);
-    FILE* lfp = _wfopen((std::wstring(dir) + L"\\last.txt").c_str(), L"wb");
-    if (lfp) {
-        std::string u8 = wideToUtf8(gPath);
-        fwrite(u8.data(), 1, u8.size(), lfp);
-        fputc('\n', lfp);
-        fclose(lfp);
+    // last.txt is the document a plain launch reopens. It is shared, so only the
+    // primary instance writes it: a second window on another document must not
+    // change what the next plain launch brings back.
+    if (gPrimaryInstance) {
+        wchar_t dir[MAX_PATH];
+        appDirW(dir, MAX_PATH);
+        FILE* lfp = _wfopen((std::wstring(dir) + L"\\last.txt").c_str(), L"wb");
+        if (lfp) {
+            std::string u8 = wideToUtf8(gPath);
+            fwrite(u8.data(), 1, u8.size(), lfp);
+            fputc('\n', lfp);
+            fclose(lfp);
+        }
     }
 }
 
@@ -2891,6 +2906,11 @@ static void markSave() {
 // WPF_RESTORETOMAXIMIZED, so a window minimized from a maximized one still comes
 // back maximized.
 static void writeAppPref() {
+    // One shared app.txt: preferences and the saved window rect. A secondary
+    // window must not overwrite the primary's geometry or preferences with its
+    // own, so it writes nothing. In-memory preference changes still apply to
+    // this window; they are simply not persisted until this window is primary.
+    if (!gPrimaryInstance) return;
     wchar_t dir[MAX_PATH];
     appDirW(dir, MAX_PATH);
     FILE* fp = _wfopen((std::wstring(dir) + L"\\app.txt").c_str(), L"wb");
@@ -5420,6 +5440,14 @@ static LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
 int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int show) {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
+    // claim the shared-preference role, if no other copy holds it. CreateMutexW
+    // answers ERROR_ALREADY_EXISTS when another process owns the name; the
+    // handle is kept for the whole process lifetime (never CloseHandle'd early)
+    // so the ownership is released exactly when this process exits. A failure to
+    // create at all leaves the box primary, which is the old behaviour.
+    gInstanceMutex = CreateMutexW(nullptr, FALSE, L"Global\\mnpdf.instance");
+    if (gInstanceMutex && GetLastError() == ERROR_ALREADY_EXISTS) gPrimaryInstance = false;
+
     Gdiplus::GdiplusStartupInput gsi;
     gGdiOk = (Gdiplus::GdiplusStartup(&gGdiToken, &gsi, nullptr) == Gdiplus::Ok);   // anti-aliased pin dots
 
@@ -5504,6 +5532,11 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int show) {
     bool opened = false;
     if (argc >= 2) {
         opened = openPath(argv[1]);
+    } else if (!gPrimaryInstance) {
+        // A plain SECOND launch is a deliberate new window: the document the
+        // primary instance already has open is the last thing this window should
+        // show, so it starts empty and offers the open dialog instead.
+        opened = false;
     } else {
         wchar_t dir[MAX_PATH];
         appDirW(dir, MAX_PATH);

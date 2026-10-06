@@ -81,6 +81,13 @@ reader you can copy onto a USB stick.
 clean pages. Annotations, highlights and pins stay in the file and on screen
 and are simply not printed.
 
+**Several windows.** Run `mnpdf.exe` twice and you get two independent
+windows, each reading its own document, so two PDFs can sit side by side. The
+window that started first owns the remembered settings and the document a
+plain launch reopens; later windows read those but never overwrite them. A
+plain second launch starts empty rather than reopening what the first window
+already has.
+
 **The window.** Hide the titlebar and the caption is gone for good - it does
 not come back when another window takes focus. The window can still be moved
 by dragging its top edge, and resized from the left, right and bottom edges
