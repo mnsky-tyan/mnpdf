@@ -23,20 +23,20 @@ Ctrl+Z and Ctrl+Y.
 Annotations never stack on top of each other and never block the page: a
 pin's editor stays inside the window, and clicking anywhere else closes it.
 
-PAGES
-The right-click menu opens two drawers beside the reader. Thumbnails shows
-a strip of page previews: click one to jump there, Ctrl+Up and Ctrl+Down to
-move the selected page, Delete to remove it, R to turn it. Outline panel
-lists the document's own bookmarks, indented, and a click goes to the page
-it names.
+ADVANCED
+Advanced, in the right-click menu, holds everything past plain reading.
+
+The two drawers live there. Thumbnails shows a strip of page previews:
+click one to jump there, Ctrl+Up and Ctrl+Down to move the selected page,
+Delete to remove it, R to turn it. Outline panel lists the document's own
+bookmarks, indented, and a click goes to the page it names.
+
+Night mode inverts the page for a dark screen and comes back that way after
+a restart.
 
 Merge PDFs adds other files to the end of the document you are reading.
 Split pages exports a range - 2-5 or 1,3,8 - into a new PDF and leaves the
 original alone.
-
-Reopen last document goes back to the document the current one replaced, so
-opening the wrong file by mistake costs one click to undo. It spans this
-session only.
 
 Insert signature takes a JPEG and asks where to put it: the next click on a
 page drops the stamp there. Clear signatures takes them all away again. A
@@ -44,13 +44,14 @@ stamp reaches the PDF when you save, and sits in the sidecar until then,
 exactly like a highlight. A signature has to be a JPEG: the picker refuses
 anything else rather than handing it to the image decoder.
 
-Night mode inverts the page for a dark screen and comes back that way after
-a restart.
+Reopen last document goes back to the document the current one replaced, so
+opening the wrong file by mistake costs one click to undo. It spans this
+session only.
 
-Advanced, at the bottom of the right-click menu, lists the heavy options -
-OCR, Word export, editing text in place, form creation, encryption, tabs.
-They are greyed on purpose: they need a different kind of program, and this
-one stays a reader you can copy onto a USB stick.
+Below those, the same menu lists what is still to come - OCR, Word export,
+editing text in place, form creation, encryption, tabs - greyed on purpose:
+they need a different kind of program, and this one stays a reader you can
+copy onto a USB stick.
 
 SAVING
 With autosave on (the default) every change is written to a sidecar file

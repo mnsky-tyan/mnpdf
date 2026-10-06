@@ -47,33 +47,35 @@ operation rather than a loss of information.
 **Pages.** Rotate the current page clockwise or counter-clockwise from the
 right-click menu; the rotation persists with the document.
 
-**Page drawer.** *Thumbnails* (right-click menu) opens a strip of page
-previews beside the reader. Click one to jump to that page, `Ctrl+Up` /
-`Ctrl+Down` to move the selected page, `Delete` to remove it, and `R` to
-rotate it. *Outline panel* opens the document's own bookmarks, indented, and a
-click goes to the page it names.
+**Advanced.** The *Advanced* submenu in the right-click menu holds everything
+past plain reading. The tools that shipped live there, in two groups.
 
-**Rearranging and combining.** *Merge PDFs* adds other files to the end of the
+*Page drawer.* *Thumbnails* opens a strip of page previews beside the reader.
+Click one to jump to that page, `Ctrl+Up` / `Ctrl+Down` to move the selected
+page, `Delete` to remove it, and `R` to rotate it. *Outline panel* opens the
+document's own bookmarks, indented, and a click goes to the page it names.
+
+*Dark reading.* *Night mode* inverts the page for a dark screen and is
+remembered for the next start.
+
+*Rearranging and combining.* *Merge PDFs* adds other files to the end of the
 document you are reading. *Split pages* exports a range - `2-5` or `1,3,8` -
 into a new PDF without touching the original.
 
-**Signing.** *Insert signature* takes a JPEG and asks where to put it; the
+*Signing.* *Insert signature* takes a JPEG and asks where to put it; the
 next click on a page drops the stamp there. A file that is not a JPEG is
 refused rather than decoded. *Clear signatures* takes them all
 away again. A stamp lives in the file once you save, and in the
 sidecar until then, exactly like a highlight.
 
-**Dark reading.** *Night mode* inverts the page for a dark screen and is
-remembered for the next start.
-
-**Coming back.** *Reopen last document* opens the document the current one
+*Coming back.* *Reopen last document* opens the document the current one
 replaced - the one you had a moment ago - so opening the wrong file by
 mistake costs one click to undo. It spans this session only.
 
-**Advanced.** One more row in the right-click menu opens the heavy options -
-OCR, Word export, in-place text editing, form creation, encryption, tabs. They
-are listed and greyed: they need a different kind of program, and this one
-stays a reader you can copy onto a USB stick.
+Below those, the same submenu lists the heavy options still to come - OCR,
+Word export, in-place text editing, form creation, encryption, tabs. They are
+listed and greyed: they need a different kind of program, and this one stays a
+reader you can copy onto a USB stick.
 
 **Printing.** `Ctrl+P` opens the standard Windows print dialog and prints
 clean pages. Annotations, highlights and pins stay in the file and on screen

@@ -4803,10 +4803,26 @@ static void reopenLastDocument() {
 }
 
 // ---- the Advanced cascade --------------------------------------------------
-// Everything that needs more than the small reader's own machinery lives here,
-// greyed out, so the reader can see the shape of it without a second app.
+// Everything past plain reading lives here. Two groups: the document tools and
+// view modes that shipped in the first feature pass (they are reached far less
+// often than open/save/find/zoom, and they were crowding the top level of the
+// menu), and the greyed placeholders for what is still planned. The ids are the
+// protocol the test suites post, so they keep their numbers wherever the rows
+// sit; only the menu tree changed.
 static HMENU advancedMenu() {
     HMENU m = CreatePopupMenu();
+    AppendMenuW(m, gDoc ? MF_STRING | (gThumbsOn ? MF_CHECKED : 0) : MF_GRAYED,
+                202, L"Thumbnails");
+    AppendMenuW(m, gDoc ? MF_STRING | (gOutlineOn ? MF_CHECKED : 0) : MF_GRAYED,
+                201, L"Outline panel");
+    AppendMenuW(m, MF_STRING | (gNight ? MF_CHECKED : 0), 200, L"Night mode");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, gDoc ? MF_STRING : MF_GRAYED, 205, L"Merge PDFs...");
+    AppendMenuW(m, gDoc && gDocPages > 1 ? MF_STRING : MF_GRAYED, 206, L"Split pages...");
+    AppendMenuW(m, gDoc ? MF_STRING : MF_GRAYED, 203, L"Insert signature...");
+    AppendMenuW(m, gSigs.empty() ? MF_GRAYED : MF_STRING, 204, L"Clear signatures");
+    AppendMenuW(m, gDoc ? MF_STRING : MF_GRAYED, 207, L"Reopen last document");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, MF_STRING | MF_GRAYED, 250, L"OCR text layer  (planned)");
     AppendMenuW(m, MF_STRING | MF_GRAYED, 251, L"Export as Word  (planned)");
     AppendMenuW(m, MF_STRING | MF_GRAYED, 252, L"Edit text in place  (planned)");
@@ -4906,17 +4922,6 @@ static void onContextMenu(HWND h, LPARAM lp) {   // right click
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, gDoc ? MF_STRING : MF_GRAYED, 133, L"Rotate clockwise");
     AppendMenuW(menu, gDoc ? MF_STRING : MF_GRAYED, 134, L"Rotate counter-clockwise");
-    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(menu, gDoc ? MF_STRING | (gOutlineOn ? MF_CHECKED : 0) : MF_GRAYED,
-               201, L"Outline panel");
-    AppendMenuW(menu, gDoc ? MF_STRING | (gThumbsOn ? MF_CHECKED : 0) : MF_GRAYED,
-               202, L"Thumbnails");
-    AppendMenuW(menu, MF_STRING | (gNight ? MF_CHECKED : 0), 200, L"Night mode");
-    AppendMenuW(menu, gDoc ? MF_STRING : MF_GRAYED, 203, L"Insert signature...");
-    AppendMenuW(menu, gSigs.empty() ? MF_GRAYED : MF_STRING, 204, L"Clear signatures");
-    AppendMenuW(menu, gDoc ? MF_STRING : MF_GRAYED, 205, L"Merge PDFs...");
-    AppendMenuW(menu, gDoc && gDocPages > 1 ? MF_STRING : MF_GRAYED, 206, L"Split pages...");
-    AppendMenuW(menu, gDoc ? MF_STRING : MF_GRAYED, 207, L"Reopen last document");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_POPUP, (UINT_PTR)advancedMenu(), L"Advanced");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
