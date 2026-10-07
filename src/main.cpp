@@ -1127,6 +1127,7 @@ static void drawPins() {
 }
 
 static int pinAt(int cx, int cy) {
+    if (cy < tabStripH()) return -1;               // the strip is chrome: it is not on the page
     if (!gPrefixPt || !gDocPages) return -1;
     int i = pageAtDocY(cy - docTop());
     if (i < 0) return -1;
@@ -4971,6 +4972,7 @@ static void switchToDoc(int idx) {
     gActiveDoc = idx;
     loadPage(gPageIndex);                        // re-derive the incoming bundle's aliases
     relayoutPages();
+    if (gFitWidth) applyFitWidth();              // a fit-width tab refits to this window
     clampScroll();
     updateTitle();
     refreshDrawers();
@@ -4987,6 +4989,7 @@ static void newTab() {
     gActiveDoc = gDocCount - 1;                  // appended at the end
     loadPage(gPageIndex);
     relayoutPages();
+    if (gFitWidth) applyFitWidth();
     clampScroll();
     updateTitle();
     refreshDrawers();
@@ -5011,6 +5014,7 @@ static void closeTab() {
     delete doomed;
     loadPage(gPageIndex);                        // re-derive the survivor's aliases
     relayoutPages();
+    if (gFitWidth) applyFitWidth();
     clampScroll();
     updateTitle();
     refreshDrawers();
