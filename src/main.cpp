@@ -112,16 +112,16 @@ static bool gVerboseTitle = false;               // MNPDF_VERBOSE: page/zoom/RAM
 // default button is answered - so no activation path stays reachable; an
 // ordinary launch keeps the real box.
 static int messageBox(HWND owner, const wchar_t* text, const wchar_t* caption, UINT flags) {
-    if (mayTakeForeground()) return MessageBoxW(owner, text, caption, flags);
-    // the flag's own default button: Yes for a question, OK for a notice
-    int id = (flags & (MB_YESNO | MB_YESNOCANCEL)) ? IDYES : IDOK;
-    if (gVerboseTitle) {
-        std::wstring line = std::wstring(caption ? caption : L"mnpdf") + L": " + text;
-        for (size_t i = 0; i < line.size(); i++) if (line[i] == L'\n') line[i] = L' ';
-        OutputDebugStringW((line + L" [gate run: no box, answered " +
-                            std::to_wstring(id) + L"]\n").c_str());
-    }
-    return id;
+    // Gate runs keep REAL boxes. The launch seam already makes them safe: the
+    // gate spawns the app through WMI, so the process inherits no right to take
+    // foreground and a box displays and stays readable without ever switching
+    // the active desktop (measured: zero foreground transitions across the full
+    // nine-suite roster with real boxes showing). Suites depend on those boxes:
+    // test-release finds the update refusal by title and text and dismisses it
+    // with a posted click. A suppressed box (answered by the flag's default)
+    // silently broke that contract - it answered "save instead of refusing"
+    // for a dirty quit and hid the update refusal entirely.
+    return MessageBoxW(owner, text, caption, flags);
 }
 static long long gLastUpdateCheck = 0;             // unix seconds of the last GitHub attempt
 static std::wstring gLastUpdateTag;                // tag that attempt found ("" = none succeeded yet)
@@ -3715,9 +3715,10 @@ static void showColorError(HWND box, const wchar_t* text) {
                  L"Type six hex digits, with or without the #:\n\n"
                  L"    #ff4d00\n    ff4d00\n    FF4D00",
                  shown);
-    // In a gate run no box is shown at all, so MB_SETFOREGROUND is only ever
-    // passed on a launch that may take the foreground.
-    messageBox(box, msg, L"mnpdf", MB_OK | MB_ICONWARNING | (UINT)MB_SETFOREGROUND);
+    // MB_SETFOREGROUND is skipped in gate runs: it activates the MessageBox,
+    // and a launch that may not take the foreground must not ask either.
+    messageBox(box, msg, L"mnpdf", MB_OK | MB_ICONWARNING |
+                        (mayTakeForeground() ? (UINT)MB_SETFOREGROUND : 0u));
     gColorErrBusy = false;
     if (mayTakeForeground()) SetForegroundWindow(box);
     SetFocus(box);
