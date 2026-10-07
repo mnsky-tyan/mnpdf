@@ -156,7 +156,7 @@ sets up itself with `VsDevCmd.bat -arch=x64`. Output lands in `build/`.
 
 ## Tests
 
-Eight PowerShell suites drive the real application: they launch the built
+Nine PowerShell suites drive the real application: they launch the built
 binary, send it the same messages a reader's mouse and keyboard generate, and
 assert on the app's own state files, its window, its frame, the pages it
 renders (as per-page raster checksums, so "that page moved" is a fact rather
@@ -164,7 +164,7 @@ than a guess) and, for a custom colour and for night mode, the pixels it
 paints.
 
 ```
-bash scripts/gate-test.sh     # from WSL: builds, then runs all eight suites
+bash scripts/gate-test.sh     # from WSL: builds, then runs all nine suites
 ```
 
 Each suite gets its own `APPDATA` and `TEMP`, so nothing written by one can
@@ -193,7 +193,7 @@ really types into the app's colour box, and a minimised owner can never give
 that popup the keyboard.
 
 On a plain Windows machine - and in CI - there is no `wslpath`, so
-`scripts/test-ci.ps1` is the same build and the same eight suites with no WSL in
+`scripts/test-ci.ps1` is the same build and the same nine suites with no WSL in
 the way. Both runners share one roster (`scripts/suites.txt`), one build recipe
 and one pass/fail rule (`scripts/gate-common.ps1`), so a suite cannot pass in
 WSL and behave differently in CI. It is what `.github/workflows/ci.yml` runs on
@@ -220,7 +220,7 @@ test-*.ps1            feature suites (select-msg, features, suite2,
                       continuous, release, captionless, tab, pageedit, colors)
 test-release.ps1      release contract: version agreement with README.txt, the
                       ZIP file list, the update dialog, a full self-install
-scripts/gate-test.sh  WSL entry point: build and all eight suites
+scripts/gate-test.sh  WSL entry point: build and all nine suites
 scripts/test-ci.ps1   Windows/CI entry point: the same build and suites
 .github/workflows/ci.yml  runs test-ci.ps1 on a Windows runner
 ```

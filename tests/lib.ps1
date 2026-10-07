@@ -112,7 +112,7 @@ ${CMD_REOPEN_LAST}      = 207   # open the document this one replaced
 # the arc.pdf fixture's page count, read out of the title assertions it feeds
 ${FixturePages} = 13
 
-# ---- PASS/FAIL bookkeeping (one convention for all eight suites) ---------
+# ---- PASS/FAIL bookkeeping (one convention for all nine suites) ---------
 $script:failures = New-Object System.Collections.Generic.List[string]
 
 function Pass([string]$Name) { Write-Output ("PASS {0}" -f $Name) }
