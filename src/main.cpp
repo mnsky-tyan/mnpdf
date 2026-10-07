@@ -77,12 +77,30 @@ static std::atomic<bool> gShuttingDown = false;
 // thread-internal and cannot change the active desktop.
 static bool gBackground = false;
 
+// true when the launcher told the app its window will be MOVED to another
+// virtual desktop (MNPDF_WINDOW_DESKTOP set by a windowed gate run). The
+// measured failure: a suite that runs with real foreground - the colours
+// suite removes MNPDF_BACKGROUND so it can type into the app - had its window
+// shown on the working desktop at start-up, and every guarded
+// SetForegroundWindow below (the pin editor, the colour box, the range box)
+// then fired, because gBackground was false. With foreground rights granted
+// by the suite's first posted message, those activations land - the app's
+// window comes to the front on its own desktop and flips the person's view
+// over to it. The rule is the same discipline as gBackground: a window bound
+// for another desktop never takes foreground.
+static bool gPlaced = false;
+
+// Whether this window may take foreground at all. Both gate modes say no:
+// a background launch (MNPDF_BACKGROUND) and a window placed on a chosen
+// virtual desktop (MNPDF_WINDOW_DESKTOP).
+static bool mayTakeForeground() { return !gBackground && !gPlaced; }
+
 // Show a popup window. In gate runs this is SW_SHOWNA: plain SW_SHOW
 // ACTIVATES the popup, and activating a window that lives on another virtual
 // desktop flips the user's entire desktop over to it. SetFocus stays safe - it
 // is thread-internal and never changes the active desktop.
 static void showPopup(HWND h) {
-    ShowWindow(h, gBackground ? SW_SHOWNA : SW_SHOW);
+    ShowWindow(h, mayTakeForeground() ? SW_SHOW : SW_SHOWNA);
 }
 static long long gLastUpdateCheck = 0;             // unix seconds of the last GitHub attempt
 static std::wstring gLastUpdateTag;                // tag that attempt found ("" = none succeeded yet)
@@ -1478,7 +1496,7 @@ static void startPinEdit(int idx, bool isNew) {
     SetWindowTextW(gPinBox, gPins[idx].text.c_str());
     gPinBoxBase = (WNDPROC)SetWindowLongPtrW(gPinBox, GWLP_WNDPROC, (LONG_PTR)pinBoxProc);
     showPopup(gPinBox);
-    if (!gBackground) SetForegroundWindow(gPinBox);
+    if (mayTakeForeground()) SetForegroundWindow(gPinBox);
     SetFocus(gPinBox);
     sizePinBoxToText();                          // an existing note opens at its own size
     SendMessageW(gPinBox, EM_SETSEL, 0, -1);
@@ -2768,7 +2786,7 @@ static LRESULT CALLBACK updateProc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
 }
 
 static void openUpdateDialog() {
-    if (gUpdateWnd) { if (!gBackground) SetForegroundWindow(gUpdateWnd); return; }
+    if (gUpdateWnd) { if (mayTakeForeground()) SetForegroundWindow(gUpdateWnd); return; }
     HINSTANCE inst = (HINSTANCE)GetWindowLongPtrW(gWnd, GWLP_HINSTANCE);
     static bool reg = false;
     if (!reg) {
@@ -3678,9 +3696,9 @@ static void showColorError(HWND box, const wchar_t* text) {
     // user's entire desktop over to it. The box still appears (on the app's
     // desktop) and the suite reads it with plain WM_GETTEXT.
     MessageBoxW(box, msg, L"mnpdf", MB_OK | MB_ICONWARNING |
-                                   (gBackground ? 0u : (UINT)MB_SETFOREGROUND));
+                                   (mayTakeForeground() ? 0u : (UINT)MB_SETFOREGROUND));
     gColorErrBusy = false;
-    if (!gBackground) SetForegroundWindow(box);
+    if (mayTakeForeground()) SetForegroundWindow(box);
     SetFocus(box);
     SendMessageW(box, EM_SETSEL, 0, -1);      // select all: retyping replaces it
 }
@@ -3781,7 +3799,7 @@ static void startColorEntry() {
     gColorBoxBase = (WNDPROC)SetWindowLongPtrW(gColorBox, GWLP_WNDPROC, (LONG_PTR)colorBoxProc);
     showPopup(gColorBox);
     SendMessageW(gColorBox, EM_SETSEL, 1, 1);   // caret just past the '#'
-    if (!gBackground) SetForegroundWindow(gColorBox);
+    if (mayTakeForeground()) SetForegroundWindow(gColorBox);
     SetFocus(gColorBox);
 }
 
@@ -4392,7 +4410,7 @@ static void closeRangePrompt() {
 static LRESULT CALLBACK rangeProc(HWND w, UINT m, WPARAM wp, LPARAM lp);
 
 static void openRangePrompt() {
-    if (gRangeWnd) { if (!gBackground) SetForegroundWindow(gRangeWnd); return; }
+    if (gRangeWnd) { if (mayTakeForeground()) SetForegroundWindow(gRangeWnd); return; }
     HINSTANCE inst = (HINSTANCE)GetWindowLongPtrW(gWnd, GWLP_HINSTANCE);
     static bool reg = false;
     if (!reg) {
@@ -5259,13 +5277,17 @@ static void onContextMenu(HWND h, LPARAM lp) {   // right click
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, 170, L"Check for updates");
     AppendMenuW(menu, MF_STRING, 112, L"Quit");
-    if (gBackground) {
+    if (!mayTakeForeground()) {
         // gate run: this popup is the one window the handler shows, and
         // TrackPopupMenu both appears at the cursor - on the ACTIVE desktop,
         // wherever the person is working - and forces itself foreground, which
         // flips their whole desktop over. Everything above has already set the
         // target state (gMenuHl / gMenuPin / gMenuPinPt), so the suites drive
         // the same command ids with WM_COMMAND and no menu is ever shown.
+        // NB: this guard covers BOTH gate modes - a background launch AND a
+        // window placed on another desktop - because the right-click can also
+        // come from the person working on that other desktop while the run is
+        // going.
         DestroyMenu(menu);
         return;
     }
@@ -5591,6 +5613,13 @@ static LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
             return TRUE;
         }
         break;
+    case WM_MOUSEACTIVATE:
+        // A real click on a window that lives on another desktop (or runs under
+        // the gate) must not activate it: activating is what flips the whole
+        // desktop over. MA_NOACTIVATE declines the activation while keeping
+        // the click itself, so the document still receives it.
+        if (!mayTakeForeground()) return MA_NOACTIVATE;
+        break;
     case WM_MOUSEMOVE: {
         if (!gSelDrag && gEditPin < 0) {           // hover a pin: offer its text
             int p = pinAt(GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
@@ -5828,6 +5857,13 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int show) {
     // computed during them must already see these two
     gBackground = _wgetenv(L"MNPDF_BACKGROUND") != nullptr;
     gVerboseTitle = _wgetenv(L"MNPDF_VERBOSE") != nullptr;   // test-suite opt-in: richer window title
+    // MNPDF_WINDOW_DESKTOP: a windowed gate run moves this window to another
+    // virtual desktop after the launch. The app reads the seam itself rather
+    // than trusting the mover: the same no-foreground discipline as
+    // MNPDF_BACKGROUND has to hold while the window is still on the working
+    // desktop during start-up, and a right-click arriving there must not open
+    // a menu on it either.
+    gPlaced = _wgetenv(L"MNPDF_WINDOW_DESKTOP") != nullptr;
     // MNPDF_BACKGROUND=1: gate/test runs must not steal focus. Mask WS_VISIBLE
     // out of the create style so the first appearance is already minimized
     // and inactive - a later ShowWindow cannot undo an initial flash.
@@ -5866,7 +5902,7 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int show) {
     // already set again). The caption is hidden by WM_NCCALCSIZE below, which
     // gives the client area the whole window so there is nothing left to draw.
     DWORD winStyle = WS_CLIPCHILDREN | WS_OVERLAPPEDWINDOW | WS_VISIBLE;
-    if (gBackground) winStyle &= ~(DWORD)WS_VISIBLE;
+    if (gBackground || gPlaced) winStyle &= ~(DWORD)WS_VISIBLE;
     gWnd = CreateWindowExW(0, L"mnpdf", L"mnpdf", winStyle,
                            startX, startY, startW, startH,
                            nullptr, nullptr, hInst, nullptr);
@@ -5929,7 +5965,7 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int show) {
     // size message, SIZE_MINIMIZED included, and renderPage calls it first.
     // The window still exists: MainWindowHandle resolves, posted messages land,
     // and title reads work - it is only ever minimized and inactive.
-    ShowWindow(gWnd, gBackground ? SW_SHOWMINNOACTIVE
+    ShowWindow(gWnd, (gBackground || gPlaced) ? SW_SHOWMINNOACTIVE
                                 : (gWinMax ? SW_SHOWMAXIMIZED : show));
     // the sweep retries for seconds against the copy that is still shutting down,
     // so it runs off the start-up path instead of holding a window whose message
