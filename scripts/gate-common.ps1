@@ -193,7 +193,7 @@ function Stop-RunnerTree {
   $children = Get-CimInstance Win32_Process -Filter "Name = 'mnpdf.exe'" |
     Where-Object { $_.ExecutablePath -eq $env:MNPDF_GATE_EXE -and
       (($_.ParentProcessId -eq $owned.Id) -or
-       ($before.Count -gt 0 -and ($before -notcontains [int]$_.ProcessId) -and
+       (($before -notcontains [int]$_.ProcessId) -and
         $_.CreationDate.ToUniversalTime().Ticks -ge $owned.Started)) }
   foreach ($child in $children) {
     $app = Get-Process -Id $child.ProcessId -ErrorAction SilentlyContinue

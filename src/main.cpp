@@ -107,10 +107,10 @@ static bool gVerboseTitle = false;               // MNPDF_VERBOSE: page/zoom/RAM
 
 // A modal box is itself an activation path: it makes the owning window the
 // foreground window and flashes its taskbar button, and on a window bound for
-// another desktop it flips the person's whole view over to it. In a gate run no
-// box is shown at all - the message goes to the verbose trace and the flag's own
-// default button is answered - so no activation path stays reachable; an
-// ordinary launch keeps the real box.
+// another desktop it flips the person's whole view over to it. The shipped
+// decision is that every run - a gate run included - keeps the real box, so this
+// wrapper simply delegates to MessageBoxW; the launch seam below, never
+// suppression, is what keeps a gate-run box from flipping the desktop.
 static int messageBox(HWND owner, const wchar_t* text, const wchar_t* caption, UINT flags) {
     // Gate runs keep REAL boxes. The launch seam already makes them safe: the
     // gate spawns the app through WMI, so the process inherits no right to take
