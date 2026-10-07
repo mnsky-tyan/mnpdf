@@ -592,9 +592,17 @@ static int tabStripH() {
     return h < 26 ? 26 : h;
 }
 
+// the strip band is chrome above the document, so the document's viewport is the
+// client below it: layout, the scroll range and every visibility test measure the
+// document from that height, never from the whole client
+static int docViewH() {
+    int h = gClientH - tabStripH();
+    return h > 0 ? h : 0;
+}
+
 static int docTop() {
-    int slack = gClientH - tabStripH() - docHpx();
-    return slack > 0 ? tabStripH() + slack / 2 : -gScrollY;
+    int slack = docViewH() - docHpx();
+    return slack > 0 ? tabStripH() + slack / 2 : tabStripH() - gScrollY;
 }
 
 static int pageVx(int i) { return docLeft() + pageLeftPx(i); }   // viewport x
@@ -603,7 +611,7 @@ static int pageVy(int i) { return docTop() + yTopPx(i); }        // viewport y
 static void clampScroll() {
     if (!gPrefixPt || !gDocPages) { gScrollX = gScrollY = 0; return; }   // no doc yet
     int maxX = docWpx() + 2 * MARGIN - gClientW;
-    int maxY = docHpx() - gClientH;
+    int maxY = docHpx() - docViewH();
     if (maxX < 0) maxX = 0;
     if (maxY < 0) maxY = 0;
     if (gScrollX > maxX) gScrollX = maxX;
@@ -1696,7 +1704,7 @@ static void scrollMatchIntoView() {
     int y0 = yTopPx(pg) + ry0;
     int y1 = yTopPx(pg) + ry1;
     if (y0 < gScrollY) gScrollY = y0 - 8;
-    else if (y1 > gScrollY + gClientH) gScrollY = y1 - gClientH + 8;
+    else if (y1 > gScrollY + docViewH()) gScrollY = y1 - docViewH() + 8;
     clampScroll();
 }
 
@@ -1783,7 +1791,7 @@ static bool loadPage(int index) {
 
 static void ensureActivePage() {
     if (!gDoc || gRestoredPage) return;   // a restored page owns gPageIndex until the user scrolls
-    int cy = gScrollY + gClientH / 2;
+    int cy = gScrollY + docViewH() / 2;
     for (int i = 0; i < gDocPages; i++) {
         if (cy < yTopPx(i) + pageHpx(i)) {
             if (i != gPageIndex) loadPage(i);
@@ -1924,7 +1932,7 @@ static void zoomAt(double factor, int cx, int cy) {
     gZoom = nz;
     double newH = docHpx(), newW = docWpx() + 2 * MARGIN;
     gScrollX = (int)((gScrollX + cx) * newW / oldW) - cx;
-    gScrollY = (int)((gScrollY + cy) * newH / oldH) - cy;
+    gScrollY = (int)((gScrollY + cy - tabStripH()) * newH / oldH) - cy + tabStripH();
     clampScroll();
     markSave();
     renderPage();
