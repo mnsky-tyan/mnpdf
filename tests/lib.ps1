@@ -258,12 +258,12 @@ function Start-App([string]$Exe, [string]$Doc) {
     # Gate runs spawn the app through WMI on purpose. A process created by
     # WmiPrvSE inherits NO right to take foreground, so every activation it
     # attempts - MessageBoxes included - is denied by the system: the box still
-    # displays and is readable, but it can never flip the desktop of the person
-    # using the machine. Start-Process inherits the caller's foreground right
-    # all the way down from the terminal an agent types in, and a gate-run app
-    # that lives on the 'second' desktop then yanked the captain's view to it
-    # on every MessageBox. The environment block is passed explicitly because
-    # WMI children do not inherit the caller's env (APPDATA/TEMP isolation).
+    # displays and is readable, but it can never switch the active desktop.
+    # Start-Process inherits the caller's foreground right, so a gate-run app
+    # that lives on the 'second' desktop could then switch the active desktop to
+    # itself on every MessageBox. The environment block is passed explicitly
+    # because WMI children do not inherit the caller's env (APPDATA/TEMP
+    # isolation).
     $cmd = '"' + $Exe + '"'
     if (-not [string]::IsNullOrEmpty($Doc)) { $cmd += ' "' + $Doc + '"' }
     $envPairs = @(foreach ($e in (Get-ChildItem Env:)) { '{0}={1}' -f $e.Name, $e.Value })

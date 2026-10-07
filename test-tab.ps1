@@ -11,7 +11,7 @@ $env:MNPDF_VERBOSE = "1"   # verbose titles: which document is active is the tit
 # The common file dialogs are real OS windows, not app clients. They are not
 # used here at all: a posted command counts as input to the app, which hands it
 # back the right to take foreground, and a modal dialog opening on the 'second'
-# desktop then pulled the captain's view over to it - measured. The suite opens
+# desktop then switched the active desktop to itself - measured. The suite opens
 # the second document the sanctioned way instead: WM_COPYDATA, the documented
 # cross-process data message, which needs no dialog and touches no foreground
 # rights.

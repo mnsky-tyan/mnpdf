@@ -5024,12 +5024,19 @@ static std::wstring tabLabel(int i) {
     return gDocs[i]->dirty ? L"\x2022 " + name : name;
 }
 
-// tab width: a comfortable fixed size that shrinks to fit when the tabs would
-// otherwise run past the + button
+// tab width: a comfortable fixed size that always shrinks to fit the tabs into
+// the space the + button leaves. Tabs start at kTabX0 and must end before the +
+// button's square (plus kTabGap), whatever the window width and tab count, so
+// the + button never covers a drawn tab.
+static const int kTabX0 = 4;
+static const int kTabGap = 8;
 static int tabW() {
     int tw = MulDiv(160, GetDpiForWindow(gWnd), USER_DEFAULT_SCREEN_DPI);
-    int avail = gClientW - tabStripH() - 8;
-    if (tw * gDocCount > avail && avail / gDocCount > 60) tw = avail / gDocCount;
+    int avail = gClientW - tabStripH() - kTabGap - kTabX0;
+    if (tw * gDocCount > avail) {
+        tw = avail / gDocCount;
+        if (tw < 1) tw = 1;                      // a degenerate client still needs a divisor
+    }
     return tw;
 }
 
@@ -5037,7 +5044,7 @@ static int tabW() {
 static int tabAt(int x, int y) {
     if (y < 0 || y >= tabStripH()) return -1;
     if (x >= gClientW - tabStripH()) return kStripNew;
-    int i = (x - 4) / tabW();
+    int i = (x - kTabX0) / tabW();
     return (i >= 0 && i < gDocCount) ? i : -1;
 }
 
@@ -5068,7 +5075,7 @@ static void drawTabStrip() {
     int tw = tabW();
     SetBkMode(dc, TRANSPARENT);
     for (int i = 0; i < gDocCount; i++) {
-        int x0 = 4 + i * tw, x1 = x0 + tw;
+        int x0 = kTabX0 + i * tw, x1 = x0 + tw;
         SetTextColor(dc, i == gActiveDoc ? RGB(238, 238, 238) : RGB(140, 140, 140));
         if (i == gActiveDoc) {
             RECT tr = { x0, 0, x1, h - 2 };
