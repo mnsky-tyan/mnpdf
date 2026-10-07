@@ -1,4 +1,4 @@
-mnpdf v2.3.0 - Windows x64 portable release
+mnpdf v2.4.0 - Windows x64 portable release
 
 Run mnpdf.exe. Keep pdfium.dll in the same folder.
 
@@ -49,9 +49,9 @@ opening the wrong file by mistake costs one click to undo. It spans this
 session only.
 
 Below those, the same menu lists what is still to come - OCR, Word export,
-editing text in place, form creation, encryption, tabs - greyed on purpose:
-they need a different kind of program, and this one stays a reader you can
-copy onto a USB stick.
+editing text in place, form creation, encryption, side-by-side tabs - greyed on
+purpose: they need a different kind of program, and this one stays a reader you
+can copy onto a USB stick.
 
 SAVING
 With autosave on (the default) every change is written to a sidecar file
@@ -69,6 +69,17 @@ the remembered settings and the document a plain launch reopens; later windows
 read those but never overwrite them, so opening a second document does not
 disturb the first. A plain second launch starts empty rather than reopening
 the document the first window already has.
+
+TABS
+One window can hold several documents as tabs. Ctrl+T opens a new tab, Ctrl+W
+closes the current one, Ctrl+Tab moves to the next, and clicking a tab in the
+strip along the top of the window switches to it - the + at the right end
+opens one too. Each tab keeps its own document, page, zoom, highlights, pins
+and undo history: switch away and back and everything is exactly where you
+left it. Opening a document fills an empty tab, or replaces what the current
+tab is showing, and the last tab you close quits the window, exactly like
+closing it from the taskbar. The strip shows each document's name, with a dot
+in front of it while that tab has unsaved changes.
 
 HIDING THE TITLEBAR
 Hide titlebar removes the caption entirely. The window still moves when you

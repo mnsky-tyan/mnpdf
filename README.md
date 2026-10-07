@@ -73,13 +73,23 @@ replaced - the one you had a moment ago - so opening the wrong file by
 mistake costs one click to undo. It spans this session only.
 
 Below those, the same submenu lists the heavy options still to come - OCR,
-Word export, in-place text editing, form creation, encryption, tabs. They are
-listed and greyed: they need a different kind of program, and this one stays a
-reader you can copy onto a USB stick.
+Word export, in-place text editing, form creation, encryption, side-by-side
+tabs. They are listed and greyed: they need a different kind of program, and
+this one stays a reader you can copy onto a USB stick.
 
 **Printing.** `Ctrl+P` opens the standard Windows print dialog and prints
 clean pages. Annotations, highlights and pins stay in the file and on screen
 and are simply not printed.
+
+**Tabs.** One window can hold several documents at once. `Ctrl+T` opens a new
+tab, `Ctrl+W` closes the current one, `Ctrl+Tab` cycles to the next, and
+clicking a tab in the strip along the top of the window switches to it - the
+`+` at the right end opens one too. Every tab carries its own document, page,
+zoom, marks and undo history, so switching away and back leaves everything
+exactly where it was. A document you open fills an empty tab, or replaces what
+the current tab is showing, and closing the last tab quits like closing the
+window. The strip shows each document's name, with a dot in front while that
+tab has unsaved changes.
 
 **Several windows.** Run `mnpdf.exe` twice and you get two independent
 windows, each reading its own document, so two PDFs can sit side by side. The
@@ -101,6 +111,7 @@ including after quitting while minimised.
 | | |
 |---|---|
 | `Ctrl+O` | open a document |
+| `Ctrl+T`, `Ctrl+W`, `Ctrl+Tab` | new tab, close tab, next tab |
 | `Ctrl+S` / `Ctrl+Shift+S` | save / save as |
 | `Ctrl+P` | print |
 | `Ctrl+F`, `F3`, `Shift+F3` | find, next, previous |
@@ -206,7 +217,7 @@ resource.h
 third_party/pdfium/   PDFium headers, import library, DLL and license
 tests/lib.ps1         shared test harness (window lookup, launch, waiting)
 test-*.ps1            feature suites (select-msg, features, suite2,
-                      continuous, release, captionless, pageedit, colors)
+                      continuous, release, captionless, tab, pageedit, colors)
 test-release.ps1      release contract: version agreement with README.txt, the
                       ZIP file list, the update dialog, a full self-install
 scripts/gate-test.sh  WSL entry point: build and all eight suites
