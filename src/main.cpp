@@ -5615,6 +5615,20 @@ static LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     case WM_KEYDOWN: onKeyDown(h, wp); return 0;
     case WM_CONTEXTMENU: onContextMenu(h, lp); return 0;
     case WM_COMMAND: onCommand(h, wp); return 0;
+    case WM_COPYDATA: {                   // another program asks this window to open a
+        // document: the sanctioned cross-process data message, and the only
+        // path that needs no dialog - a modal one would take foreground back
+        // the moment its owner processes the input that opened it
+        PCOPYDATASTRUCT cd = (PCOPYDATASTRUCT)lp;
+        if (cd && cd->dwData == 1 && cd->cbData >= 2 && cd->lpData) {
+            const wchar_t* p = (const wchar_t*)cd->lpData;
+            int maxc = cd->cbData / (int)sizeof(wchar_t);
+            int n = 0;
+            while (n < maxc && p[n]) n++;
+            openPath(std::wstring(p, n));     // into the ACTIVE tab: an empty New Tab fills
+        }
+        return TRUE;
+    }
     case WM_NCHITTEST: {
         // With the caption hidden the client covers the whole window (see
         // WM_NCCALCSIZE), so DefWindowProc finds no non-client margin anywhere

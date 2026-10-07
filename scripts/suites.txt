@@ -11,5 +11,6 @@ test-suite2
 test-continuous
 test-release
 test-captionless
+test-tab
 test-pageedit
 test-colors*
