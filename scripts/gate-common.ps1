@@ -111,6 +111,15 @@ function Invoke-SuiteRun {
   $self = Get-Process -Id $PID
   @{ Id = $PID; Started = $self.StartTime.ToUniversalTime().Ticks } |
     ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $state 'runner.json')
+  # Tell an agent's window watcher to stand down: a foreground suite owns its
+  # app window on the active desktop and types into it; shunting that window to
+  # another virtual desktop mid-suite would scatter the keystrokes. The watcher
+  # skips every move while this marker is fresh, so a gate run is invisible to
+  # the watcher and the watcher is invisible to the gate. Deleted in finally;
+  # the watcher also ignores a marker older than 30 minutes (a crashed run).
+  $gateActive = Join-Path $env:LOCALAPPDATA 'mnpdf\gate-active'
+  $null = New-Item -ItemType Directory -Force -Path (Split-Path -Parent $gateActive)
+  Set-Content -LiteralPath $gateActive -Value (Get-Date).ToUniversalTime().Ticks
   $restore = @{}
   foreach ($name in 'APPDATA', 'TEMP', 'TMP', 'MNPDF_GATE_EXE', 'MNPDF_GATE_STATE', 'MNPDF_GATE_SUITE', 'MNPDF_BACKGROUND') {
     $restore[$name] = (Get-Item "Env:$name" -ErrorAction SilentlyContinue).Value
@@ -139,6 +148,7 @@ function Invoke-SuiteRun {
   } catch {
     $ok = $false
   } finally {
+    Remove-Item -LiteralPath $gateActive -ErrorAction SilentlyContinue
     foreach ($name in $restore.Keys) {
       if ($null -ne $restore[$name]) { Set-Item -Path "Env:$name" -Value $restore[$name] }
       else { Remove-Item "Env:$name" -ErrorAction SilentlyContinue }
