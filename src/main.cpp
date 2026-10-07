@@ -141,6 +141,12 @@ struct Doc {
   double zoom = 1.0;              // device px per point
   int scrollX = 0, scrollY = 0;   // document-pixel scroll offset
   bool fitWidth = false;          // zoom tracks the window width
+  void release() {                          // frees the per-page arrays a document owns
+      delete[] pageW; pageW = nullptr;
+      delete[] pageH; pageH = nullptr;
+      delete[] prefixPt; prefixPt = nullptr;
+      delete[] rot; rot = nullptr;
+  }
   std::vector<Tomb> tomb;         // marks lifted from the PDF on open: theirs belong to
                                   // the file; tombstones keep a deleted baked mark
                                   // deleted across quit-without-save
@@ -496,6 +502,10 @@ static int gClientW = 0, gClientH = 0;
 
 static void renderPage();
 static void updateTitle();
+// the tab strip is chrome, so it paints even with no document open (4b)
+static int tabStripH();
+static void drawTabStrip();
+static void drawEmptyTabHint();
 static bool loadPage(int index);
 
 static double clampZoom(double z) { return z < 0.25 ? 0.25 : (z > 8.0 ? 8.0 : z); }
@@ -537,9 +547,14 @@ static int docLeft() {
     return slack > 0 ? slack / 2 : -gScrollX;
 }
 
+static int tabStripH() {
+    int h = MulDiv(30, GetDpiForWindow(gWnd), USER_DEFAULT_SCREEN_DPI);
+    return h < 26 ? 26 : h;
+}
+
 static int docTop() {
-    int slack = gClientH - docHpx();
-    return slack > 0 ? slack / 2 : -gScrollY;
+    int slack = gClientH - tabStripH() - docHpx();
+    return slack > 0 ? tabStripH() + slack / 2 : -gScrollY;
 }
 
 static int pageVx(int i) { return docLeft() + pageLeftPx(i); }   // viewport x
@@ -1676,8 +1691,8 @@ static void toggleSearch(bool show) {
 static void placeSearchBar() {
     if (!gSearchBox) return;
     int x = clientW() - 260 - 12;
-    MoveWindow(gSearchBox, x, 10, 260, 26, TRUE);
-    if (gMatchLabel) MoveWindow(gMatchLabel, x - 66, 10, 62, 26, TRUE);
+    MoveWindow(gSearchBox, x, tabStripH() + 2, 260, 26, TRUE);   // below the strip
+    if (gMatchLabel) MoveWindow(gMatchLabel, x - 66, tabStripH() + 2, 62, 26, TRUE);
 }
 
 static LRESULT CALLBACK editProc(HWND e, UINT m, WPARAM wp, LPARAM lp) {
@@ -1764,7 +1779,14 @@ static void rebuildSurface() {
 
 static void renderPage() {
     updateTitle();   // first: the title must survive the early returns below
-    if (!gPdfBitmap || !gDoc) return;
+    if (!gPdfBitmap) return;
+    if (!gDoc) {                                 // an empty tab: chrome only
+        FPDFBitmap_FillRect(gPdfBitmap, 0, 0, gClientW, gClientH, 0xFF202020);   // letterbox
+        drawTabStrip();
+        drawEmptyTabHint();
+        InvalidateRect(gWnd, nullptr, FALSE);
+        return;
+    }
     FPDFBitmap_FillRect(gPdfBitmap, 0, 0, gClientW, gClientH, 0xFF202020);   // letterbox
     int top = gScrollY, bottom = gScrollY + gClientH;
     // render every page intersecting the viewport; only handles for pages in
@@ -1796,6 +1818,7 @@ static void renderPage() {
     drawPins();
     drawMatches();
     drawSelection();
+    drawTabStrip();                             // chrome last, over the document
     if (gEditPin >= 0 && gPinBox) sizePinBoxToText();   // a refit must not strand the editor
     if (gNight && gPdfBitmap) {                      // last, so marks are re-coloured too
         // the paper inverts, not the surround: the letterbox is already the
@@ -4905,6 +4928,165 @@ static void reopenLastDocument() {
     openPath(want);
 }
 
+// ---- tabs: several documents, one active ----------------------------------
+// Settle what belongs to the OUTGOING document before another takes over:
+// an open pin box saves, a placement dies, search stops, the drag releases.
+static void settleActiveDoc() {
+    if (gEditPin >= 0) commitPinEdit();          // an open pin box saves first
+    hidePinTip(gWnd);
+    if (!gSigPlacing.empty()) gSigPlacing.clear();   // a half-finished placement dies here
+    gSelDrag = false;
+    if (GetCapture() == gWnd) ReleaseCapture();
+    if (gSearchOpen) toggleSearch(false);        // matches belong to the outgoing document
+    clearSelection();                            // the incoming one owns its own
+}
+
+static void switchToDoc(int idx) {
+    if (idx < 0 || idx >= gDocCount || idx == gActiveDoc) return;
+    settleActiveDoc();
+    flushPageCache();                            // the outgoing bundle takes its pages with it
+    gActiveDoc = idx;
+    relayoutPages();
+    clampScroll();
+    updateTitle();
+    refreshDrawers();
+    placeDrawers();
+    renderPage();
+}
+
+static void newTab() {
+    settleActiveDoc();
+    if (gDocCount >= kMaxTabs) return;
+    gDocs[gDocCount] = new Doc();
+    gDocCount++;
+    gActiveDoc = gDocCount - 1;                  // appended at the end
+    flushPageCache();
+    relayoutPages();
+    clampScroll();
+    updateTitle();
+    refreshDrawers();
+    placeDrawers();
+    renderPage();
+}
+
+static void closeTab() {
+    if (gDocCount <= 1) {                        // the last tab: closing it quits
+        PostMessageW(gWnd, WM_CLOSE, 0, 0);
+        return;
+    }
+    settleActiveDoc();
+    flushPageCache();                            // cached pages belong to this bundle
+    Doc* doomed = gViewTab;
+    gDocs[gActiveDoc] = gDocs[gDocCount - 1];    // the last tab fills the slot
+    gDocs[gDocCount - 1] = nullptr;
+    gDocCount--;
+    if (gActiveDoc >= gDocCount) gActiveDoc = gDocCount - 1;
+    if (doomed->doc) FPDF_CloseDocument(doomed->doc);
+    doomed->release();
+    delete doomed;
+    relayoutPages();
+    clampScroll();
+    updateTitle();
+    refreshDrawers();
+    placeDrawers();
+    renderPage();
+}
+
+// ---- the strip: labels, hit-testing, painting --------------------------------
+#define kStripNew (-2)                           // the + button at the strip's right end
+
+// a tab's label: the file name, a dirty dot for unsaved marks, "New tab" while
+// the bundle holds no document yet
+static std::wstring tabLabel(int i) {
+    const std::wstring& p = gDocs[i]->path;
+    if (p.empty()) return L"New tab";
+    size_t slash = p.find_last_of(L"\\/");
+    std::wstring name = p.substr(slash == std::wstring::npos ? 0 : slash + 1);
+    return gDocs[i]->dirty ? L"\x2022 " + name : name;
+}
+
+// tab width: a comfortable fixed size that shrinks to fit when the tabs would
+// otherwise run past the + button
+static int tabW() {
+    int tw = MulDiv(160, GetDpiForWindow(gWnd), USER_DEFAULT_SCREEN_DPI);
+    int avail = gClientW - tabStripH() - 8;
+    if (tw * gDocCount > avail && avail / gDocCount > 60) tw = avail / gDocCount;
+    return tw;
+}
+
+// strip-local point -> tab index, kStripNew for the + button, -1 for nothing
+static int tabAt(int x, int y) {
+    if (y < 0 || y >= tabStripH()) return -1;
+    if (x >= gClientW - tabStripH()) return kStripNew;
+    int i = (x - 4) / tabW();
+    return (i >= 0 && i < gDocCount) ? i : -1;
+}
+
+// the strip is bitmap chrome: dark base, the active tab lifted with a light
+// accent, plus-sign at the right. Ellipsis keeps long names off their neighbours.
+// The strip draws its own greyscale-anti-aliased font: the stock UI font lets
+// GDI lay ClearType subpixel fringes down, and those fringes are coloured - the
+// colours suite's classifier counts the blue ones as highlight pixels.
+static HFONT gStripFont = nullptr;
+static HFONT stripFont() {
+    if (!gStripFont) {
+        LOGFONTW lf = {};
+        lf.lfHeight = -MulDiv(13, GetDpiForWindow(gWnd), USER_DEFAULT_SCREEN_DPI);
+        lf.lfQuality = ANTIALIASED_QUALITY;   // greyscale: no colour fringes
+        wcscpy_s(lf.lfFaceName, L"MS Shell Dlg");
+        gStripFont = CreateFontIndirectW(&lf);
+    }
+    return gStripFont;
+}
+
+static void drawTabStrip() {
+    int h = tabStripH();
+    HDC dc = gMemDC;
+    HFONT old = (HFONT)SelectObject(dc, stripFont());
+    SetDCBrushColor(dc, RGB(32, 32, 32));
+    RECT r = { 0, 0, gClientW, h };
+    FillRect(dc, &r, (HBRUSH)GetStockObject(DC_BRUSH));
+    int tw = tabW();
+    SetBkMode(dc, TRANSPARENT);
+    for (int i = 0; i < gDocCount; i++) {
+        int x0 = 4 + i * tw, x1 = x0 + tw;
+        SetTextColor(dc, i == gActiveDoc ? RGB(238, 238, 238) : RGB(140, 140, 140));
+        if (i == gActiveDoc) {
+            RECT tr = { x0, 0, x1, h - 2 };
+            SetDCBrushColor(dc, RGB(56, 56, 56));
+            FillRect(dc, &tr, (HBRUSH)GetStockObject(DC_BRUSH));
+            RECT ar = { x0, h - 2, x1, h };
+            SetDCBrushColor(dc, RGB(205, 205, 205));   // neutral: the strip must never
+            FillRect(dc, &ar, (HBRUSH)GetStockObject(DC_BRUSH));   // fake a mark colour
+        }
+        RECT tx = { x0 + 10, 0, x1 - 6, h - 2 };
+        std::wstring t = tabLabel(i);
+        DrawTextW(dc, t.c_str(), -1, &tx, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    }
+    int plus = gClientW - h;
+    int cx = plus + h / 2, cy = h / 2, arm = MulDiv(5, GetDpiForWindow(gWnd), USER_DEFAULT_SCREEN_DPI);
+    HPEN pen = CreatePen(PS_SOLID, MulDiv(1, GetDpiForWindow(gWnd), USER_DEFAULT_SCREEN_DPI), RGB(190, 190, 190));
+    HPEN oldp = (HPEN)SelectObject(dc, pen);
+    MoveToEx(dc, cx - arm, cy, nullptr);
+    LineTo(dc, cx + arm, cy);
+    MoveToEx(dc, cx, cy - arm, nullptr);
+    LineTo(dc, cx, cy + arm);
+    SelectObject(dc, oldp);
+    DeleteObject(pen);
+    SelectObject(dc, old);
+}
+
+// the one thing an empty tab tells the reader: how to get a document into it
+static void drawEmptyTabHint() {
+    const wchar_t* msg = L"Open a document with Ctrl+O  \x2022  New tab: Ctrl+T";
+    HFONT old = (HFONT)SelectObject(gMemDC, stripFont());
+    SetBkMode(gMemDC, TRANSPARENT);
+    SetTextColor(gMemDC, RGB(110, 110, 110));
+    RECT r = { 0, tabStripH(), gClientW, gClientH };
+    DrawTextW(gMemDC, msg, -1, &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    SelectObject(gMemDC, old);
+}
+
 // ---- the Advanced cascade --------------------------------------------------
 // Everything past plain reading lives here. Two groups: the document tools and
 // view modes that shipped in the first feature pass (they are reached far less
@@ -4951,6 +5133,10 @@ static void onKeyDown(HWND h, WPARAM wp) {
     else if (wp == '0' && ctrl) fitWidth();
     else if (wp == 'F' && ctrl) toggleSearch(true);
     else if (wp == 'O' && ctrl) openDialog();
+    else if (wp == 'T' && ctrl) newTab();
+    else if (wp == 'W' && ctrl) closeTab();
+    else if (wp == VK_TAB && ctrl)
+        switchToDoc((gActiveDoc + (GetKeyState(VK_SHIFT) & 0x8000 ? gDocCount - 1 : 1)) % gDocCount);
     else if (wp == 'C' && ctrl) copySelection();
     else if (wp == VK_F3 && !gSearchOpen) toggleSearch(true);
     else if (wp == VK_F3) nextMatch((GetKeyState(VK_SHIFT) & 0x8000) ? -1 : 1);
@@ -5009,6 +5195,8 @@ static void onContextMenu(HWND h, LPARAM lp) {   // right click
     }
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, 107, L"Open...\tCtrl+O");
+    AppendMenuW(menu, MF_STRING, 300, L"New Tab\tCtrl+T");
+    AppendMenuW(menu, gDocCount > 1 ? MF_STRING : MF_GRAYED, 301, L"Close Tab\tCtrl+W");
     AppendMenuW(menu, gDoc && gDirty ? MF_STRING : MF_GRAYED, 118, L"Save\tCtrl+S");
     AppendMenuW(menu, gDoc && gDirty ? MF_STRING : MF_GRAYED, 119, L"Save As...\tCtrl+Shift+S");
     AppendMenuW(menu, gDoc ? MF_STRING : MF_GRAYED, 137, L"Print...\tCtrl+P");
@@ -5091,6 +5279,8 @@ static void onCommand(HWND h, WPARAM wp) {
     case 205: if (gDoc) mergeDialog(); return;
     case 206: if (gDoc && gDocPages > 1) openRangePrompt(); return;
     case 207: reopenLastDocument(); return;
+    case 300: newTab(); return;
+    case 301: closeTab(); return;
     case 116:                                   // copy highlight text
         if (gMenuHl >= 0 && gMenuHl < (int)gHls.size()) {
             const Hl& h2 = gHls[gMenuHl];
@@ -5301,6 +5491,13 @@ static LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         return 0;
     }
     case WM_LBUTTONDOWN: {
+        int sx = GET_X_LPARAM(lp), sy = GET_Y_LPARAM(lp);
+        if (sy < tabStripH()) {                  // the strip owns its own clicks:
+            int t = tabAt(sx, sy);              // switch, open a new tab, or eat it
+            if (t == kStripNew) newTab();
+            else if (t >= 0) switchToDoc(t);
+            return 0;
+        }
         if (!gSigPlacing.empty()) {          // the click places the stamp, nothing else
             int hit;
             sigPlacementAt(GET_X_LPARAM(lp), GET_Y_LPARAM(lp), &hit);
