@@ -140,6 +140,7 @@ struct Sig {
 struct Tomb { int kind, page, start, count; double x, y; };   // kind 0 = highlight, 1 = pin
 struct Doc {
   std::wstring path;              // empty until a file is open
+  std::wstring prevPath;         // the document this one replaced: per-tab history
   FPDF_DOCUMENT doc = nullptr;
   FPDF_PAGE page = nullptr;
   FPDF_TEXTPAGE textPage = nullptr;
@@ -202,6 +203,7 @@ static int gActiveDoc = 0;
 #define gViewTab (gDocs[gActiveDoc])
 
 #define gPath     gViewTab->path
+#define gPrevPath gViewTab->prevPath
 #define gDoc      gViewTab->doc
 #define gPage     gViewTab->page
 #define gTextPage gViewTab->textPage
@@ -302,7 +304,6 @@ static bool gTitlebar = true;                    // OS caption strip shown
 static int gWinX = CW_USEDEFAULT, gWinY = CW_USEDEFAULT;   // last placement
 static int gWinW = 1100, gWinH = 800;
 static bool gWinMax = false;                     // was maximized at last quit
-static std::wstring gPrevPath;                  // the document open before this one
 static bool gNight = false;                      // invert the page for dark reading
 static bool gThumbsOn = false;                   // thumbnails side drawer visible
 static bool gOutlineOn = false;                  // bookmarks side drawer visible
@@ -4993,8 +4994,7 @@ static void switchToDoc(int idx) {
     flushPageCache();                            // the outgoing bundle takes its pages with it
     gActiveDoc = idx;
     loadPage(gPageIndex);                        // re-derive the incoming bundle's aliases
-    relayoutPages();
-    if (gFitWidth && applyFitWidth())             // a fit-width tab refits to this window
+    if (gFitWidth && gPageIndex < gDocPages && applyFitWidth())   // a fit-width tab refits to this window
         gScrollY = yTopPx(gPageIndex) - MARGIN;   // the refit rescaled every page: re-anchor
     clampScroll();
     updateTitle();
@@ -5036,8 +5036,7 @@ static void closeTab() {
     doomed->release();
     delete doomed;
     loadPage(gPageIndex);                        // re-derive the survivor's aliases
-    relayoutPages();
-    if (gFitWidth && applyFitWidth())             // a fit-width tab refits to this window
+    if (gFitWidth && gPageIndex < gDocPages && applyFitWidth())   // a fit-width tab refits to this window
         gScrollY = yTopPx(gPageIndex) - MARGIN;   // the refit rescaled every page: re-anchor
     clampScroll();
     updateTitle();

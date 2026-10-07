@@ -32,7 +32,7 @@ flock -n 9 || { printf '%s\n' 'GATE: another runner owns this checkout.' >&2; ex
 export MNPDF_GATE_EXE="${WINPWD}\\build\\mnpdf.exe"
 export MNPDF_GATE_STATE='' MNPDF_GATE_SUITE=''
 export MNPDF_BACKGROUND=1
-export WSLENV="${WSLENV:+${WSLENV}:}MNPDF_GATE_EXE/w:MNPDF_GATE_STATE/w:MNPDF_GATE_SUITE/w:MNPDF_BACKGROUND"
+export WSLENV="${WSLENV:+${WSLENV}:}MNPDF_GATE_EXE/w:MNPDF_GATE_STATE/w:MNPDF_GATE_SUITE/w:MNPDF_BACKGROUND/w:MNPDF_FORCE_BACKGROUND/w"
 # MNPDF_BACKGROUND: the app starts minimized without activating, so gate runs
 # never steal focus. Suites inherit it through the test shell's environment.
 GATE_COMMON="${WINPWD}\\scripts\\gate-common.ps1"
@@ -80,15 +80,25 @@ if ! SH timeout --kill-after=5s 600s "$PS" -NoProfile -NonInteractive -Execution
 fi
 
 [[ -f scripts/suites.txt ]] || { printf '%s\n' 'GATE: scripts/suites.txt is missing.' >&2; exit 1; }
+# MNPDF_SKIP_SUITES: comma-separated suite names dropped from this run's roster.
+# Trimmed the way Read-SuiteRoster trims them for the CI runner, so both entry
+# points run the same list.
+skip=' '
+if [[ -n "${MNPDF_SKIP_SUITES:-}" ]]; then
+  for k in ${MNPDF_SKIP_SUITES//,/ }; do skip="$skip$k "; done
+fi
 suites=()
 foreground=' '
 while IFS= read -r raw || [[ -n "$raw" ]]; do
   line=$(printf '%s' "${raw%%#*}" | tr -d ' \t\r')
   [[ -z "$line" ]] && continue
+  fg=0
   if [[ "$line" == *'*' ]]; then
     line="${line%\*}"
-    foreground="$foreground$line "
+    fg=1
   fi
+  [[ "$skip" == *" $line "* ]] && continue
+  if (( fg )); then foreground="$foreground$line "; fi
   suites+=("$line")
 done < scripts/suites.txt
 ((${#suites[@]})) || { printf '%s\n' 'GATE: no suites in scripts/suites.txt.' >&2; exit 1; }
