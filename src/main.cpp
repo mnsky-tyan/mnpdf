@@ -136,6 +136,7 @@ struct Doc {
   double* prefixPt = nullptr;     // pt y of each page top
   int* rot = nullptr;             // display rotation per page (0..3)
   int docPages = 0;
+  std::vector<double> pageTextPt;    // body text pt per page (0 = unmeasured)
   double maxPageW = 0;            // widest page, points
   double zoom = 1.0;              // device px per point
   int scrollX = 0, scrollY = 0;   // document-pixel scroll offset
@@ -165,8 +166,16 @@ struct Doc {
   int selAnchorPage = -1, selHeadPage = -1;
 };
 using Op = Doc::Op;   // the undo op is part of the bundle; keep the historical name
-static Doc gDocTab0;               // the one document for now
-static Doc* gViewTab = &gDocTab0;
+
+// ---- the open documents: one bundle per tab, one active ----
+// A fixed array of pointers, not a vector: addresses stay stable across a tab
+// being added or closed, so gViewTab (and any walk over gDocs) always point
+// at live bundles.
+static const int kMaxTabs = 16;
+static Doc* gDocs[kMaxTabs] = {};
+static int gDocCount = 1;                        // gDocs[0] is allocated at startup
+static int gActiveDoc = 0;
+#define gViewTab (gDocs[gActiveDoc])
 
 #define gPath     gViewTab->path
 #define gDoc      gViewTab->doc
@@ -188,6 +197,7 @@ static Doc* gViewTab = &gDocTab0;
 #define gSelHead  gViewTab->selHead
 #define gSelAnchorPage gViewTab->selAnchorPage
 #define gSelHeadPage gViewTab->selHeadPage
+#define gPageTextPt gViewTab->pageTextPt
 #define gPageW   gViewTab->pageW
 #define gPageH   gViewTab->pageH
 #define gPrefixPt gViewTab->prefixPt
@@ -559,6 +569,9 @@ static FPDF_PAGE gPcPage[PCACHE];
 static FPDF_TEXTPAGE gPcText[PCACHE];
 static unsigned gPcTick[PCACHE];
 static unsigned gPcClock;
+// which bundle each cached page belongs to: a slot is only a hit for the
+// active document, so a page can never be served to (or outlive) another tab
+static const Doc* gPcOwner[PCACHE] = {};
 
 static void flushPageCache(void) {
     for (int k = 0; k < PCACHE; k++) {
@@ -567,6 +580,7 @@ static void flushPageCache(void) {
         gPcIndex[k] = -1;
         gPcPage[k] = nullptr;
         gPcText[k] = nullptr;
+        gPcOwner[k] = nullptr;                   // a page never outlives its bundle
     }
     gPage = nullptr;                               // these alias cache slots
     gTextPage = nullptr;
@@ -578,7 +592,7 @@ static FPDF_PAGE acquirePage(int i) {
     if (!gDoc || i < 0 || i >= gDocPages) return nullptr;
     int slot = -1, oldest = -1;
     for (int k = 0; k < PCACHE; k++) {
-        if (gPcIndex[k] == i) { gPcTick[k] = ++gPcClock; return gPcPage[k]; }
+        if (gPcIndex[k] == i && gPcOwner[k] == (const Doc*)gViewTab) { gPcTick[k] = ++gPcClock; return gPcPage[k]; }
         if (gPcIndex[k] < 0) { slot = k; break; }
         if (gPcIndex[k] != gPageIndex && (oldest < 0 || gPcTick[k] < gPcTick[oldest])) oldest = k;
     }
@@ -588,6 +602,7 @@ static FPDF_PAGE acquirePage(int i) {
     if (gPcPage[slot]) FPDF_ClosePage(gPcPage[slot]);
     gPcPage[slot] = nullptr;
     gPcIndex[slot] = i;
+    gPcOwner[slot] = (const Doc*)gViewTab;
     gPcPage[slot] = FPDF_LoadPage(gDoc, i);
     if (!gPcPage[slot]) gPcIndex[slot] = -1;       // don't cache a failed load
     gPcTick[slot] = ++gPcClock;
@@ -1142,7 +1157,6 @@ static void hidePinTip(HWND h) {
 // and downwards once it wraps. The text is sized to the page's own body text
 // so a note reads like the document it sits on.
 
-static std::vector<double> gPageTextPt;         // body text pt per page (0 = unmeasured)
 static const int kNoteMaxChars = 4000;           // note text length limit
 static HFONT gNoteFont = nullptr;               // shared by the hover note and editor
 static int gNoteFontPx = 0;                     // px height the shared font was built at
@@ -5532,6 +5546,8 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int show) {
 
     FPDF_LIBRARY_CONFIG cfg = { 2, nullptr, nullptr };
     FPDF_InitLibraryWithConfig(&cfg);
+
+    gDocs[0] = new Doc();                          // the startup tab: the restore below fills it
 
     WNDCLASSEXW wc = { sizeof(wc) };
     wc.style = CS_DBLCLKS;
