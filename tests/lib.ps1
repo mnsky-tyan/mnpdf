@@ -449,6 +449,23 @@ function Assert-NoRunningApp {
 # ---- clipboard (zombie-safe) ----------------------------------------------
 $script:clipOk = $true   # cleared the first time a read hangs; never touch it again
 
+# True when the clipboard both accepts a write and returns it. A hanging read
+# is only one way this box's clipboard refuses to work: measured 2026-08-10,
+# a corpse owner plus a locked session makes OpenClipboard fail FAST instead
+# of hanging, so a copy silently lands nowhere and GetClip answers '' - which
+# read as a real test failure. The write-then-read round trip tells the two
+# apart, and a suite that cannot own the clipboard skips its copy case.
+function Test-ClipboardRoundTrip {
+  $sentinel = 'mnpdf-clip-probe-{0}' -f [Guid]::NewGuid().ToString('n')
+  $tmpW = [System.IO.Path]::GetTempFileName()
+  try {
+    $proc = Start-Process powershell -ArgumentList '-NoProfile','-Command',
+            ("Set-Clipboard -Value '{0}' | Out-File -Encoding unicode '$tmpW'" -f $sentinel) -PassThru -WindowStyle Hidden
+    if (-not $proc.WaitForExit(2000)) { try { $proc.Kill() } catch {}; return $false }
+  } finally { Remove-Item $tmpW -ErrorAction SilentlyContinue }
+  return ((GetClip) -eq $sentinel)
+}
+
 function GetClip {
   # on some boxes the clipboard is held by a corpse and a read hangs forever,
   # so every caller probes through here and the suite degrades to SKIPs after
