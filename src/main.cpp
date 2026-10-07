@@ -1871,15 +1871,16 @@ static void renderPage() {
 }
 
 // zoom mode: fit-width refits on every resize until a manual zoom turns it off
-static void applyFitWidth() {
+static bool applyFitWidth() {
     int cw = clientW() - 2 * MARGIN;
-    if (cw <= 0 || gMaxPageW <= 0) return;
+    if (cw <= 0 || gMaxPageW <= 0) return false;
     double nz = clampZoom(cw / gMaxPageW);
-    if (nz == gZoom) return;                     // same fit, so no page moved
+    if (nz == gZoom) return false;               // same fit, so no page moved
     gZoom = nz;
     // a refit rescales every page, so a scroll anchored to page offsets is now
     // stale: put the restored page back under the viewport top
     if (gRestoredPage) gScrollY = yTopPx(gPageIndex) - MARGIN;
+    return true;
 }
 
 static void fitWidth() {
@@ -3334,14 +3335,17 @@ static bool openPath(const std::wstring& path) {
     // last.txt names the CURRENT document (autosave rewrites it constantly), so
     // "reopen last" cannot read it: the document being left is the previous one
     if (!gPath.empty() && gPath != path) gPrevPath = gPath;
+    // load the new document BEFORE this bundle gives up the old one, so a file
+    // pdfium rejects leaves the open document exactly as it was
+    // pdfium wants UTF-8; Windows gave us UTF-16
+    std::string u8 = wideToUtf8(path);
+    FPDF_DOCUMENT nd = FPDF_LoadDocument(u8.c_str(), nullptr);
+    if (!nd) { MessageBoxW(gWnd, L"Could not open PDF", L"mnpdf", MB_ICONERROR); return false; }
     gTextPage = nullptr;                           // handles live in the cache now
     gPage = nullptr;
     flushPageCache();
-    if (gDoc) FPDF_CloseDocument(gDoc); gDoc = nullptr;
-    // pdfium wants UTF-8; Windows gave us UTF-16
-    std::string u8 = wideToUtf8(path);
-    gDoc = FPDF_LoadDocument(u8.c_str(), nullptr);
-    if (!gDoc) { MessageBoxW(gWnd, L"Could not open PDF", L"mnpdf", MB_ICONERROR); return false; }
+    if (gDoc) FPDF_CloseDocument(gDoc);
+    gDoc = nd;
     gPath = path;
     gPageCount = FPDF_GetPageCount(gDoc);
     gHls.clear();
@@ -3696,7 +3700,7 @@ static void showColorError(HWND box, const wchar_t* text) {
     // user's entire desktop over to it. The box still appears (on the app's
     // desktop) and the suite reads it with plain WM_GETTEXT.
     MessageBoxW(box, msg, L"mnpdf", MB_OK | MB_ICONWARNING |
-                                   (mayTakeForeground() ? 0u : (UINT)MB_SETFOREGROUND));
+                                   (mayTakeForeground() ? (UINT)MB_SETFOREGROUND : 0u));
     gColorErrBusy = false;
     if (mayTakeForeground()) SetForegroundWindow(box);
     SetFocus(box);
@@ -4990,7 +4994,8 @@ static void switchToDoc(int idx) {
     gActiveDoc = idx;
     loadPage(gPageIndex);                        // re-derive the incoming bundle's aliases
     relayoutPages();
-    if (gFitWidth) applyFitWidth();              // a fit-width tab refits to this window
+    if (gFitWidth && applyFitWidth())             // a fit-width tab refits to this window
+        gScrollY = yTopPx(gPageIndex) - MARGIN;   // the refit rescaled every page: re-anchor
     clampScroll();
     updateTitle();
     refreshDrawers();
@@ -5032,7 +5037,8 @@ static void closeTab() {
     delete doomed;
     loadPage(gPageIndex);                        // re-derive the survivor's aliases
     relayoutPages();
-    if (gFitWidth) applyFitWidth();
+    if (gFitWidth && applyFitWidth())             // a fit-width tab refits to this window
+        gScrollY = yTopPx(gPageIndex) - MARGIN;   // the refit rescaled every page: re-anchor
     clampScroll();
     updateTitle();
     refreshDrawers();
@@ -5238,7 +5244,7 @@ static void onContextMenu(HWND h, LPARAM lp) {   // right click
         AppendMenuW(menu, MF_STRING, 135, L"Highlight");           // one click: default color
         AppendMenuW(menu, MF_POPUP, (UINT_PTR)colorSubmenu(gHlDefault, 140, 146, 149), L"Set default color");
         AppendMenuW(menu, MF_STRING, 101, L"Copy\tCtrl+C");
-    } else if (gDoc) {                          // bare page: pin under cursor
+    } else if (gDoc && cpt.y >= tabStripH()) {  // bare page: pin under cursor
         double px, py;
         pagePxToPt(menuPage, cpt.x - docLeft() - pageLeftPx(menuPage),
                    cpt.y - docTop() - yTopPx(menuPage), &px, &py);
@@ -5692,7 +5698,11 @@ static LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
             int maxc = cd->cbData / (int)sizeof(wchar_t);
             int n = 0;
             while (n < maxc && p[n]) n++;
-            openPath(std::wstring(p, n));     // into the ACTIVE tab: an empty New Tab fills
+            std::wstring ask(p, n);
+            // the file dialog refuses a path that is not there; this message has
+            // no dialog, so the path is checked here before it is opened
+            if (GetFileAttributesW(ask.c_str()) != INVALID_FILE_ATTRIBUTES)
+                openPath(ask);                     // into the ACTIVE tab: an empty New Tab fills
         }
         return TRUE;
     }
@@ -5984,7 +5994,13 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int show) {
         }
     }
     flushPageCache();                              // releases gPage/gTextPage too
-    if (gDoc) FPDF_CloseDocument(gDoc);
+    for (int d = 0; d < gDocCount; d++) {          // every bundle, not only the active one
+        if (gDocs[d]->doc) FPDF_CloseDocument(gDocs[d]->doc);
+        gDocs[d]->doc = nullptr;
+        gDocs[d]->release();
+        delete gDocs[d];
+        gDocs[d] = nullptr;
+    }
     FPDF_DestroyLibrary();
     if (gNoteFont) { DeleteObject(gNoteFont); gNoteFont = nullptr; gNoteFontPx = 0; }
     if (gGdiOk) Gdiplus::GdiplusShutdown(gGdiToken);

@@ -168,8 +168,8 @@ function Invoke-SuiteRun {
 }
 
 # End a timed-out or crashed suite's process tree: the test shell recorded in
-# <state>\runner.json, then any app it launched. Parent identity AND exact
-# executable path, never every mnpdf.exe on the box.
+# <state>\runner.json, then any app it launched. Exact executable path and
+# creation time, never every mnpdf.exe on the box.
 function Stop-RunnerTree {
   $record = Join-Path $env:MNPDF_GATE_STATE 'runner.json'
   if (-not (Test-Path -LiteralPath $record)) { exit 0 }
@@ -182,9 +182,12 @@ function Stop-RunnerTree {
       if (-not $runner.WaitForExit(5000)) { throw 'Test shell did not exit' }
     } catch { if (-not $runner.HasExited) { throw } }
   }
+  # A WMI-launched app's parent is WmiPrvSE, not the test shell, so parentage
+  # alone finds nothing: this run's app is the one running from the gate's own
+  # build output that was created after the recorded shell started. The pre-flight
+  # refuses to start while any mnpdf is up, so nothing older can be matched here.
   $children = Get-CimInstance Win32_Process -Filter "Name = 'mnpdf.exe'" |
-    Where-Object { $_.ParentProcessId -eq $owned.Id -and
-      $_.ExecutablePath -eq $env:MNPDF_GATE_EXE -and
+    Where-Object { $_.ExecutablePath -eq $env:MNPDF_GATE_EXE -and
       $_.CreationDate.ToUniversalTime().Ticks -ge $owned.Started }
   foreach ($child in $children) {
     $app = Get-Process -Id $child.ProcessId -ErrorAction SilentlyContinue
