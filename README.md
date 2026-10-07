@@ -94,9 +94,9 @@ tab has unsaved changes.
 **Several windows.** Run `mnpdf.exe` twice and you get two independent
 windows, each reading its own document, so two PDFs can sit side by side. The
 window that started first owns the remembered settings and the document a
-plain launch reopens; later windows read those but never overwrite them. A
-plain second launch starts empty rather than reopening what the first window
-already has.
+plain launch reopens; later windows read those shared settings but start empty
+and write none of them. A plain second launch starts empty rather than
+reopening what the first window already has.
 
 **The window.** Hide the titlebar and the caption is gone for good - it does
 not come back when another window takes focus. The window can still be moved
@@ -168,9 +168,9 @@ bash scripts/gate-test.sh     # from WSL: builds, then runs all nine suites
 ```
 
 Each suite gets its own `APPDATA` and `TEMP`, so nothing written by one can
-reach the next. Nine environment variables are the seams of this setup - six
-read by the app, three by the runner plumbing - and none of them does anything
-unless it is set:
+reach the next. Thirteen environment variables are the seams of this setup -
+six read by the app, seven by the runner plumbing - and none of them does
+anything unless it is set:
 
 | | |
 |---|---|
@@ -183,10 +183,15 @@ unless it is set:
 | `MNPDF_GATE_EXE` | runner: the binary the suites drive, so a suite never hardcodes a path |
 | `MNPDF_GATE_STATE` | runner: the suite's private state directory (`APPDATA`/`TEMP` live under it) |
 | `MNPDF_GATE_SUITE` | runner: which suite script to run |
+| `MNPDF_SKIP_SUITES` | runner: a comma-separated list of suites to drop from the roster for this run, for a suite that is environmentally broken on one machine |
+| `MNPDF_FORCE_BACKGROUND` | runner: present = start every suite's app minimised, the foreground one included, so nothing appears on the desktop someone is using |
+| `MNPDF_WINDOW_DESKTOP` | runner: the 0-based virtual desktop every app window is moved to before any restore or measurement, so a local gate keeps its windows off the desk in use |
+| `MNPDF_VD_DLL` | runner: the `VirtualDesktopAccessor.dll` path the move-to-desktop above needs |
 
-The WSL runner forwards its three through `WSLENV` (`/w`, Windows-side only),
-which is what lets `gate-test.sh` hand each suite its paths without quoting a
-Windows path into a command line.
+The WSL runner forwards its four runner seams (`MNPDF_GATE_EXE`,
+`MNPDF_GATE_STATE`, `MNPDF_GATE_SUITE`, `MNPDF_BACKGROUND`) through `WSLENV`
+(`/w`, Windows-side only), which is what lets `gate-test.sh` hand each suite
+its paths without quoting a Windows path into a command line.
 
 Every suite but `test-colors.ps1` keeps its window minimised: the colour suite
 really types into the app's colour box, and a minimised owner can never give

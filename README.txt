@@ -66,9 +66,9 @@ SEVERAL WINDOWS
 Run mnpdf.exe twice and you get two independent windows, each reading its own
 document, so two PDFs can sit side by side. The window you started first owns
 the remembered settings and the document a plain launch reopens; later windows
-read those but never overwrite them, so opening a second document does not
-disturb the first. A plain second launch starts empty rather than reopening
-the document the first window already has.
+read those shared settings but start empty and write none of them, so opening
+a second document does not disturb the first. A plain second launch starts
+empty rather than reopening the document the first window already has.
 
 TABS
 One window can hold several documents as tabs. Ctrl+T opens a new tab, Ctrl+W

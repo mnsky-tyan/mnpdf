@@ -597,8 +597,10 @@ static void flushPageCache(void) {
         gPcText[k] = nullptr;
         gPcOwner[k] = nullptr;                   // a page never outlives its bundle
     }
-    gPage = nullptr;                               // these alias cache slots
-    gTextPage = nullptr;
+    for (int d = 0; d < gDocCount; d++) {        // every bundle aliased the shared cache
+        gDocs[d]->page = nullptr;
+        gDocs[d]->textPage = nullptr;
+    }
 }
 
 // parsed handle for page i, cached; recency-ordered, evicts the oldest slot
@@ -1592,7 +1594,7 @@ static void drawMatches() {
     for (int m = 0; m < gMatchCount; m++) {
         if (gMatches[m].page != gPageIndex) continue;
         bool active = m == gMatchActive;
-        blendCharRects(gPageIndex, gTextPage, gMatches[m].start, gMatches[m].count,
+        blendCharRects(gPageIndex, textPageOf(gPageIndex), gMatches[m].start, gMatches[m].count,
                        highlightDC(active ? &gHiActive : &gHiMatch,
                                    0, active ? 150 : 208, 255));
     }
@@ -4967,6 +4969,7 @@ static void switchToDoc(int idx) {
     settleActiveDoc();
     flushPageCache();                            // the outgoing bundle takes its pages with it
     gActiveDoc = idx;
+    loadPage(gPageIndex);                        // re-derive the incoming bundle's aliases
     relayoutPages();
     clampScroll();
     updateTitle();
@@ -4976,12 +4979,13 @@ static void switchToDoc(int idx) {
 }
 
 static void newTab() {
-    settleActiveDoc();
     if (gDocCount >= kMaxTabs) return;
+    settleActiveDoc();
+    flushPageCache();
     gDocs[gDocCount] = new Doc();
     gDocCount++;
     gActiveDoc = gDocCount - 1;                  // appended at the end
-    flushPageCache();
+    loadPage(gPageIndex);
     relayoutPages();
     clampScroll();
     updateTitle();
@@ -5005,6 +5009,7 @@ static void closeTab() {
     if (doomed->doc) FPDF_CloseDocument(doomed->doc);
     doomed->release();
     delete doomed;
+    loadPage(gPageIndex);                        // re-derive the survivor's aliases
     relayoutPages();
     clampScroll();
     updateTitle();
