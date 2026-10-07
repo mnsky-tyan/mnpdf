@@ -86,30 +86,31 @@ static void showPopup(HWND h) {
 }
 static long long gLastUpdateCheck = 0;             // unix seconds of the last GitHub attempt
 static std::wstring gLastUpdateTag;                // tag that attempt found ("" = none succeeded yet)
-static std::wstring gPath;
-static FPDF_DOCUMENT gDoc = nullptr;
-static FPDF_PAGE gPage = nullptr;
-static FPDF_TEXTPAGE gTextPage = nullptr;
-static int gPageIndex = 0;
-// true from a sidecar page restore until the user actually scrolls: a restored page is
-// deliberate state, so the viewport-center rule must not second-guess it (see ensureActivePage)
-static bool gRestoredPage = false;
-static int gPageCount = 0;
-static double gPageWpt = 612, gPageHpt = 792;   // current page, points
 static ULONG_PTR gGdiToken = 0;                 // GDI+ startup token
 static bool gGdiOk = false;                     // GDI+ usable: else pin dots fall back to GDI
 static const int MARGIN = 8;
 static const int GAP = 16;                       // px between stacked pages
 
-// ---- per-document view state: the bundle (tab groundwork, step 1) ----
-// Everything that describes how ONE open document is laid out and viewed.
-// Today exactly one bundle exists; the tabs step adds more and switches the
-// active pointer. The historical file-scope names continue below as macros over
-// the active bundle, so every existing use site (the layout helpers, render,
-// input, drawers) keeps reading the same words and gains the indirection for
-// free: when tabs land, switching gViewTab switches the document view without a
-// single call-site change.
-struct DocView {
+// ---- per-document state: the bundle (tab groundwork, steps 1-2) ----
+// Everything that describes ONE open document: its content (document, current
+// page, marks lifted from the file) and its layout/view state. Today exactly
+// one bundle exists; the tabs step adds more and switches the active pointer.
+// The historical file-scope names continue as macros over the active bundle, so
+// every existing use site keeps reading the same words and gains the
+// indirection for free: when tabs land, switching gViewTab switches the
+// document without a single call-site change.
+struct Tomb { int kind, page, start, count; double x, y; };   // kind 0 = highlight, 1 = pin
+struct Doc {
+  std::wstring path;              // empty until a file is open
+  FPDF_DOCUMENT doc = nullptr;
+  FPDF_PAGE page = nullptr;
+  FPDF_TEXTPAGE textPage = nullptr;
+  int pageIndex = 0;
+  int pageCount = 0;
+  double pageWpt = 612, pageHpt = 792;   // current page, points
+  // true from a sidecar page restore until the user actually scrolls: a restored page is
+  // deliberate state, so the viewport-center rule must not second-guess it (see ensureActivePage)
+  bool restoredPage = false;
   double* pageW = nullptr;        // pt width of each page
   double* pageH = nullptr;        // pt height of each page
   double* prefixPt = nullptr;     // pt y of each page top
@@ -119,10 +120,23 @@ struct DocView {
   double zoom = 1.0;              // device px per point
   int scrollX = 0, scrollY = 0;   // document-pixel scroll offset
   bool fitWidth = false;          // zoom tracks the window width
+  std::vector<Tomb> tomb;         // marks lifted from the PDF on open: theirs belong to
+                                  // the file; tombstones keep a deleted baked mark
+                                  // deleted across quit-without-save
 };
-static DocView gDocView0;          // the one document for now
-static DocView* gViewTab = &gDocView0;
+static Doc gDocTab0;               // the one document for now
+static Doc* gViewTab = &gDocTab0;
 
+#define gPath     gViewTab->path
+#define gDoc      gViewTab->doc
+#define gPage     gViewTab->page
+#define gTextPage gViewTab->textPage
+#define gPageIndex gViewTab->pageIndex
+#define gRestoredPage gViewTab->restoredPage
+#define gPageCount gViewTab->pageCount
+#define gPageWpt  gViewTab->pageWpt
+#define gPageHpt  gViewTab->pageHpt
+#define gTomb     gViewTab->tomb
 #define gPageW   gViewTab->pageW
 #define gPageH   gViewTab->pageH
 #define gPrefixPt gViewTab->prefixPt
@@ -160,10 +174,6 @@ static int gLastDblX = 0, gLastDblY = 0;
 struct Hl { int page, start, count, color; bool baked; };
 static std::vector<Hl> gHls;
 static int gHlDefault = 0;                       // default highlight color (0 = yellow)
-// marks lifted from the PDF on open: theirs belong to the file; tombstones keep
-// a deleted baked mark deleted across quit-without-save
-struct Tomb { int kind, page, start, count; double x, y; };   // kind 0 = highlight, 1 = pin
-static std::vector<Tomb> gTomb;
 // one palette serves both mark kinds: built-in colours plus up to three the
 // reader enters as #rrggbb. Red sits last because pins have always been red.
 static const int kPalPreset = 6;
