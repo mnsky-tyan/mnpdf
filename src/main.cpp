@@ -4674,6 +4674,14 @@ static void invalidateThumbDrawer() {
 
 static void refreshThumbDrawer() {
     if (!gThumbWnd) return;
+    if (!gDoc) {
+        HWND dead = gThumbWnd;
+        gThumbsOn = false;
+        gThumbWnd = nullptr;
+        DestroyWindow(dead);
+        gThumbScroll = 0;
+        return;
+    }
     // an edit moves pages under the selection, so the selection is only
     // replaced when the page it named is gone (delete, merge, a new document)
     if (gThumbSel < 0 || gThumbSel >= gDocPages) gThumbSel = gPageIndex;
@@ -4844,6 +4852,13 @@ static void invalidateOutlineDrawer() {
 
 static void refreshOutlineDrawer() {
     if (!gOutlineWnd) return;
+    if (!gDoc) {
+        HWND dead = gOutlineWnd;
+        gOutlineOn = false;
+        gOutlineWnd = nullptr;
+        DestroyWindow(dead);
+        return;
+    }
     buildBmList();
     invalidateOutlineDrawer();
 }
@@ -5094,7 +5109,7 @@ static int tabW() {
 // strip-local point -> tab index, kStripNew for the + button, -1 for nothing
 static int tabAt(int x, int y) {
     if (y < 0 || y >= tabStripH()) return -1;
-    if (x >= gClientW - tabStripH()) return kStripNew;
+    if (x >= gClientW - tabStripH()) return gDocCount < kMaxTabs ? kStripNew : -1;
     int i = (x - kTabX0) / tabW();
     return (i >= 0 && i < gDocCount) ? i : -1;
 }
@@ -5105,14 +5120,17 @@ static int tabAt(int x, int y) {
 // GDI lay ClearType subpixel fringes down, and those fringes are coloured - the
 // colours suite's classifier counts the blue ones as highlight pixels.
 static HFONT gStripFont = nullptr;
+static int gStripFontPx = 0;                     // px height the strip font was built at
 static HFONT stripFont() {
-    if (!gStripFont) {
-        LOGFONTW lf = {};
-        lf.lfHeight = -MulDiv(13, GetDpiForWindow(gWnd), USER_DEFAULT_SCREEN_DPI);
-        lf.lfQuality = ANTIALIASED_QUALITY;   // greyscale: no colour fringes
-        wcscpy_s(lf.lfFaceName, L"MS Shell Dlg");
-        gStripFont = CreateFontIndirectW(&lf);
-    }
+    int px = MulDiv(13, GetDpiForWindow(gWnd), USER_DEFAULT_SCREEN_DPI);
+    if (gStripFont && px == gStripFontPx) return gStripFont;
+    if (gStripFont) DeleteObject(gStripFont);
+    LOGFONTW lf = {};
+    lf.lfHeight = -px;
+    lf.lfQuality = ANTIALIASED_QUALITY;   // greyscale: no colour fringes
+    wcscpy_s(lf.lfFaceName, L"MS Shell Dlg");
+    gStripFont = CreateFontIndirectW(&lf);
+    gStripFontPx = px;
     return gStripFont;
 }
 
@@ -5210,7 +5228,7 @@ static void onKeyDown(HWND h, WPARAM wp) {
     else if (wp == '0' && ctrl) fitWidth();
     else if (wp == 'F' && ctrl) toggleSearch(true);
     else if (wp == 'O' && ctrl) openDialog();
-    else if (wp == 'T' && ctrl) newTab();
+    else if (wp == 'T' && ctrl && gDocCount < kMaxTabs) newTab();
     else if (wp == 'W' && ctrl) closeTab();
     else if (wp == VK_TAB && ctrl)
         switchToDoc((gActiveDoc + (GetKeyState(VK_SHIFT) & 0x8000 ? gDocCount - 1 : 1)) % gDocCount);
@@ -5272,7 +5290,7 @@ static void onContextMenu(HWND h, LPARAM lp) {   // right click
     }
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, 107, L"Open...\tCtrl+O");
-    AppendMenuW(menu, MF_STRING, 300, L"New Tab\tCtrl+T");
+    AppendMenuW(menu, gDocCount < kMaxTabs ? MF_STRING : MF_GRAYED, 300, L"New Tab\tCtrl+T");
     AppendMenuW(menu, gDocCount > 1 ? MF_STRING : MF_GRAYED, 301, L"Close Tab\tCtrl+W");
     AppendMenuW(menu, gDoc && gDirty ? MF_STRING : MF_GRAYED, 118, L"Save\tCtrl+S");
     AppendMenuW(menu, gDoc && gDirty ? MF_STRING : MF_GRAYED, 119, L"Save As...\tCtrl+Shift+S");
@@ -6018,6 +6036,7 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int show) {
         gDocs[d] = nullptr;
     }
     FPDF_DestroyLibrary();
+    if (gStripFont) { DeleteObject(gStripFont); gStripFont = nullptr; }
     if (gNoteFont) { DeleteObject(gNoteFont); gNoteFont = nullptr; gNoteFontPx = 0; }
     if (gGdiOk) Gdiplus::GdiplusShutdown(gGdiToken);
     return 0;

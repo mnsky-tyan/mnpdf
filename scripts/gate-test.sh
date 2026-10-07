@@ -97,7 +97,7 @@ while IFS= read -r raw || [[ -n "$raw" ]]; do
     line="${line%\*}"
     fg=1
   fi
-  [[ "$skip" == *" $line "* ]] && continue
+  [[ "${skip,,}" == *" ${line,,} "* ]] && continue
   if (( fg )); then foreground="$foreground$line "; fi
   suites+=("$line")
 done < scripts/suites.txt
