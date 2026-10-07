@@ -3307,6 +3307,7 @@ static int nearestPalColor(unsigned r, unsigned g, unsigned b) {
 
 static bool openPath(const std::wstring& path) {
     if (gEditPin >= 0) commitPinEdit();            // an open pin box saves first
+    if (gDirty) writeSidecarFor(gViewTab);         // unsaved marks reach their sidecar before this bundle drops them
     // last.txt names the CURRENT document (autosave rewrites it constantly), so
     // "reopen last" cannot read it: the document being left is the previous one
     if (!gPath.empty() && gPath != path) gPrevPath = gPath;
