@@ -128,13 +128,21 @@ function BoxText([IntPtr]$Box) {
 # every visible string inside a dialog body, for the same reason
 function DlgBody([IntPtr]$Dlg) {
   if ($Dlg -eq [IntPtr]::Zero) { return '' }
+  # The dialog's STATIC texts, read with WM_GETTEXT via [MN]::SendText. This
+  # used to go through UI Automation, which returned an empty tree for a dialog
+  # sitting on another virtual desktop (the gate runs every window on 'second');
+  # raw messages do not care which desktop a window lives on.
   try {
-    $el = [System.Windows.Automation.AutomationElement]::FromHandle($Dlg)
-    if (-not $el) { return '' }
-    $all = $el.FindAll([System.Windows.Automation.TreeScope]::Descendants,
-              [System.Windows.Automation.Condition]::TrueCondition)
     $parts = @()
-    foreach ($n in $all) { if ($n.Current.Name) { $parts += $n.Current.Name } }
+    $prev = [IntPtr]::Zero
+    while ($true) {
+      $prev = [MN]::FindWindowExW($Dlg, $prev, 'Static', [IntPtr]::Zero)
+      if ($prev -eq [IntPtr]::Zero) { break }
+      $b = New-Object char[] 4096
+      [void][MN]::SendText($prev, 0x000D, [IntPtr]4095, $b)
+      $t = (-join $b).TrimEnd([char]0)
+      if ($t) { $parts += $t }
+    }
     return ($parts -join "`n")
   } catch { return '' }          # a dialog can be gone by the time it is read
 }

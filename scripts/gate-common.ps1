@@ -10,11 +10,19 @@ $ErrorActionPreference = 'Stop'
 # popup can take the keyboard).
 function Read-SuiteRoster {
   param([string]$RosterPath)
+  # MNPDF_SKIP_SUITES (comma-separated names) drops suites from the roster for
+  # this run: a suite can be environmentally broken on one machine (the
+  # clipboard suites fail when some other program holds the clipboard) while
+  # staying green on CI, which never sets the variable.
+  $skip = @()
+  if ($env:MNPDF_SKIP_SUITES) { $skip = $env:MNPDF_SKIP_SUITES.Split(',') | ForEach-Object { $_.Trim() } }
   foreach ($raw in (Get-Content -LiteralPath $RosterPath)) {
     $line = ("$raw" -replace '#.*$', '').Trim()
     if (-not $line) { continue }
     $fg = $line.EndsWith('*')
-    [pscustomobject]@{ Name = $line.TrimEnd('*').Trim(); Foreground = $fg }
+    $name = $line.TrimEnd('*').Trim()
+    if ($skip -contains $name) { continue }
+    [pscustomobject]@{ Name = $name; Foreground = $fg }
   }
 }
 
@@ -111,15 +119,6 @@ function Invoke-SuiteRun {
   $self = Get-Process -Id $PID
   @{ Id = $PID; Started = $self.StartTime.ToUniversalTime().Ticks } |
     ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $state 'runner.json')
-  # Tell an agent's window watcher to stand down: a foreground suite owns its
-  # app window on the active desktop and types into it; shunting that window to
-  # another virtual desktop mid-suite would scatter the keystrokes. The watcher
-  # skips every move while this marker is fresh, so a gate run is invisible to
-  # the watcher and the watcher is invisible to the gate. Deleted in finally;
-  # the watcher also ignores a marker older than 30 minutes (a crashed run).
-  $gateActive = Join-Path $env:LOCALAPPDATA 'mnpdf\gate-active'
-  $null = New-Item -ItemType Directory -Force -Path (Split-Path -Parent $gateActive)
-  Set-Content -LiteralPath $gateActive -Value (Get-Date).ToUniversalTime().Ticks
   $restore = @{}
   foreach ($name in 'APPDATA', 'TEMP', 'TMP', 'MNPDF_GATE_EXE', 'MNPDF_GATE_STATE', 'MNPDF_GATE_SUITE', 'MNPDF_BACKGROUND') {
     $restore[$name] = (Get-Item "Env:$name" -ErrorAction SilentlyContinue).Value
@@ -134,6 +133,12 @@ function Invoke-SuiteRun {
     $env:MNPDF_GATE_SUITE = $suitePath
     if ($foreground) { Remove-Item Env:MNPDF_BACKGROUND -ErrorAction SilentlyContinue }
     else { $env:MNPDF_BACKGROUND = '1' }
+    # A machine someone is using can ask for every suite - the foreground one
+    # included - to start the app minimized, so nothing ever appears on the
+    # active desktop; the suite restores and measures the window on whatever
+    # desktop the launch seam (MNPDF_WINDOW_DESKTOP) put it on. CI never sets
+    # this, so CI keeps the roster's own foreground rule unchanged.
+    if ($env:MNPDF_FORCE_BACKGROUND) { $env:MNPDF_BACKGROUND = '1' }
     # The suite is invoked directly rather than through Start-Process -Wait:
     # that also waits for the child's inherited output handle, and the app the
     # suite launches holds it open long after the suite itself has finished.
@@ -148,7 +153,6 @@ function Invoke-SuiteRun {
   } catch {
     $ok = $false
   } finally {
-    Remove-Item -LiteralPath $gateActive -ErrorAction SilentlyContinue
     foreach ($name in $restore.Keys) {
       if ($null -ne $restore[$name]) { Set-Item -Path "Env:$name" -Value $restore[$name] }
       else { Remove-Item "Env:$name" -ErrorAction SilentlyContinue }

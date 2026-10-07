@@ -181,6 +181,62 @@ function Resolve-AppExe {
 
 $script:appWaitMs = 20000   # one bound for both launch waits
 
+# ---- local-only seam: land the app window on a chosen virtual desktop ------
+#
+# Set MNPDF_WINDOW_DESKTOP (a 0-based desktop number) and MNPDF_VD_DLL (the
+# VirtualDesktopAccessor.dll path) to have every app window moved to that
+# desktop as part of the launch. This is how a local gate keeps test windows off
+# the desktop someone is using: the move happens here, deterministically, before
+# any restore or measurement - not by a watcher racing the suite. Both variables
+# are unset on CI, where the block below never runs and behaviour is unchanged.
+$script:vdReady = $false
+function Move-AppWindowToDesktop([IntPtr]$Wnd) {
+  if (-not $env:MNPDF_WINDOW_DESKTOP) { return }
+  if (-not $script:vdReady) {
+    $dll = $env:MNPDF_VD_DLL
+    if (-not $dll -or -not (Test-Path $dll)) { return }
+    try { Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class VDM {
+  [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
+  public static extern IntPtr LoadLibraryW(string p);
+  [DllImport("kernel32.dll", CharSet=CharSet.Ansi)]
+  public static extern IntPtr GetProcAddress(IntPtr h, string n);
+  public delegate int D1(IntPtr h);
+  public delegate int D2(IntPtr h, int n);
+  public static IntPtr H;
+  // The delegates live behind real static METHODS: Windows PowerShell 5.1
+  // cannot invoke a delegate-typed static FIELD with [VDM]::Name(...) - it
+  // answers "does not contain a method named" and, under the suite's stop-on-
+  // error preference, that killed suites silently. Same lesson as the watcher.
+  public static D1 pOf;
+  public static D2 pMove;
+  public static bool Bind(string p) {
+    H = LoadLibraryW(p);
+    if (H == IntPtr.Zero) return false;
+    pOf   = (D1)Marshal.GetDelegateForFunctionPointer(GetProcAddress(H, "GetWindowDesktopNumber"), typeof(D1));
+    pMove = (D2)Marshal.GetDelegateForFunctionPointer(GetProcAddress(H, "MoveWindowToDesktopNumber"), typeof(D2));
+    return pOf != null && pMove != null;
+  }
+  public static int DesktopOf(IntPtr h) { return pOf(h); }
+  public static int MoveTo(IntPtr h, int n) { return pMove(h, n); }
+}
+'@ } catch { if (-not [VDM]::pOf) { return } }   # already loaded: reuse it
+    if (-not [VDM]::Bind($dll)) { return }
+    $script:vdReady = $true
+  }
+  # a window created moments ago has no desktop yet (-1): wait out the
+  # assignment, then move and verify, retrying the move itself a few times
+  for ($i = 0; $i -lt 40 -and [VDM]::DesktopOf($Wnd) -lt 0; $i++) { Start-Sleep -Milliseconds 50 }
+  $target = 0
+  if (-not [int]::TryParse($env:MNPDF_WINDOW_DESKTOP, [ref]$target)) { return }
+  for ($i = 0; $i -lt 10 -and [VDM]::DesktopOf($Wnd) -ne $target; $i++) {
+    [void][VDM]::MoveTo($Wnd, $target)
+    Start-Sleep -Milliseconds 60
+  }
+}
+
 # Start the app and hand back its running process with a shown, owned window,
 # without touching activation or the restore state: the wait for the window to
 # be shown has to come first, because the app shows it only after the document
@@ -197,10 +253,42 @@ $script:appWaitMs = 20000   # one bound for both launch waits
 # harmless on a path without spaces, and the app's own CommandLineToArgvW strips
 # them, so argv parsing stays untouched.
 function Start-App([string]$Exe, [string]$Doc) {
-  if ([string]::IsNullOrEmpty($Doc)) { $proc = Start-Process -FilePath $Exe -PassThru }
+  if ($env:MNPDF_WINDOW_DESKTOP) {
+    # Gate runs spawn the app through WMI on purpose. A process created by
+    # WmiPrvSE inherits NO right to take foreground, so every activation it
+    # attempts - MessageBoxes included - is denied by the system: the box still
+    # displays and is readable, but it can never flip the desktop of the person
+    # using the machine. Start-Process inherits the caller's foreground right
+    # all the way down from the terminal an agent types in, and a gate-run app
+    # that lives on the 'second' desktop then yanked the captain's view to it
+    # on every MessageBox. The environment block is passed explicitly because
+    # WMI children do not inherit the caller's env (APPDATA/TEMP isolation).
+    $cmd = '"' + $Exe + '"'
+    if (-not [string]::IsNullOrEmpty($Doc)) { $cmd += ' "' + $Doc + '"' }
+    $envPairs = @(foreach ($e in (Get-ChildItem Env:)) { '{0}={1}' -f $e.Name, $e.Value })
+    # The WMI property is EnvironmentVariables (not Environment - that name
+    # answers "not found" and killed suites before their first output line),
+    # and the embedded startup object only marshals through the classic
+    # ManagementClass.InvokeMethod: Invoke-CimMethod cannot bind it here at all.
+    $startup = ([wmiclass]'Win32_ProcessStartup').CreateInstance()
+    $startup['EnvironmentVariables'] = [string[]]$envPairs
+    $pmc = [wmiclass]'Win32_Process'
+    $in = $pmc.GetMethodParameters('Create')
+    $in['CommandLine'] = $cmd
+    $in['ProcessStartupInformation'] = $startup
+    $r = $pmc.InvokeMethod('Create', $in, $null)
+    if ($r['ReturnValue'] -ne 0) { throw "WMI launch failed ($Exe): $($r['ReturnValue'])" }
+    $proc = $null
+    for ($i = 0; $i -lt 20 -and -not $proc; $i++) {
+      try { $proc = Get-Process -Id $r['ProcessId'] -ErrorAction Stop } catch { Start-Sleep -Milliseconds 50 }
+    }
+    if (-not $proc) { throw "app process vanished right after launch ($Exe)" }
+  }
+  elseif ([string]::IsNullOrEmpty($Doc)) { $proc = Start-Process -FilePath $Exe -PassThru }
   else { $proc = Start-Process -FilePath $Exe -ArgumentList """$Doc""" -PassThru }
   if (-not (Await { (FindAppWindow $proc.Id) -ne [IntPtr]::Zero } $script:appWaitMs)) { throw "no mnpdf app window ($Exe $Doc)" }
   $w = FindAppWindow $proc.Id
+  Move-AppWindowToDesktop $w
   if (-not (Await { [MN]::IsWindowVisible($w) } $script:appWaitMs)) { throw "app window never shown" }
   return $proc
 }
