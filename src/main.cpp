@@ -91,7 +91,27 @@ static bool gGdiOk = false;                     // GDI+ usable: else pin dots fa
 static const int MARGIN = 8;
 static const int GAP = 16;                       // px between stacked pages
 
-// ---- per-document state: the bundle (tab groundwork, steps 1-2) ----
+// ---- marks and their value-based undo ops ----
+// Defined here because the Doc bundle owns collections of them; all plain
+// values (no ids needed; undo re-applies exactly).
+
+// highlights: char ranges per page, rects recomputed at render like selection;
+// persisted in the sidecar until save bakes them into the PDF
+struct Hl { int page, start, count, color; bool baked; };
+
+// pins: sticky notes anchored to a user-space point; rendered as a dot,
+// text edited in the floating editor; baked as real Text annotations on save
+struct Pin { int page; double x, y; std::wstring text; int color; bool baked; };
+
+// signature stamps: a JPEG placed on a page, baked as a real image on save
+struct Sig {
+    int page = 0;
+    double cx = 0, cy = 0;                      // PDF user space, pt, y up, centre
+    double w = 150, h = 60;
+    std::wstring path;
+};
+
+// ---- per-document state: the bundle (tab groundwork, steps 1-3) ----
 // Everything that describes ONE open document: its content (document, current
 // page, marks lifted from the file) and its layout/view state. Today exactly
 // one bundle exists; the tabs step adds more and switches the active pointer.
@@ -123,7 +143,28 @@ struct Doc {
   std::vector<Tomb> tomb;         // marks lifted from the PDF on open: theirs belong to
                                   // the file; tombstones keep a deleted baked mark
                                   // deleted across quit-without-save
+  bool dirty = false;             // unsaved highlights/pins/rotations
+  std::vector<Hl> hls;            // highlights per page
+  std::vector<Pin> pins;          // sticky notes per page
+  std::vector<Sig> sigs;          // signature stamps placed on pages
+  // undo/redo: value-based ops (no ids needed; values re-apply exactly)
+  struct Op {                                // 0 hladd 1 hldel 2 hlrecolor 3 pinadd
+    int kind;                                // 4 pindel 5 pintext 6 rot 7 pinrecolor
+    std::vector<Hl> added, replaced;         // hladd: new segments + overlaps they displaced
+    Hl hlVal = {};                           // hldel / hlrecolor payload
+    int hlFrom = 0, hlTo = 0;                // hlrecolor / pinrecolor colors
+    Pin pinVal = {};                         // pindel / pinadd payload
+    std::wstring textFrom, textTo;           // pintext
+    int pinIdx = -1;                         // pintext target; pinrecolor: the pin undo recoloured
+    int rotPage = 0, rotFrom = 0, rotTo = 0; // rot
+  };
+  std::vector<Op> undo, redo;
+  // selection: (page, char-index) pairs, so a drag can span pages; equal or
+  // negative = none; stays valid across scroll and zoom because it is page-space
+  int selAnchor = -1, selHead = -1;
+  int selAnchorPage = -1, selHeadPage = -1;
 };
+using Op = Doc::Op;   // the undo op is part of the bundle; keep the historical name
 static Doc gDocTab0;               // the one document for now
 static Doc* gViewTab = &gDocTab0;
 
@@ -137,6 +178,16 @@ static Doc* gViewTab = &gDocTab0;
 #define gPageWpt  gViewTab->pageWpt
 #define gPageHpt  gViewTab->pageHpt
 #define gTomb     gViewTab->tomb
+#define gHls      gViewTab->hls
+#define gPins     gViewTab->pins
+#define gSigs     gViewTab->sigs
+#define gUndo     gViewTab->undo
+#define gRedo     gViewTab->redo
+#define gDirty    gViewTab->dirty
+#define gSelAnchor gViewTab->selAnchor
+#define gSelHead  gViewTab->selHead
+#define gSelAnchorPage gViewTab->selAnchorPage
+#define gSelHeadPage gViewTab->selHeadPage
 #define gPageW   gViewTab->pageW
 #define gPageH   gViewTab->pageH
 #define gPrefixPt gViewTab->prefixPt
@@ -148,16 +199,9 @@ static Doc* gViewTab = &gDocTab0;
 #define gScrollY gViewTab->scrollY
 #define gFitWidth gViewTab->fitWidth
 
-static bool gDirty = false;                      // unsaved highlights/pins/rotations
-
-// ---- undo/redo: value-based ops (no ids needed; values re-apply exactly) ----
-struct Hl;
-struct Pin;
-
-// selection: (page, char-index) pairs, so a drag can span pages; equal or
-// negative = none; stays valid across scroll and zoom because it is page-space
-static int gSelAnchor = -1, gSelHead = -1;
-static int gSelAnchorPage = -1, gSelHeadPage = -1;
+static int gHlDefault = 0;                       // default highlight color (0 = yellow)
+// transient context-menu targeting and drag state: they always act on the
+// ACTIVE document, so they stay per-window rather than per-document
 static int gMenuHl = -1;                         // highlight the context menu targets
 static int gMenuPin = -1;                        // pin the context menu targets
 static int gMenuRotPage = -1;                    // page the context menu targets (rotate)
@@ -168,12 +212,6 @@ static bool gSelDrag = false;                    // left button held with a live
 static bool gLastWasDbl = false;                 // for triple-click line select
 static DWORD gLastDblTime = 0;
 static int gLastDblX = 0, gLastDblY = 0;
-
-// highlights: char ranges per page, rects recomputed at render like selection;
-// persisted in the sidecar until save bakes them into the PDF
-struct Hl { int page, start, count, color; bool baked; };
-static std::vector<Hl> gHls;
-static int gHlDefault = 0;                       // default highlight color (0 = yellow)
 // one palette serves both mark kinds: built-in colours plus up to three the
 // reader enters as #rrggbb. Red sits last because pins have always been red.
 static const int kPalPreset = 6;
@@ -215,10 +253,6 @@ static std::wstring palLabel(int idx) {
     return L"";
 }
 
-// pins: sticky notes anchored to a user-space point; rendered as a dot,
-// text edited in the floating editor; baked as real Text annotations on save
-struct Pin { int page; double x, y; std::wstring text; int color; bool baked; };
-static std::vector<Pin> gPins;
 static int gEditPin = -1;                        // pin being edited in the floating box
 static std::wstring gPinBefore;                  // text before the edit started
 static bool gPinNew = false;                     // fresh pin with empty text: cancel
@@ -252,27 +286,7 @@ static HANDLE gInstanceMutex = nullptr;
 // a signature stamp: a JPEG dropped into the live gDoc as a page object, so it
 // renders, prints and saves through the paths that already exist. The sidecar
 // keeps "sig=page,cx,cy,w,h,path" lines for the file as it is on disk
-struct Sig {
-    int page = 0;
-    double cx = 0, cy = 0;                      // PDF user space, pt, y up, centre
-    double w = 150, h = 60;
-    std::wstring path;
-};
-static std::vector<Sig> gSigs;
 static std::wstring gSigPlacing;                // a JPEG chosen, waiting for a click
-
-// ---- undo/redo: value-based ops (no ids needed; values re-apply exactly) ----
-struct Op {
-    int kind;                                    // 0 hladd 1 hldel 2 hlrecolor 3 pinadd 4 pindel 5 pintext 6 rot 7 pinrecolor
-    std::vector<Hl> added, replaced;             // hladd: new segments + overlaps they displaced
-    Hl hlVal = {};                               // hldel / hlrecolor payload
-    int hlFrom = 0, hlTo = 0;                    // hlrecolor / pinrecolor colors
-    Pin pinVal = {};                             // pindel / pinadd payload
-    std::wstring textFrom, textTo;               // pintext
-    int pinIdx = -1;                             // pintext target; pinrecolor: the pin undo recoloured
-    int rotPage = 0, rotFrom = 0, rotTo = 0;     // rot
-};
-static std::vector<Op> gUndo, gRedo;
 
 static void markDirty() {
     if (!gDirty) { gDirty = true; }
