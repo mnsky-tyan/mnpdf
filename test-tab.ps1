@@ -50,10 +50,10 @@ function ClickAt([IntPtr]$h, [int]$x, [int]$y) {
   Start-Sleep -Milliseconds 120
 }
 
-# the strip's own geometry, in device px: the app scales it from the window dpi
+# the strip's own geometry, in device px: the app scales both from the window dpi
 function StripMetrics([IntPtr]$h) {
   $dpi = [CD]::GetDpiForWindow($h)
-  $strip = [Math]::Max(26, [int]($dpi * 30 / 96))
+  $strip = TabStripPx $h
   $tw = [int]($dpi * 160 / 96)
   return @{ strip = $strip; tw = $tw }
 }
@@ -153,3 +153,97 @@ for ($i = 0; $i -lt 60 -and -not $exited; $i++) {
 }
 if ($exited) { Pass 'closing the last tab quits' }
 else { Fail 'closing the last tab quits' 'still running'; Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
+
+# ---- what a tab keeps has to survive the tab, not only the window -----------
+# Every case below reads the state back THROUGH THE APP: a tab's zoom is only
+# in that tab's sidecar, so a relaunch that shows the same zoom proves the tab's
+# sidecar was written by whichever path took the tab out of the front - the
+# switch away, or the close. Autosave is switched OFF and confirmed in the
+# app's own preference file, because with the debounce timer armed a flush could
+# write the sidecar no tab path ever touched. Zooming alone is used as the
+# state, deliberately: it marks no document dirty, so no "Save changes?" dialog
+# can open in a backgrounded window and stall the quit.
+function ZoomInTitle([IntPtr]$Wnd) {
+  $t = Title $Wnd
+  if ($t -match '(\d+)%') { return $Matches[1] + '%' } else { return '' }
+}
+function AutosaveOff([IntPtr]$Wnd) {
+  [void][MN]::PostMessageW($Wnd, 0x0111, [IntPtr]$CMD_AUTOSAVE, [IntPtr]::Zero)
+  $pref = Join-Path $env:APPDATA 'mnpdf\app.txt'
+  return (Await { (Get-Content $pref -Raw -ErrorAction SilentlyContinue) -match 'autosave=0' } 8000)
+}
+function QuitApp($P) {
+  $w = FindAppWindow $P.Id
+  if ($w -ne [IntPtr]::Zero) { [void][MN]::PostMessageW($w, 0x0111, [IntPtr]$CMD_QUIT, [IntPtr]::Zero) }
+  for ($i = 0; $i -lt 60 -and -not $P.HasExited; $i++) { Start-Sleep -Milliseconds 200 }
+  return $P.HasExited
+}
+function ZoomTo([IntPtr]$Wnd, [int]$Times, [int]$CmdId) {
+  for ($i = 0; $i -lt $Times; $i++) { [void][MN]::PostMessageW($Wnd, 0x0111, [IntPtr]$CmdId, [IntPtr]::Zero) }
+  Start-Sleep -Seconds 1     # the zoom is applied when the app gets the command,
+                             # and the title only carries the number afterwards
+  return (ZoomInTitle $Wnd)
+}
+
+# --- T10: quitting with another tab in front still keeps this tab's mark ----
+# The reported regression: the debounced flush and the quit both wrote whatever
+# bundle happened to be ACTIVE, so a mark made in a tab that was later left in
+# the background never reached its sidecar.
+Remove-Item "$env:APPDATA\mnpdf\*" -Recurse -Force -ErrorAction SilentlyContinue
+$procA = Launch (Resolve-AppExe) $A
+$wA = FindAppWindow $procA.Id
+if (-not (AwaitTitle $wA "mnpdf 1/$pagesA")) {
+  Fail 'a background tab keeps its own sidecar at quit' "no document window: '$(Title $wA)'"
+} elseif (-not (AutosaveOff $wA)) {
+  Fail 'a background tab keeps its own sidecar at quit' 'autosave stayed on'
+  [void](QuitApp $procA)
+} else {
+  $zA = ZoomTo $wA 2 $CMD_ZOOM_IN
+  [void][MN]::PostMessageW($wA, 0x0111, [IntPtr]300, [IntPtr]::Zero)   # New Tab
+  AskOpen $wA $B                       # the second tab is the active one now
+  $quit = $false
+  if (AwaitTitle $wA 'mnpdf 1/\d+') { $quit = QuitApp $procA }
+  if (-not $quit) { Fail 'a background tab keeps its own sidecar at quit' 'the quit did not complete' }
+  else {
+    $procA2 = Launch (Resolve-AppExe) $A
+    $wA2 = FindAppWindow $procA2.Id
+    if (AwaitTitle $wA2 "mnpdf 1/$pagesA\s+$zA") { Pass 'a background tab keeps its own sidecar at quit' }
+    else { Fail 'a background tab keeps its own sidecar at quit' "expected $zA, got '$(Title $wA2)'" }
+    [void](QuitApp $procA2)
+  }
+}
+
+# --- T11: a mark made in a tab then closed in front still reaches its sidecar -
+Remove-Item "$env:APPDATA\mnpdf\*" -Recurse -Force -ErrorAction SilentlyContinue
+$procC = Launch (Resolve-AppExe) $A
+$wC = FindAppWindow $procC.Id
+if (-not (AwaitTitle $wC "mnpdf 1/$pagesA")) {
+  Fail 'closing a tab keeps its mark in its sidecar' "no document window: '$(Title $wC)'"
+} elseif (-not (AutosaveOff $wC)) {
+  Fail 'closing a tab keeps its mark in its sidecar' 'autosave stayed on'
+  [void](QuitApp $procC)
+} else {
+  [void](ZoomTo $wC 2 $CMD_ZOOM_IN)                  # the mark this tab will own
+  [void][MN]::PostMessageW($wC, 0x0111, [IntPtr]300, [IntPtr]::Zero)   # New Tab
+  AskOpen $wC $B
+  $mC = StripMetrics $wC
+  $pagesB = 0
+  if (AwaitTitle $wC 'mnpdf 1/\d+') { $pagesB = PagesInTitle $wC }
+  $xTab1 = 4 + [int]($mC.tw / 2)
+  ClickAt $wC $xTab1 ([int]($mC.strip / 2))                            # back to tab 1
+  $zClose = ''
+  if (AwaitTitle $wC "mnpdf 1/$pagesA") { $zClose = ZoomTo $wC 1 $CMD_ZOOM_OUT }   # a different view, still unsaved
+  [void][MN]::PostMessageW($wC, 0x0111, [IntPtr]301, [IntPtr]::Zero)   # Close Tab: THIS tab goes
+  $took = $false
+  if (($pagesB -gt 0) -and (AwaitTitle $wC "mnpdf 1/$pagesB")) { $took = QuitApp $procC }
+  if (-not ($took -and $zClose)) { Fail 'closing a tab keeps its mark in its sidecar' "closed tab: '$(Title $wC)'" }
+  else {
+    $procC2 = Launch (Resolve-AppExe) $A
+    $wC2 = FindAppWindow $procC2.Id
+    if (AwaitTitle $wC2 "mnpdf 1/$pagesA\s+$zClose") { Pass 'closing a tab keeps its mark in its sidecar' }
+    else { Fail 'closing a tab keeps its mark in its sidecar' "expected $zClose, got '$(Title $wC2)'" }
+    [void](QuitApp $procC2)
+  }
+}
+
+Complete-Suite

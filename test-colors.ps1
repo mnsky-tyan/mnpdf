@@ -358,9 +358,11 @@ function DragBlock([IntPtr]$Wnd, [double]$Fx0, [double]$Fy0, [double]$Fx1, [doub
   $cwPx = $cr.R - $cr.L; $chPx = $cr.B - $cr.T
   # The reader draws a tab strip at the top of the client, and the strip is
   # chrome: a click down there belongs to it, never to the document, exactly
-  # like a toolbar. Its band is 30px at 96 dpi and grows with the scale, so a
-  # drag is clamped to start below it - 64 clears every dpi the gates run at.
-  $stripPx = 64
+  # like a toolbar. Its band grows with the window's scale, so the drag start is
+  # clamped below the strip as the app measures it (TabStripPx, tests\lib.ps1) -
+  # a fixed pixel count sits inside the strip on a high-dpi display and the
+  # press is eaten by the strip's own hit test.
+  $stripPx = TabStripPx $Wnd
   $px0 = [int]($cwPx * $Fx0); $py0 = [Math]::Max([int]($chPx * $Fy0), $stripPx)
   $px1 = [int]($cwPx * $Fx1); $py1 = [int]($chPx * $Fy1)
   [void][MN]::PostMessageW($Wnd, 0x0201, [IntPtr]1, (New-Object IntPtr (($py0 -shl 16) -bor ($px0 -band 0xFFFF))))

@@ -48,6 +48,7 @@ public static class MN {
   [DllImport("user32.dll")] public static extern bool SetWindowPlacement(IntPtr h, ref WPL p);
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
   [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
+  [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr c);
   [DllImport("user32.dll")] public static extern bool PostMessageW(IntPtr h, uint m, IntPtr w, IntPtr l);
   [DllImport("user32.dll")] public static extern IntPtr SendMessageW(IntPtr h, uint m, IntPtr w, IntPtr l);
@@ -480,4 +481,16 @@ function SidecarFor([string]$pdfPath) {
   # set (~half of all 64-bit hashes) and PadLeft never truncates, so strip that sign digit
   # and re-pad: TrimStart("0").PadLeft(16,"0") reproduces the app's exact 16-digit name.
   return Join-Path $env:APPDATA ("mnpdf\doc-" + $hh.ToString("x").TrimStart("0").PadLeft(16, "0") + ".txt")
+}
+
+# ---- the tab strip's height (the app's own rule, in one place) ------------
+# The strip is chrome above the document: a press inside it belongs to a tab,
+# never to the page. It scales with the window's dpi, so any point meant for the
+# document must clear it - a fixed pixel count is wrong on any other display.
+# tabStripH() is MulDiv(30, dpi, 96) with a floor of 26; ceiling the product is
+# never below MulDiv's rounded result, so a caller that clamps to this value
+# always lands on the first document row. This is the ONE PowerShell copy.
+function TabStripPx([IntPtr]$Wnd) {
+  $dpi = [MN]::GetDpiForWindow($Wnd)
+  return [Math]::Max(26, [int][Math]::Ceiling($dpi * 30 / 96))
 }

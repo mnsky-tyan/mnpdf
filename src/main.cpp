@@ -2933,20 +2933,22 @@ static std::wstring sidecarPathFor(const std::wstring& path) {
 
 static const int kSidecarFmt = 2;                // sidecar schema: pin lines carry a colour
 
-static void writeSidecarNow() {
-    if (gPath.empty() || !gDoc) return;
-    FILE* fp = _wfopen(sidecarPathFor(gPath).c_str(), L"wb");
+// The sidecar belongs to ONE bundle, so this takes it as an argument: a tab that
+// is being left or dropped still has to reach its own sidecar while it is alive.
+static void writeSidecarFor(Doc* d) {
+    if (!d || d->path.empty() || !d->doc) return;
+    FILE* fp = _wfopen(sidecarPathFor(d->path).c_str(), L"wb");
     if (fp) {
-        fprintf(fp, "fmt=%d\nzoom=%.6f\nfit=%d\npage=%d\n", kSidecarFmt, gZoom, gFitWidth ? 1 : 0, gPageIndex + 1);
-        for (const Hl& h : gHls)
+        fprintf(fp, "fmt=%d\nzoom=%.6f\nfit=%d\npage=%d\n", kSidecarFmt, d->zoom, d->fitWidth ? 1 : 0, d->pageIndex + 1);
+        for (const Hl& h : d->hls)
             fprintf(fp, "hl=%d,%d,%d,%d\n", h.page, h.start, h.count, h.color);
-        for (int i = 0; i < gDocPages; i++)
-            if (gRot && gRot[i]) fprintf(fp, "rot=%d,%d\n", i, gRot[i]);
-        for (const Tomb& tb : gTomb) {
+        for (int i = 0; i < d->docPages; i++)
+            if (d->rot && d->rot[i]) fprintf(fp, "rot=%d,%d\n", i, d->rot[i]);
+        for (const Tomb& tb : d->tomb) {
             if (tb.kind == 0) fprintf(fp, "dl=h,%d,%d,%d\n", tb.page, tb.start, tb.count);
             else fprintf(fp, "dl=p,%d,%.2f,%.2f\n", tb.page, tb.x, tb.y);
         }
-        for (const Pin& pn : gPins) {
+        for (const Pin& pn : d->pins) {
             if (pn.text.empty()) continue;
             std::string esc;                       // multiline-safe: \n stays one line
             for (char p : wideToUtf8(pn.text)) {
@@ -2957,7 +2959,7 @@ static void writeSidecarNow() {
             }
             fprintf(fp, "pin=%d,%.2f,%.2f,c%d,%s\n", pn.page, pn.x, pn.y, pn.color, esc.c_str());
         }
-        for (const Sig& sg : gSigs) {
+        for (const Sig& sg : d->sigs) {
             std::string esc;                       // the path carries backslashes
             for (char p : wideToUtf8(sg.path)) {
                 if (p == '\\') esc += "\\\\";
@@ -2969,20 +2971,35 @@ static void writeSidecarNow() {
         }
         fclose(fp);
     }
-    // last.txt is the document a plain launch reopens. It is shared, so only the
-    // primary instance writes it: a second window on another document must not
-    // change what the next plain launch brings back.
-    if (gPrimaryInstance) {
-        wchar_t dir[MAX_PATH];
-        appDirW(dir, MAX_PATH);
-        FILE* lfp = _wfopen((std::wstring(dir) + L"\\last.txt").c_str(), L"wb");
-        if (lfp) {
-            std::string u8 = wideToUtf8(gPath);
-            fwrite(u8.data(), 1, u8.size(), lfp);
-            fputc('\n', lfp);
-            fclose(lfp);
-        }
+}
+
+// last.txt is the document a plain launch reopens. It is shared, so only the
+// primary instance writes it: a second window on another document must not
+// change what the next plain launch brings back.
+static void writeLastDocument(const std::wstring& path) {
+    if (!gPrimaryInstance || path.empty()) return;
+    wchar_t dir[MAX_PATH];
+    appDirW(dir, MAX_PATH);
+    FILE* lfp = _wfopen((std::wstring(dir) + L"\\last.txt").c_str(), L"wb");
+    if (lfp) {
+        std::string u8 = wideToUtf8(path);
+        fwrite(u8.data(), 1, u8.size(), lfp);
+        fputc('\n', lfp);
+        fclose(lfp);
     }
+}
+
+static void writeSidecarNow() {
+    if (gPath.empty() || !gDoc) return;
+    writeSidecarFor(gViewTab);
+    writeLastDocument(gPath);
+}
+
+// quitting (and any other exit) has to reach EVERY open tab's sidecar, not just
+// the active one: marks made in a background tab are as real as the front one's
+static void writeAllSidecars() {
+    for (int i = 0; i < gDocCount; i++) writeSidecarFor(gDocs[i]);
+    writeLastDocument(gViewTab->path);
 }
 
 static void markSave() {
@@ -4933,6 +4950,7 @@ static void reopenLastDocument() {
 // an open pin box saves, a placement dies, search stops, the drag releases.
 static void settleActiveDoc() {
     if (gEditPin >= 0) commitPinEdit();          // an open pin box saves first
+    writeSidecarFor(gViewTab);                   // the outgoing tab keeps its marks: its own sidecar
     hidePinTip(gWnd);
     if (!gSigPlacing.empty()) gSigPlacing.clear();   // a half-finished placement dies here
     gSelDrag = false;
@@ -5720,14 +5738,14 @@ static LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         closeUpdateDialog();                       // an update half-installed is not installed
         if (gEditPin >= 0) commitPinEdit();        // an open pin box saves first
         if (gAutosave) {
-            writeSidecarNow();                     // edits survive in the sidecar: no prompt
+            writeAllSidecars();                    // every open tab: edits survive in the sidecar: no prompt
         } else if (gDirty) {
             int r = MessageBoxW(h, L"Save changes?", L"mnpdf", MB_YESNOCANCEL | MB_ICONQUESTION);
             if (r == IDCANCEL) return 0;
             if (r == IDYES && !doSave()) return 0;  // save failed: stay open
-            writeSidecarNow();
+            writeAllSidecars();
         } else {
-            writeSidecarNow();                     // sidecar always keeps the reading position
+            writeAllSidecars();                    // sidecar always keeps the reading position
         }
         writeAppPref();                            // the last rect read here is the one restored
         DestroyWindow(h);
