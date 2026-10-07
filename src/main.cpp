@@ -710,6 +710,7 @@ static int snapIndexNear(int page, int cx, int cy) {
 
 static int charIndexAtDoc(int cx, int cy, int* pageOut) {
     *pageOut = -1;
+    if (cy < tabStripH()) return -1;               // the strip is chrome: it is not on the page
     if (!gPrefixPt || !gDocPages) return -1;
     int docY = cy - docTop();
     int page = pageAtDocY(docY);
@@ -748,6 +749,7 @@ static int charIndexAtDoc(int cx, int cy, int* pageOut) {
 // cursor variant: strict glyph hit (no blank-space snapping), cheap per move
 static int charIndexStrict(int cx, int cy, int* pageOut) {
     *pageOut = -1;
+    if (cy < tabStripH()) return -1;               // the strip is chrome: it is not on the page
     if (!gPrefixPt || !gDocPages) return -1;
     int docY = cy - docTop();
     int page = pageAtDocY(docY);
@@ -5547,12 +5549,13 @@ static LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         return 0;
     }
     case WM_LBUTTONDBLCLK: {
+        int pg;
+        int idx = charIndexClamped(GET_X_LPARAM(lp), GET_Y_LPARAM(lp), &pg);
+        if (idx < 0 || pg < 0) return 0;             // off the page (the strip band): no selection
         hidePinTip(h);
         SetFocus(h);
         SetCapture(h);
         gSelDrag = true;
-        int pg;
-        int idx = charIndexClamped(GET_X_LPARAM(lp), GET_Y_LPARAM(lp), &pg);
         gSelAnchorPage = gSelHeadPage = pg;
         gSelAnchor = gSelHead = idx;
         selectWord(pg, idx);
