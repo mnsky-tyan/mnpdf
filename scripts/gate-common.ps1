@@ -115,9 +115,12 @@ function Invoke-SuiteRun {
   $null = New-Item -ItemType Directory -Force -Path $appData
   $null = New-Item -ItemType Directory -Force -Path $temp
   # the record of THIS shell, for the gate's cleanup: it ends the test shell and
-  # its app children by identity and exact path; CI just deletes it with the dir
+  # its app children by identity and exact path; CI just deletes it with the dir.
+  # Before is the instance snapshot taken before this suite launched anything, so
+  # the sweep cannot match an app the gate did not start.
   $self = Get-Process -Id $PID
-  @{ Id = $PID; Started = $self.StartTime.ToUniversalTime().Ticks } |
+  @{ Id = $PID; Started = $self.StartTime.ToUniversalTime().Ticks;
+     Before = @(Get-TestInstanceSnapshot -ExePath $exePath) } |
     ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $state 'runner.json')
   $restore = @{}
   foreach ($name in 'APPDATA', 'TEMP', 'TMP', 'MNPDF_GATE_EXE', 'MNPDF_GATE_STATE', 'MNPDF_GATE_SUITE', 'MNPDF_BACKGROUND') {
@@ -168,8 +171,11 @@ function Invoke-SuiteRun {
 }
 
 # End a timed-out or crashed suite's process tree: the test shell recorded in
-# <state>\runner.json, then any app it launched. Exact executable path and
-# creation time, never every mnpdf.exe on the box.
+# <state>\runner.json, then any app it launched. An app counts as launched here
+# only when it is a child of that shell, or when it runs this build's own output,
+# started after the shell did and NOT in the snapshot taken before the suite ran -
+# the protected-instance policy Stop-TestInstances already applies. A copy the
+# reader had open beforehand is in that snapshot and is never touched.
 function Stop-RunnerTree {
   $record = Join-Path $env:MNPDF_GATE_STATE 'runner.json'
   if (-not (Test-Path -LiteralPath $record)) { exit 0 }
@@ -182,13 +188,13 @@ function Stop-RunnerTree {
       if (-not $runner.WaitForExit(5000)) { throw 'Test shell did not exit' }
     } catch { if (-not $runner.HasExited) { throw } }
   }
-  # A WMI-launched app's parent is WmiPrvSE, not the test shell, so parentage
-  # alone finds nothing: this run's app is the one running from the gate's own
-  # build output that was created after the recorded shell started. The pre-flight
-  # refuses to start while any mnpdf is up, so nothing older can be matched here.
+  $before = @()
+  if ($owned.PSObject.Properties['Before']) { $before = @($owned.Before) }
   $children = Get-CimInstance Win32_Process -Filter "Name = 'mnpdf.exe'" |
     Where-Object { $_.ExecutablePath -eq $env:MNPDF_GATE_EXE -and
-      $_.CreationDate.ToUniversalTime().Ticks -ge $owned.Started }
+      (($_.ParentProcessId -eq $owned.Id) -or
+       ($before.Count -gt 0 -and ($before -notcontains [int]$_.ProcessId) -and
+        $_.CreationDate.ToUniversalTime().Ticks -ge $owned.Started)) }
   foreach ($child in $children) {
     $app = Get-Process -Id $child.ProcessId -ErrorAction SilentlyContinue
     if (-not $app -or $app.Path -ne $env:MNPDF_GATE_EXE) { continue }

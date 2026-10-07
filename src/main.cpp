@@ -102,6 +102,27 @@ static bool mayTakeForeground() { return !gBackground && !gPlaced; }
 static void showPopup(HWND h) {
     ShowWindow(h, mayTakeForeground() ? SW_SHOW : SW_SHOWNA);
 }
+
+static bool gVerboseTitle = false;               // MNPDF_VERBOSE: page/zoom/RAM in the title
+
+// A modal box is itself an activation path: it makes the owning window the
+// foreground window and flashes its taskbar button, and on a window bound for
+// another desktop it flips the person's whole view over to it. In a gate run no
+// box is shown at all - the message goes to the verbose trace and the flag's own
+// default button is answered - so no activation path stays reachable; an
+// ordinary launch keeps the real box.
+static int messageBox(HWND owner, const wchar_t* text, const wchar_t* caption, UINT flags) {
+    if (mayTakeForeground()) return MessageBoxW(owner, text, caption, flags);
+    // the flag's own default button: Yes for a question, OK for a notice
+    int id = (flags & (MB_YESNO | MB_YESNOCANCEL)) ? IDYES : IDOK;
+    if (gVerboseTitle) {
+        std::wstring line = std::wstring(caption ? caption : L"mnpdf") + L": " + text;
+        for (size_t i = 0; i < line.size(); i++) if (line[i] == L'\n') line[i] = L' ';
+        OutputDebugStringW((line + L" [gate run: no box, answered " +
+                            std::to_wstring(id) + L"]\n").c_str());
+    }
+    return id;
+}
 static long long gLastUpdateCheck = 0;             // unix seconds of the last GitHub attempt
 static std::wstring gLastUpdateTag;                // tag that attempt found ("" = none succeeded yet)
 static ULONG_PTR gGdiToken = 0;                 // GDI+ startup token
@@ -1842,7 +1863,6 @@ static void renderPage() {
     drawPins();
     drawMatches();
     drawSelection();
-    drawTabStrip();                             // chrome last, over the document
     if (gEditPin >= 0 && gPinBox) sizePinBoxToText();   // a refit must not strand the editor
     if (gNight && gPdfBitmap) {                      // last, so marks are re-coloured too
         // the paper inverts, not the surround: the letterbox is already the
@@ -1868,6 +1888,7 @@ static void renderPage() {
             }
         }
     }
+    drawTabStrip();                             // chrome last: over the document, and un-inverted by the night pass
     InvalidateRect(gWnd, nullptr, FALSE);
 }
 
@@ -2140,8 +2161,6 @@ static void doPrint() {
     GlobalFree(pd.hDevNames);
     GlobalFree(pd.hDevMode);
 }
-
-static bool gVerboseTitle = false;               // MNPDF_VERBOSE: page/zoom/RAM in the title
 
 static void updateTitle() {
     wchar_t t[256];
@@ -2751,7 +2770,7 @@ static LRESULT CALLBACK updateProc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
             if (gUpdateBusy) return 0;
             if (gUpdateAvailable && !gUpdateTag.empty()) {
                 if (gDirty) {
-                    MessageBoxW(w, L"This document has unsaved changes.\n\n"
+                    messageBox(w, L"This document has unsaved changes.\n\n"
                                    L"Save it (or close mnpdf) before installing an update.",
                                 L"mnpdf update", MB_OK | MB_ICONWARNING);
                     return 0;
@@ -2862,11 +2881,11 @@ static void showUpdateResult(const UpdateResult& result, int minutesAgo = -1) {
         if (result.ok && result.newer) {
             std::wstring text = L"mnpdf " + std::wstring(kAppVersion) + L" -> " + result.tag
                 + L" is available.\n\nOpen the official release page now?";
-            if (MessageBoxW(gWnd, text.c_str(), L"mnpdf update available",
+            if (messageBox(gWnd, text.c_str(), L"mnpdf update available",
                             MB_YESNO | MB_ICONINFORMATION) == IDYES)
                 ShellExecuteW(gWnd, L"open", kLatestReleaseUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
         } else if (result.manual) {
-            MessageBoxW(gWnd, L"mnpdf could not check GitHub for updates. Try again later.",
+            messageBox(gWnd, L"mnpdf could not check GitHub for updates. Try again later.",
                         L"mnpdf updates", MB_OK | MB_ICONWARNING);
         }
         return;
@@ -3341,7 +3360,7 @@ static bool openPath(const std::wstring& path) {
     // pdfium wants UTF-8; Windows gave us UTF-16
     std::string u8 = wideToUtf8(path);
     FPDF_DOCUMENT nd = FPDF_LoadDocument(u8.c_str(), nullptr);
-    if (!nd) { MessageBoxW(gWnd, L"Could not open PDF", L"mnpdf", MB_ICONERROR); return false; }
+    if (!nd) { messageBox(gWnd, L"Could not open PDF", L"mnpdf", MB_ICONERROR); return false; }
     gTextPage = nullptr;                           // handles live in the cache now
     gPage = nullptr;
     flushPageCache();
@@ -3601,7 +3620,7 @@ static bool doSaveImpl(const std::wstring& target) {
         openPath(target);                          // so restore doesn't resurrect edits
         return true;
     }
-    MessageBoxW(gWnd, L"Save failed", L"mnpdf", MB_ICONERROR);
+    messageBox(gWnd, L"Save failed", L"mnpdf", MB_ICONERROR);
     return false;
 }
 
@@ -3696,12 +3715,9 @@ static void showColorError(HWND box, const wchar_t* text) {
                  L"Type six hex digits, with or without the #:\n\n"
                  L"    #ff4d00\n    ff4d00\n    FF4D00",
                  shown);
-    // MB_SETFOREGROUND is skipped in gate runs: it activates the MessageBox,
-    // and activating a window that sits on another virtual desktop flips the
-    // user's entire desktop over to it. The box still appears (on the app's
-    // desktop) and the suite reads it with plain WM_GETTEXT.
-    MessageBoxW(box, msg, L"mnpdf", MB_OK | MB_ICONWARNING |
-                                   (mayTakeForeground() ? (UINT)MB_SETFOREGROUND : 0u));
+    // In a gate run no box is shown at all, so MB_SETFOREGROUND is only ever
+    // passed on a launch that may take the foreground.
+    messageBox(box, msg, L"mnpdf", MB_OK | MB_ICONWARNING | (UINT)MB_SETFOREGROUND);
     gColorErrBusy = false;
     if (mayTakeForeground()) SetForegroundWindow(box);
     SetFocus(box);
@@ -4076,7 +4092,7 @@ static void commitSigPlacement(int page, double sx, double sy) {
     s.cx = x < lox ? lox : (x > hix ? hix : x);
     s.cy = y < loy ? loy : (y > hiy ? hiy : y);
     if (!placeSigObj(s)) {
-        MessageBoxW(gWnd, L"That image could not be placed.", L"mnpdf", MB_OK | MB_ICONWARNING);
+        messageBox(gWnd, L"That image could not be placed.", L"mnpdf", MB_OK | MB_ICONWARNING);
         return;
     }
     gSigs.push_back(s);
@@ -4140,12 +4156,12 @@ static void pickSignatureImage() {
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY;
     if (!GetOpenFileNameW(&ofn)) return;
     if (!looksLikeJpeg(buf)) {
-        MessageBoxW(gWnd, L"A signature has to be a JPEG image. That file is not one.",
+        messageBox(gWnd, L"A signature has to be a JPEG image. That file is not one.",
                     L"Place signature", MB_OK | MB_ICONWARNING);
         return;
     }
     gSigPlacing = buf;
-    MessageBoxW(gWnd, L"Click the page where the signature should sit. Esc cancels.",
+    messageBox(gWnd, L"Click the page where the signature should sit. Esc cancels.",
                 L"Place signature", MB_OK | MB_ICONINFORMATION);
 }
 
@@ -4227,7 +4243,7 @@ static void replaceDocByOrder(const std::vector<int>& order) {
     if (!nd) return;
     if (!FPDF_ImportPagesByIndex(nd, gDoc, order.data(), (unsigned long)n, 0)) {
         FPDF_CloseDocument(nd);
-        MessageBoxW(gWnd, L"Those pages could not be reordered.", L"mnpdf", MB_OK | MB_ICONWARNING);
+        messageBox(gWnd, L"Those pages could not be reordered.", L"mnpdf", MB_OK | MB_ICONWARNING);
         return;
     }
     // marks follow the permutation; a deleted page takes its marks with it
@@ -4322,7 +4338,7 @@ static void mergeFiles(const std::vector<std::wstring>& files) {
     int at = 0;
     if (!FPDF_ImportPages(nd, gDoc, nullptr, at)) {
         FPDF_CloseDocument(nd);
-        MessageBoxW(gWnd, L"The current document could not be merged.", L"mnpdf", MB_OK | MB_ICONWARNING);
+        messageBox(gWnd, L"The current document could not be merged.", L"mnpdf", MB_OK | MB_ICONWARNING);
         return;
     }
     at = FPDF_GetPageCount(nd);
@@ -4337,7 +4353,7 @@ static void mergeFiles(const std::vector<std::wstring>& files) {
     }
     if (FPDF_GetPageCount(nd) <= gDocPages) {
         FPDF_CloseDocument(nd);
-        MessageBoxW(gWnd, L"No pages could be added.", L"mnpdf", MB_OK | MB_ICONWARNING);
+        messageBox(gWnd, L"No pages could be added.", L"mnpdf", MB_OK | MB_ICONWARNING);
         return;
     }
     adoptDoc(nd, gDocPages);                 // current pages keep their indices
@@ -4379,7 +4395,7 @@ static void splitExport(const std::wstring& target, const std::string& range, bo
     if (!FPDF_ImportPages(nd, gDoc, range.c_str(), 0)) {
         FPDF_CloseDocument(nd);
         if (!quiet)
-            MessageBoxW(gWnd, L"That page range could not be read. Try 2-5 or 1,3,8.",
+            messageBox(gWnd, L"That page range could not be read. Try 2-5 or 1,3,8.",
                         L"Split pages", MB_OK | MB_ICONWARNING);
         return;
     }
@@ -4399,8 +4415,8 @@ static void splitExport(const std::wstring& target, const std::string& range, bo
     }
     FPDF_CloseDocument(nd);
     if (quiet) return;
-    if (wrote) MessageBoxW(gWnd, L"Pages exported.", L"Split pages", MB_OK | MB_ICONINFORMATION);
-    else MessageBoxW(gWnd, L"These pages could not be written to that file.",
+    if (wrote) messageBox(gWnd, L"Pages exported.", L"Split pages", MB_OK | MB_ICONINFORMATION);
+    else messageBox(gWnd, L"These pages could not be written to that file.",
                      L"Split pages", MB_OK | MB_ICONWARNING);
 }
 
@@ -4963,11 +4979,11 @@ static void reopenLastDocument() {
     // pointing at whatever is open, so reading it would reopen the same file.
     std::wstring want = gPrevPath;
     if (want.empty() || want == gPath) {
-        MessageBoxW(gWnd, L"No earlier document to reopen.", L"mnpdf", MB_OK | MB_ICONINFORMATION);
+        messageBox(gWnd, L"No earlier document to reopen.", L"mnpdf", MB_OK | MB_ICONINFORMATION);
         return;
     }
     if (GetFileAttributesW(want.c_str()) == INVALID_FILE_ATTRIBUTES) {
-        MessageBoxW(gWnd, L"That document has moved or been deleted since you left it.",
+        messageBox(gWnd, L"That document has moved or been deleted since you left it.",
                     L"mnpdf", MB_OK | MB_ICONINFORMATION);
         return;
     }
@@ -5397,7 +5413,7 @@ static void onCommand(HWND h, WPARAM wp) {
     case 169: gColorTarget = 3; startColorEntry(); return;   // Custom... on the default pin
     case 180:                                   // hand the three custom slots back
         if (!anyCustomColor()) return;
-        if (MessageBoxW(h, L"Clear your custom colours?\n\n"
+        if (messageBox(h, L"Clear your custom colours?\n\n"
                            L"Marks that use one fall back to the preset for that "
                            L"kind - a highlight to yellow, a pin to red.",
                         L"mnpdf", MB_YESNO | MB_ICONQUESTION) != IDYES) return;
@@ -5798,7 +5814,7 @@ static LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         if (gAutosave) {
             writeAllSidecars();                    // every open tab: edits survive in the sidecar: no prompt
         } else if (gDirty) {
-            int r = MessageBoxW(h, L"Save changes?", L"mnpdf", MB_YESNOCANCEL | MB_ICONQUESTION);
+            int r = messageBox(h, L"Save changes?", L"mnpdf", MB_YESNOCANCEL | MB_ICONQUESTION);
             if (r == IDCANCEL) return 0;
             if (r == IDYES && !doSave()) return 0;  // save failed: stay open
             writeAllSidecars();
