@@ -3099,11 +3099,12 @@ static void markSave() {
     if (gAutosave) gSaveDirty = true;              // flushed by the WM_TIMER tick
 }
 
-// app-level prefs in %APPDATA%\mnpdf\app.txt: chrome toggles (titlebar, autosave),
-// the default highlight/pin colours, the custom #rrggbb slots (round-robin pointer
-// too), the update-check clock that keeps it to one request per interval together
-// with the tag that check found (updtag - the tag the update button offers and an
-// install fetches), and the frame geometry winx/winy/winw/winh/winmax the next
+// app-level prefs in %APPDATA%\mnpdf\app.txt: chrome toggles (tab strip, titlebar,
+// autosave), the default highlight/pin colours, the custom #rrggbb slots
+// (round-robin pointer too), the update-check clock that keeps it to one request
+// per interval together with the tag that check found (updtag - the tag the update
+// button offers and an install fetches), and the frame geometry
+// winx/winy/winw/winh/winmax the next
 // launch recreates the window with. Every call records the rect as it stands at
 // that moment, so the WM_CLOSE write is the one that survives a quit. The rect is
 // read from GetWindowPlacement's rcNormalPosition rather than GetWindowRect,

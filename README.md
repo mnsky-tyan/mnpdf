@@ -188,7 +188,7 @@ does anything unless it is set:
 | `MNPDF_GATE_STATE` | runner: the suite's private state directory (`APPDATA`/`TEMP` live under it) |
 | `MNPDF_GATE_SUITE` | runner: which suite script to run |
 | `MNPDF_SKIP_SUITES` | runner: a comma-separated list of suites to drop from the roster for this run, for a suite that is environmentally broken on one machine |
-| `MNPDF_WINDOW_DESKTOP` | app and runner: the 0-based virtual desktop every app window is moved to before any restore or measurement, so a local gate keeps its windows off the desk in use - the app reads it too, to start without ever taking the foreground |
+| `MNPDF_WINDOW_DESKTOP` | app and runner: the 0-based virtual desktop a local gate keeps every app window on, off the desk in use - the runner moves the main window before any restore or measurement and a watcher follows the app so the popups it opens later move too; the app reads it too, to start without ever taking the foreground |
 | `MNPDF_VD_DLL` | runner: the `VirtualDesktopAccessor.dll` path the move-to-desktop above needs |
 
 The WSL runner forwards the runner-owned seams (`MNPDF_GATE_EXE`,

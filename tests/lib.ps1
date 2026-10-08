@@ -417,9 +417,10 @@ function Launch([string]$Exe, [string]$Doc) {
 # The suites that exercise the update check forge %APPDATA%\mnpdf\app.txt so the
 # answer is deterministic and offline (a completed check remembered from minutes
 # ago, or a stale clock that must be re-stamped). That file also holds the
-# user's real titlebar / autosave / hlcolor / pincolor / palnext / updcheck /
-# updtag preferences and the frame geometry winx/winy/winw/winh/winmax, so a run
-# must put it back exactly as it found it - on every path, including a hard kill.
+# user's real tab strip / titlebar / autosave / hlcolor / pincolor / palnext /
+# updcheck / updtag preferences and the frame geometry winx/winy/winw/winh/winmax,
+# so a run must put it back exactly as it found it - on every path, including a
+# hard kill.
 
 $script:prefSentinel = 'test-forged=1'
 
