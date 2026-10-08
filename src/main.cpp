@@ -52,7 +52,7 @@
 #pragma comment(lib, "oleaut32.lib")
 
 // ---- state ----
-static const wchar_t* const kAppVersion = L"2.4.0";
+static const wchar_t* const kAppVersion = L"2.5.0";
 static const wchar_t* const kGitHubRoot = L"https://github.com";
 static const wchar_t* const kRepoPath = L"mnsky-tyan/mnpdf";
 static const std::wstring kLatestReleaseUrl =
@@ -316,6 +316,7 @@ static int gTipPin = -1;                         // pin the pending tip belongs 
 static DWORD gPinBoxBorn = 0;                    // when the editor opened (activation grace)
 
 static bool gTitlebar = true;                    // OS caption strip shown
+static bool gTabStrip = true;                    // the tab strip is shown (hidable for a full-height view)
 static int gWinX = CW_USEDEFAULT, gWinY = CW_USEDEFAULT;   // last placement
 static int gWinW = 1100, gWinH = 800;
 static bool gWinMax = false;                     // was maximized at last quit
@@ -582,6 +583,7 @@ static int docLeft() {
 }
 
 static int tabStripH() {
+    if (!gTabStrip) return 0;                   // toggled away: the document takes the whole client
     int h = MulDiv(30, GetDpiForWindow(gWnd), USER_DEFAULT_SCREEN_DPI);
     return h < 26 ? 26 : h;
 }
@@ -3121,8 +3123,8 @@ static void writeAppPref() {
     appDirW(dir, MAX_PATH);
     FILE* fp = _wfopen((std::wstring(dir) + L"\\app.txt").c_str(), L"wb");
     if (fp) {
-        fprintf(fp, "titlebar=%d\nautosave=%d\nhlcolor=%d\npincolor=%d\nnight=%d\n",
-                gTitlebar ? 1 : 0, gAutosave ? 1 : 0, gHlDefault, gPinDefault, gNight ? 1 : 0);
+        fprintf(fp, "tabstrip=%d\ntitlebar=%d\nautosave=%d\nhlcolor=%d\npincolor=%d\nnight=%d\n",
+                gTabStrip ? 1 : 0, gTitlebar ? 1 : 0, gAutosave ? 1 : 0, gHlDefault, gPinDefault, gNight ? 1 : 0);
         RECT wr = { 0, 0, 0, 0 };
         WINDOWPLACEMENT wp2 = { sizeof(wp2) };
         if (gWnd && GetWindowPlacement(gWnd, &wp2)) {
@@ -3155,7 +3157,8 @@ static void loadAppPref() {
     while (fgets(line, 64, fp)) {
         int iv;
         long long llv;
-        if (sscanf(line, "titlebar=%d", &iv) == 1) gTitlebar = iv != 0;
+        if (sscanf(line, "tabstrip=%d", &iv) == 1) gTabStrip = iv != 0;
+        else if (sscanf(line, "titlebar=%d", &iv) == 1) gTitlebar = iv != 0;
         else if (sscanf(line, "autosave=%d", &iv) == 1) gAutosave = iv != 0;
         else if (sscanf(line, "night=%d", &iv) == 1) gNight = iv != 0;
         // geometry is bounded the same way the colour keys below are: a value
@@ -3196,6 +3199,19 @@ static void toggleTitlebar(HWND h) {
     // SWP_NOACTIVATE: without it the restyle ACTIVATES the window, and a gate-run
     // window lives on another virtual desktop - activating it flips the user's
     // whole desktop over (measured during the captionless suite).
+    writeAppPref();
+    renderPage();
+}
+
+static void toggleTabStrip(HWND h) {
+    gTabStrip = !gTabStrip;
+    // The strip is chrome, so hiding it hands its height to the document: the
+    // find bar rides just below the strip and the scroll range grows by the
+    // band, so both move with the toggle. No SetWindowPos is needed - the
+    // client keeps its size and only what is drawn on it changes, which keeps
+    // the toggle from activating a window on another desktop.
+    placeSearchBar();
+    clampScroll();
     writeAppPref();
     renderPage();
 }
@@ -5182,6 +5198,7 @@ static HFONT stripFont() {
 
 static void drawTabStrip() {
     int h = tabStripH();
+    if (h <= 0) return;                       // toggled away: nothing of the strip is drawn
     HDC dc = gMemDC;
     HFONT old = (HFONT)SelectObject(dc, stripFont());
     SetDCBrushColor(dc, RGB(32, 32, 32));
@@ -5360,6 +5377,7 @@ static void onContextMenu(HWND h, LPARAM lp) {   // right click
     AppendMenuW(menu, MF_STRING, 110, L"Minimize");
     AppendMenuW(menu, MF_STRING, 111, IsZoomed(h) ? L"Restore" : L"Maximize");
     AppendMenuW(menu, MF_STRING, 113, gTitlebar ? L"Hide titlebar" : L"Show titlebar");
+    AppendMenuW(menu, MF_STRING, 302, gTabStrip ? L"Hide tab strip" : L"Show tab strip");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, 170, L"Check for updates");
     AppendMenuW(menu, MF_STRING, 112, L"Quit");
@@ -5499,6 +5517,7 @@ static void onCommand(HWND h, WPARAM wp) {
     case 111: PostMessageW(h, WM_SYSCOMMAND, IsZoomed(h) ? SC_RESTORE : SC_MAXIMIZE, 0); return;
     case 112: PostMessageW(h, WM_CLOSE, 0, 0); return;
     case 113: toggleTitlebar(h); return;
+    case 302: toggleTabStrip(h); return;
     case 114: undoOp(); return;
     case 115: redoOp(); return;
     case 118: doSave(); return;

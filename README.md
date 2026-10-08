@@ -89,7 +89,10 @@ zoom, marks and undo history, so switching away and back leaves everything
 exactly where it was. A document you open fills an empty tab, or replaces what
 the current tab is showing, and closing the last tab quits like closing the
 window. The strip shows each document's name, with a dot in front while that
-tab has unsaved changes.
+tab has unsaved changes. **Hide tab strip** in the right-click menu takes the
+strip away for a taller view of the document, and **Show tab strip** brings it
+back; the choice is remembered, and `Ctrl+T`, `Ctrl+W` and `Ctrl+Tab` still
+move between tabs while the strip is hidden.
 
 **Several windows.** Run `mnpdf.exe` twice and you get two independent
 windows, each reading its own document, so two PDFs can sit side by side. The
@@ -130,7 +133,7 @@ Everything the app remembers is under `%APPDATA%\mnpdf`:
 
 | File | Contents |
 |---|---|
-| `app.txt` | titlebar, autosave, default highlight and pin colours, custom palette, night mode, window geometry (`winx`, `winy`, `winw`, `winh`, `winmax`), last update check (`updcheck`) and the newest tag it found (`updtag`) - the tag the update button offers and the one an install fetches |
+| `app.txt` | titlebar, tab strip visibility, autosave, default highlight and pin colours, custom palette, night mode, window geometry (`winx`, `winy`, `winw`, `winh`, `winmax`), last update check (`updcheck`) and the newest tag it found (`updtag`) - the tag the update button offers and the one an install fetches |
 | `doc-<hash>.txt` | per-document sidecar: zoom, fit, current page, highlights, page rotations, pins, signature stamps, deleted marks |
 | `last.txt` | the document that was open when you quit |
 

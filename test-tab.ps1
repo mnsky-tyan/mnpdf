@@ -126,6 +126,30 @@ ClickAt $h $x2 $ys
 if (AwaitTitle $h "mnpdf 1/$pagesB") { Pass 'clicking the second tab switches to its document' }
 else { Fail 'clicking the second tab switches to its document' "'$(Title $h)'" }
 
+# --- T6b: the strip hides on command and gives the band back -----------
+# The toggle is a real menu row, 302, and the titlebar row it mirrors are the
+# protocol: the driver posts WM_COMMAND, never a mouse click on a menu it cannot
+# see. What each side of the toggle must do is asserted through the band itself:
+# while the strip is hidden the coordinates that USED to be tab 1 belong to the
+# document, so clicking them cannot switch tabs; once it is back they switch again.
+[void][MN]::PostMessageW($h, 0x0111, [IntPtr]302, [IntPtr]::Zero)   # Hide tab strip
+Start-Sleep -Milliseconds 400
+$pref = Join-Path $env:APPDATA 'mnpdf\app.txt'
+$prefText = Get-Content $pref -Raw -ErrorAction SilentlyContinue
+if ($prefText -match 'tabstrip=0') { Pass 'hiding the strip records the choice in app.txt' }
+else { Fail 'hiding the strip records the choice in app.txt' "'$prefText'" }
+ClickAt $h $x1 $ys                     # the coordinates that were tab 1
+if (AwaitTitle $h "mnpdf 1/$pagesB") { Pass 'a hidden strip no longer claims the band' }
+else { Fail 'a hidden strip no longer claims the band' "'$(Title $h)'" }
+[void][MN]::PostMessageW($h, 0x0111, [IntPtr]302, [IntPtr]::Zero)   # Show tab strip
+Start-Sleep -Milliseconds 400
+ClickAt $h $x1 $ys
+if (AwaitTitle $h "mnpdf 1/$pagesA\s+$zoomA") { Pass 'showing the strip gives the band back to the tabs' }
+else { Fail 'showing the strip gives the band back to the tabs' "'$(Title $h)'" }
+ClickAt $h $x2 $ys                     # back to the second document, so T7 holds
+if (AwaitTitle $h "mnpdf 1/$pagesB") { Pass 'the second document is active again' }
+else { Fail 'the second document is active again' "'$(Title $h)'" }
+
 # --- T7: Close Tab closes the second document; the first survives ------------
 [void][MN]::PostMessageW($h, 0x0111, [IntPtr]301, [IntPtr]::Zero)   # Close Tab
 if (AwaitTitle $h "mnpdf 1/$pagesA\s+$zoomA") { Pass 'Close Tab drops the second document and keeps the first' }
@@ -243,6 +267,51 @@ if (-not (AwaitTitle $wC "mnpdf 1/$pagesA")) {
     if (AwaitTitle $wC2 "mnpdf 1/$pagesA\s+$zClose") { Pass 'closing a tab keeps its mark in its sidecar' }
     else { Fail 'closing a tab keeps its mark in its sidecar' "expected $zClose, got '$(Title $wC2)'" }
     [void](QuitApp $procC2)
+  }
+}
+
+# --- T12: a hidden strip stays hidden across a relaunch ------------------
+# The toggle writes the same preference file the other view choices live in, so
+# what a relaunch starts with is the proof the preference was persisted, not just
+# applied. The + square is the probe: with the strip shown it opens a tab, and
+# with the strip hidden its coordinates are document, so the same click cannot.
+$procD = Launch (Resolve-AppExe) $A
+$wD = FindAppWindow $procD.Id
+if (-not (AwaitTitle $wD 'mnpdf 1/\d+')) {
+  Fail 'a hidden strip stays hidden across a relaunch' "no document window: '$(Title $wD)'"
+} else {
+  [void][MN]::PostMessageW($wD, 0x0111, [IntPtr]302, [IntPtr]::Zero)   # Hide tab strip
+  Start-Sleep -Milliseconds 400
+  if (QuitApp $procD) {
+    $procD2 = Launch (Resolve-AppExe) $A
+    $wD2 = FindAppWindow $procD2.Id
+    if (AwaitTitle $wD2 'mnpdf 1/\d+') {
+      $mD = StripMetrics $wD2
+      $crD = New-Object MNRect
+      [void][MN]::GetClientRect($wD2, [ref]$crD)
+      $plusX = $crD.R - $crD.L - [int]($mD.strip / 2)
+      ClickAt $wD2 $plusX ([int]($mD.strip / 2))       # where the + would be
+      if (AwaitTitle $wD2 'mnpdf 1/\d+\s+\d+%') {
+        Pass 'a relaunch with the strip hidden starts with no strip'
+        [void][MN]::PostMessageW($wD2, 0x0111, [IntPtr]302, [IntPtr]::Zero)   # Show tab strip
+        Start-Sleep -Milliseconds 400
+        ClickAt $wD2 $plusX ([int]($mD.strip / 2))     # now it is the + square
+        if (AwaitTitle $wD2 '^mnpdf$') { Pass 'showing the strip restores the + button' }
+        else { Fail 'showing the strip restores the + button' "'$(Title $wD2)'" }
+      } else {
+        Fail 'a relaunch with the strip hidden starts with no strip' "the + click switched state: '$(Title $wD2)'"
+      }
+      [void][MN]::PostMessageW($wD2, 0x0111, [IntPtr]301, [IntPtr]::Zero)   # Close Tab
+      Start-Sleep -Milliseconds 400
+      $noTab = Select-String -Path $pref -Pattern 'tabstrip=1' -Quiet -ErrorAction SilentlyContinue
+      if ($noTab) { Pass 'showing during the last relaunch persisted too' }
+      else { Fail 'showing during the last relaunch persisted too' 'tabstrip=1 missing' }
+    } else {
+      Fail 'a hidden strip stays hidden across a relaunch' "relaunch: '$(Title $wD2)'"
+    }
+    [void](QuitApp $procD2)
+  } else {
+    Fail 'a hidden strip stays hidden across a relaunch' 'the quit did not complete'
   }
 }
 

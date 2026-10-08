@@ -1,4 +1,4 @@
-mnpdf v2.4.0 - Windows x64 portable release
+mnpdf v2.5.0 - Windows x64 portable release
 
 Run mnpdf.exe. Keep pdfium.dll in the same folder.
 
@@ -79,7 +79,10 @@ and undo history: switch away and back and everything is exactly where you
 left it. Opening a document fills an empty tab, or replaces what the current
 tab is showing, and the last tab you close quits the window, exactly like
 closing it from the taskbar. The strip shows each document's name, with a dot
-in front of it while that tab has unsaved changes.
+in front of it while that tab has unsaved changes. The right-click menu's
+Hide tab strip takes the strip away for a taller view of the document, and
+Show tab strip brings it back - the choice is remembered, and tabs can still
+be moved through with Ctrl+T, Ctrl+W and Ctrl+Tab while the strip is hidden.
 
 HIDING THE TITLEBAR
 Hide titlebar removes the caption entirely. The window still moves when you
