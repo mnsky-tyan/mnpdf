@@ -31,11 +31,12 @@ flock -n 9 || { printf '%s\n' 'GATE: another runner owns this checkout.' >&2; ex
 
 export MNPDF_GATE_EXE="${WINPWD}\\build\\mnpdf.exe"
 export MNPDF_GATE_STATE='' MNPDF_GATE_SUITE=''
-# The placement seams. The app honours MNPDF_WINDOW_DESKTOP by creating its
-# window on that desktop and never activating it (the placed path starts
-# minimised, whatever MNPDF_BACKGROUND says), so a suite's windows belong to
-# that desktop from creation instead of flashing onto whichever desktop is
-# current. The windowed wrapper exports both vars already; this resolves them
+# The placement seams. The app reads MNPDF_WINDOW_DESKTOP only to start itself
+# minimised and to refuse activation (the placed path starts minimised,
+# whatever MNPDF_BACKGROUND says); it has no virtual-desktop code of its own.
+# tests/lib.ps1 moves the app's windows to that desktop after launch (and
+# follows the popups opened later) using MNPDF_VD_DLL. The windowed wrapper
+# exports both vars already; this resolves them
 # here so a plain 'gate-test.sh' launch is equally safe - a run the pipeline's
 # test agent starts, for instance, with no wrapper involved. A machine without
 # the agent seat (CI) resolves neither var and runs exactly as before: the
@@ -77,8 +78,8 @@ export MNPDF_BACKGROUND=1
 export WSLENV="${WSLENV:+${WSLENV}:}MNPDF_GATE_EXE/w:MNPDF_GATE_STATE/w:MNPDF_GATE_SUITE/w:MNPDF_BACKGROUND/w:MNPDF_WINDOW_DESKTOP/w:MNPDF_VD_DLL/w"
 # MNPDF_BACKGROUND: the app starts minimized without activating, so gate runs
 # never steal focus. Suites inherit it through the test shell's environment.
-# MNPDF_WINDOW_DESKTOP + MNPDF_VD_DLL, when the seat resolved above, place the
-# window from creation instead.
+# MNPDF_WINDOW_DESKTOP + MNPDF_VD_DLL, when the seat resolved above, tell
+# tests/lib.ps1 to move each app window to that desktop after launch instead.
 GATE_COMMON="${WINPWD}\\scripts\\gate-common.ps1"
 
 cleanup_instances() {

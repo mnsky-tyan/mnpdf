@@ -206,7 +206,7 @@ function Ensure-VdaReady {
   if (-not $env:MNPDF_WINDOW_DESKTOP) { return $false }
   $dll = $env:MNPDF_VD_DLL
   if (-not $dll -or -not (Test-Path $dll)) { return $false }
-  try { Add-Type -TypeDefinition @'
+  try { $null = Add-Type -TypeDefinition @'
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
@@ -256,7 +256,7 @@ public static class VDM {
   }
 }
 '@ } catch { if (-not [VDM]::pOf) { return $false } }   # already loaded: reuse it
-  if (-not [VDM]::Bind($dll)) { return $false }
+  try { if (-not [VDM]::Bind($dll)) { return $false } } catch { return $false }
   $script:vdReady = $true
   return $true
 }
