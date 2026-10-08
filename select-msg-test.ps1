@@ -121,17 +121,30 @@ if ($tw -eq [IntPtr]::Zero) {
 
 
 # --- 2. drag select + WM_COPY ---
-$y = 520
-Post $h 0x201 ([IntPtr]1) (Lparam 200 $y)
-foreach ($x in 240, 300, 380, 470, 570, 680, 790, 850) {
-  Start-Sleep -Milliseconds 30
-  Post $h 0x200 ([IntPtr]1) (Lparam $x $y)
+# The line a fixed client y lands on depends on the fit zoom (it follows the
+# screen the runner gives this suite: 165% there, 173% here) and on the tab
+# strip the view now reserves above the document, so a y calibrated to one
+# layout misses on every other: off text the drag selects nothing, WM_COPY
+# leaves the clipboard alone, and the case then reads whatever it held before.
+# Sweep the block the way the word case below does and take the first drag
+# whose copy carries the word, so the case tests the capability at any zoom.
+# The steps are 12 px because the text lines sit 19-21 px apart at any zoom
+# this suite can get, and every candidate stays below the strip (60 device px
+# at 192 dpi) and clear of the bottom auto-scroll zone (clientH - 56).
+$t = ''
+for ($cand = 484; $cand -le 616; $cand += 12) {
+  Post $h 0x201 ([IntPtr]1) (Lparam 200 $cand)                  # press left of the line's text
+  foreach ($x in 240, 300, 380, 470, 570, 680, 790, 850) {
+    Start-Sleep -Milliseconds 30
+    Post $h 0x200 ([IntPtr]1) (Lparam $x $cand)
+  }
+  # copy MID-DRAG (selection survives release now; highlight happens via the menu)
+  $t = CopyAndWait $h (GetClip)
+  Post $h 0x202 ([IntPtr]0) (Lparam 850 $cand)
+  Start-Sleep -Milliseconds 600
+  if (-not $script:clipOk) { break }
+  if ($t -match 'recommendation') { break }
 }
-# copy MID-DRAG (selection survives release now; highlight happens via the menu)
-$prevClip = GetClip
-$t = CopyAndWait $h $prevClip
-Post $h 0x202 ([IntPtr]0) (Lparam 850 $y)
-Start-Sleep -Milliseconds 600
 if (-not $script:clipOk) { Write-Output "SKIP drag copy: clipboard locked" }
 elseif (-not (Test-ClipboardRoundTrip)) { Write-Output "SKIP drag copy: clipboard not writable on this box" }
 elseif ($t -match 'recommendation') { Pass "drag select + copy: [$($t.Length)] $t" }
