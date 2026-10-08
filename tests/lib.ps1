@@ -22,8 +22,8 @@
 # stale-value read.
 $ErrorActionPreference = 'Stop'
 
-# the per-launch desktop watchers kept alive for the suite's lifetime; a plain
-# empty list so Start-DesktopWatcher's += is always safe
+# the per-launch desktop watchers; a plain empty list so Start-DesktopWatcher's
+# append is always safe
 $global:desktopWatchers = @()
 
 # ---- the app's interop surface (one Add-Type per suite process) ----------
@@ -239,17 +239,19 @@ public static class VDM {
   // every TOP-LEVEL window owned by one pid, so a single watcher can follow the
   // app's main window and every popup it opens later (pin tip, pin editor,
   // update box, colour box, range box, drawers) - they all belong to the same
-  // process, and a popup belongs to the desktop current when it is shown
-  static List<IntPtr> found = new List<IntPtr>();
-  static uint want;
+  // process, and a popup belongs to the desktop current when it is shown.
+  // Stateless: the pid and its buffer travel through the callback's lparam as a
+  // pinned GCHandle, so overlapping callers never share a list.
   static bool Pick(IntPtr h, IntPtr l) {
+    object[] box = (object[])GCHandle.FromIntPtr(l).Target;
     uint pid; GetWindowThreadProcessId(h, out pid);
-    if (pid == want) found.Add(h);
+    if (pid == (uint)box[0]) ((List<IntPtr>)box[1]).Add(h);
     return true;
   }
   public static IntPtr[] TopLevelOf(uint pid) {
-    found = new List<IntPtr>(); want = pid;
-    EnumWindows(Pick, IntPtr.Zero);
+    List<IntPtr> found = new List<IntPtr>();
+    GCHandle g = GCHandle.Alloc(new object[] { pid, found });
+    try { EnumWindows(Pick, (IntPtr)g); } finally { g.Free(); }
     return found.ToArray();
   }
 }
@@ -308,7 +310,9 @@ function Start-DesktopWatcher([int]$ProcId) {
     while ($true) {
       $p = Get-Process -Id $pidToWatch -ErrorAction SilentlyContinue
       if (-not $p) { break }                     # the app exited: stop watching
-      foreach ($h in [VDM]::TopLevelOf([uint32]$pidToWatch)) {
+      $wins = @()
+      try { $wins = [VDM]::TopLevelOf([uint32]$pidToWatch) } catch { }
+      foreach ($h in $wins) {
         try {
           $of = [VDM]::DesktopOf($h)
           if ($of -eq $desktop) { continue }     # already where it belongs
@@ -319,9 +323,17 @@ function Start-DesktopWatcher([int]$ProcId) {
     }
   }).AddArgument($ProcId).AddArgument($target)
   $handle = $rs.BeginInvoke()
-  # keep the runspace alive for the suite's lifetime; both it and the handle go
-  # away with this process when the app exits
-  $global:desktopWatchers += ,@($shell, $rs, $handle)
+  # retire watchers whose pipeline already finished: their app exited, so the
+  # runspace is closed and dropped instead of held for the suite's lifetime
+  $alive = @()
+  foreach ($t in $global:desktopWatchers) {
+    if ($t[1].InvocationStateInfo.State -eq 'Running') { $alive += ,$t; continue }
+    try { [void]$t[1].EndInvoke($t[2]) } catch { }
+    $t[1].Dispose(); $t[0].Dispose()
+  }
+  # keep this one referenced so it cannot be collected while it watches; the
+  # next launch retires it through the sweep above
+  $global:desktopWatchers = $alive + ,@($shell, $rs, $handle)
 }
 
 # Start the app and hand back its running process with a shown, owned window,
