@@ -2639,8 +2639,31 @@ static void cleanupUpdateLeftovers() {
     }
 }
 
+static std::wstring lastDocumentPath();
+
+// a path going back out on the command line: the relaunched copy reads it with
+// CommandLineToArgvW, so embedded quotes are escaped and the result wrapped
+static std::wstring quoteForCommandLine(const std::wstring& path) {
+    std::wstring out = L"\"";
+    for (wchar_t c : path) {
+        if (c == L'"') out += L'\\';
+        out += c;
+    }
+    return out + L"\"";
+}
+
+// the document the relaunch hands on: the open bundle's own path if this process
+// has one, else what a plain launch would reopen. Empty means the reader has no
+// document to resume, and the relaunch stays argument-less.
+static std::wstring resumeArgumentForUpdate() {
+    const std::wstring& path = gViewTab->path;
+    if (!path.empty()) return quoteForCommandLine(path);
+    std::wstring last = lastDocumentPath();
+    return last.empty() ? L"" : quoteForCommandLine(last);
+}
+
 // One thread does the whole install; the UI thread only ever hears about it.
-static void installUpdate(const std::wstring& tag) {
+static void installUpdate(const std::wstring& tag, const std::wstring& resume) {
     std::wstring zip = updateZipFor(tag);
     std::wstring staging = zip.substr(0, zip.find_last_of(L"\\") + 1) + L"mnpdf-update-" + tag + L"\\";
     std::wstring folder = updateFolder();
@@ -2688,7 +2711,8 @@ static void installUpdate(const std::wstring& tag) {
     if (ok) {
         std::wstring exe = folder + L"\\mnpdf.exe";
         reportUpdateStep(L"Starting mnpdf " + tag + L"...", false, false, true);
-        HINSTANCE started = ShellExecuteW(gWnd, L"open", exe.c_str(), nullptr,
+        const wchar_t* param = resume.empty() ? nullptr : resume.c_str();
+        HINSTANCE started = ShellExecuteW(gWnd, L"open", exe.c_str(), param,
                                           folder.c_str(), SW_SHOWNORMAL);
         ok = ((INT_PTR)started > 32);
         if (!ok) error = L"the updated mnpdf could not be started";
@@ -2709,8 +2733,9 @@ static void startUpdateInstall(const std::wstring& tag) {
     updateDialogAction();
     updateDialogText(L"Installing mnpdf " + tag + L". Keep mnpdf open until it restarts.");
     HWND target = gWnd;
-    std::thread([target, tag]() {
-        installUpdate(tag);
+    std::wstring resume = resumeArgumentForUpdate();   // the UI thread reads the bundle, not the worker
+    std::thread([target, tag, resume]() {
+        installUpdate(tag, resume);
         if (!target || !IsWindow(target) || gShuttingDown.load()) {
             gUpdateInstallRunning.store(false);
             return;
@@ -3039,6 +3064,26 @@ static void writeLastDocument(const std::wstring& path) {
         fputc('\n', lfp);
         fclose(lfp);
     }
+}
+
+// last.txt is what a launch with no argument of its own reopens: it is decoded
+// here once, so a plain launch and the update relaunch read it the same way
+static std::wstring lastDocumentPath() {
+    wchar_t dir[MAX_PATH];
+    appDirW(dir, MAX_PATH);
+    FILE* fp = _wfopen((std::wstring(dir) + L"\\last.txt").c_str(), L"rb");
+    if (!fp) return L"";
+    char buf[MAX_PATH * 3] = "";
+    size_t got = fread(buf, 1, sizeof(buf) - 1, fp);
+    fclose(fp);
+    while (got && (buf[got - 1] == '\n' || buf[got - 1] == '\r')) got--;
+    buf[got] = 0;
+    if (!got) return L"";
+    int wn = MultiByteToWideChar(CP_UTF8, 0, buf, -1, nullptr, 0);
+    if (wn <= 0) return L"";
+    std::vector<wchar_t> wpath((size_t)wn);
+    MultiByteToWideChar(CP_UTF8, 0, buf, -1, wpath.data(), wn);
+    return std::wstring(wpath.data());
 }
 
 static void writeSidecarNow() {
@@ -5970,22 +6015,8 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int show) {
         // show, so it starts empty and offers the open dialog instead.
         opened = false;
     } else {
-        wchar_t dir[MAX_PATH];
-        appDirW(dir, MAX_PATH);
-        FILE* fp = _wfopen((std::wstring(dir) + L"\\last.txt").c_str(), L"rb");
-        if (fp) {                                   // plain launch: reopen last document
-            char buf[MAX_PATH * 3] = "";
-            size_t got = fread(buf, 1, sizeof(buf) - 1, fp);
-            fclose(fp);
-            while (got && (buf[got - 1] == '\n' || buf[got - 1] == '\r')) got--;
-            buf[got] = 0;
-            if (got) {
-                int wn = MultiByteToWideChar(CP_UTF8, 0, buf, -1, nullptr, 0);
-                std::vector<wchar_t> wpath(wn);
-                MultiByteToWideChar(CP_UTF8, 0, buf, -1, wpath.data(), wn);
-                if (GetFileAttributesW(wpath.data()) != INVALID_FILE_ATTRIBUTES) opened = openPath(wpath.data());
-            }
-        }
+        std::wstring last = lastDocumentPath();     // plain launch: reopen last document
+        if (GetFileAttributesW(last.c_str()) != INVALID_FILE_ATTRIBUTES) opened = openPath(last);
     }
     if (argv) LocalFree(argv);
     if (!opened) openDialog();
