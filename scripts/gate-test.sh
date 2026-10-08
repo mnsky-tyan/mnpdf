@@ -31,10 +31,31 @@ flock -n 9 || { printf '%s\n' 'GATE: another runner owns this checkout.' >&2; ex
 
 export MNPDF_GATE_EXE="${WINPWD}\\build\\mnpdf.exe"
 export MNPDF_GATE_STATE='' MNPDF_GATE_SUITE=''
+# The placement seams. The app honours MNPDF_WINDOW_DESKTOP by creating its
+# window on that desktop and never activating it (the placed path starts
+# minimised, whatever MNPDF_BACKGROUND says), so a suite's windows belong to
+# that desktop from creation instead of flashing onto whichever desktop is
+# current. The windowed wrapper exports both vars already; this resolves them
+# here so a plain 'gate-test.sh' launch is equally safe - a run the pipeline's
+# test agent starts, for instance, with no wrapper involved. A machine without
+# the agent seat (CI) resolves neither var and runs exactly as before: the
+# suite shells then run foreground as they always have on such a machine.
+if [[ -z "${MNPDF_WINDOW_DESKTOP:-}" ]] && command -v win-desktop-show >/dev/null 2>&1; then
+  seat="$(timeout 20s win-desktop-show --seat 2>/dev/null || true)"
+  seat_index="$(printf '%s\n' "$seat" | sed -n '1p')"
+  seat_dll="$(printf '%s\n' "$seat" | sed -n '2p')"
+  if [[ "$seat_index" =~ ^[0-9]+$ && -n "$seat_dll" ]]; then
+    export MNPDF_WINDOW_DESKTOP="$seat_index"
+    export MNPDF_VD_DLL="$seat_dll"
+    printf 'GATE: windows are placed on desktop %s for this run\n' "$seat_index"
+  fi
+fi
 export MNPDF_BACKGROUND=1
 export WSLENV="${WSLENV:+${WSLENV}:}MNPDF_GATE_EXE/w:MNPDF_GATE_STATE/w:MNPDF_GATE_SUITE/w:MNPDF_BACKGROUND/w:MNPDF_WINDOW_DESKTOP/w:MNPDF_VD_DLL/w"
 # MNPDF_BACKGROUND: the app starts minimized without activating, so gate runs
 # never steal focus. Suites inherit it through the test shell's environment.
+# MNPDF_WINDOW_DESKTOP + MNPDF_VD_DLL, when the seat resolved above, place the
+# window from creation instead.
 GATE_COMMON="${WINPWD}\\scripts\\gate-common.ps1"
 
 cleanup_instances() {
