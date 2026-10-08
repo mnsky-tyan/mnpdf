@@ -108,6 +108,8 @@ ${CMD_CLEAR_SIGS}       = 204   # drop every stamp from the in-memory doc
 ${CMD_MERGE}            = 205   # add files to the end of this document
 ${CMD_SPLIT}            = 206   # export a page range into a new file
 ${CMD_REOPEN_LAST}      = 207   # open the document this one replaced
+${CMD_NEW_TAB}          = 300   # New Tab: one more document in this window
+${CMD_CLOSE_TAB}       = 301   # Close Tab: drop the active one
 
 # the arc.pdf fixture's page count, read out of the title assertions it feeds
 ${FixturePages} = 13
