@@ -133,6 +133,7 @@ $t = CopyAndWait $h $prevClip
 Post $h 0x202 ([IntPtr]0) (Lparam 850 $y)
 Start-Sleep -Milliseconds 600
 if (-not $script:clipOk) { Write-Output "SKIP drag copy: clipboard locked" }
+elseif (-not (Test-ClipboardRoundTrip)) { Write-Output "SKIP drag copy: clipboard not writable on this box" }
 elseif ($t -match 'recommendation') { Pass "drag select + copy: [$($t.Length)] $t" }
 else { Fail "drag select" "clipboard was '$t'" }
 # release kept the selection: highlight it through the same command the right-click menu posts
@@ -162,6 +163,7 @@ foreach ($y in 300, 340, 260, 380, 220, 420, 180, 460) {
   }
 }
 if (-not $script:clipOk) { Write-Output "SKIP word select: clipboard locked" }
+elseif (-not (Test-ClipboardRoundTrip)) { Write-Output "SKIP word select: clipboard not writable on this box" }
 elseif ($word) { Pass "word select: '$word'" }
 else { Fail "word select" "no single word in the sweep (last '$t')" }
 
@@ -179,6 +181,7 @@ $t = CopyAndWait $h (GetClip)
 # short heading, so a prose length would assume one document's layout again
 $w = if ($word) { $word.Trim() } else { '' }
 if (-not $script:clipOk) { Write-Output "SKIP line select: clipboard locked" }
+elseif (-not (Test-ClipboardRoundTrip)) { Write-Output "SKIP line select: clipboard not writable on this box" }
 elseif ($w -and $t -and $t.Contains($w) -and $t.Length -ge $w.Length) { Pass "line select: '$t'" }
 else { Fail "line select" "clipboard was '$t' (word was '$w')" }
 
