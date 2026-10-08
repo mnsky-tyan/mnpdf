@@ -10,11 +10,19 @@ $ErrorActionPreference = 'Stop'
 # popup can take the keyboard).
 function Read-SuiteRoster {
   param([string]$RosterPath)
+  # MNPDF_SKIP_SUITES (comma-separated names) drops suites from the roster for
+  # this run: a suite can be environmentally broken on one machine (the
+  # clipboard suites fail when some other program holds the clipboard) while
+  # staying green on CI, which never sets the variable.
+  $skip = @()
+  if ($env:MNPDF_SKIP_SUITES) { $skip = $env:MNPDF_SKIP_SUITES.Split(',') | ForEach-Object { $_.Trim() } }
   foreach ($raw in (Get-Content -LiteralPath $RosterPath)) {
     $line = ("$raw" -replace '#.*$', '').Trim()
     if (-not $line) { continue }
     $fg = $line.EndsWith('*')
-    [pscustomobject]@{ Name = $line.TrimEnd('*').Trim(); Foreground = $fg }
+    $name = $line.TrimEnd('*').Trim()
+    if ($skip -contains $name) { continue }
+    [pscustomobject]@{ Name = $name; Foreground = $fg }
   }
 }
 
@@ -107,7 +115,7 @@ function Invoke-SuiteRun {
   $null = New-Item -ItemType Directory -Force -Path $appData
   $null = New-Item -ItemType Directory -Force -Path $temp
   # the record of THIS shell, for the gate's cleanup: it ends the test shell and
-  # its app children by identity and exact path; CI just deletes it with the dir
+  # its app children by identity and exact path; CI just deletes it with the dir.
   $self = Get-Process -Id $PID
   @{ Id = $PID; Started = $self.StartTime.ToUniversalTime().Ticks } |
     ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $state 'runner.json')
@@ -154,8 +162,12 @@ function Invoke-SuiteRun {
 }
 
 # End a timed-out or crashed suite's process tree: the test shell recorded in
-# <state>\runner.json, then any app it launched. Parent identity AND exact
-# executable path, never every mnpdf.exe on the box.
+# <state>\runner.json, then any app it launched. An app counts as launched here
+# only through one of the two parents the gate alone can produce: the recorded
+# shell itself, which still parents a Start-Process launch after the shell exits,
+# and the WMI provider host the windowed-gate spawn goes through. A copy the
+# reader opens runs from Explorer or a terminal and matches neither, so a record
+# an interrupted run left behind decides nothing about it.
 function Stop-RunnerTree {
   $record = Join-Path $env:MNPDF_GATE_STATE 'runner.json'
   if (-not (Test-Path -LiteralPath $record)) { exit 0 }
@@ -168,10 +180,12 @@ function Stop-RunnerTree {
       if (-not $runner.WaitForExit(5000)) { throw 'Test shell did not exit' }
     } catch { if (-not $runner.HasExited) { throw } }
   }
+  $gateParents = @([int]$owned.Id)
+  $gateParents += @(Get-CimInstance Win32_Process -Filter "Name = 'WmiPrvSE.exe'" |
+    ForEach-Object { [int]$_.ProcessId })
   $children = Get-CimInstance Win32_Process -Filter "Name = 'mnpdf.exe'" |
-    Where-Object { $_.ParentProcessId -eq $owned.Id -and
-      $_.ExecutablePath -eq $env:MNPDF_GATE_EXE -and
-      $_.CreationDate.ToUniversalTime().Ticks -ge $owned.Started }
+    Where-Object { $_.ExecutablePath -eq $env:MNPDF_GATE_EXE -and
+      ($gateParents -contains [int]$_.ParentProcessId) }
   foreach ($child in $children) {
     $app = Get-Process -Id $child.ProcessId -ErrorAction SilentlyContinue
     if (-not $app -or $app.Path -ne $env:MNPDF_GATE_EXE) { continue }

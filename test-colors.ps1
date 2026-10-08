@@ -128,13 +128,21 @@ function BoxText([IntPtr]$Box) {
 # every visible string inside a dialog body, for the same reason
 function DlgBody([IntPtr]$Dlg) {
   if ($Dlg -eq [IntPtr]::Zero) { return '' }
+  # The dialog's STATIC texts, read with WM_GETTEXT via [MN]::SendText. This
+  # used to go through UI Automation, which returned an empty tree for a dialog
+  # sitting on another virtual desktop (the gate runs every window on 'second');
+  # raw messages do not care which desktop a window lives on.
   try {
-    $el = [System.Windows.Automation.AutomationElement]::FromHandle($Dlg)
-    if (-not $el) { return '' }
-    $all = $el.FindAll([System.Windows.Automation.TreeScope]::Descendants,
-              [System.Windows.Automation.Condition]::TrueCondition)
     $parts = @()
-    foreach ($n in $all) { if ($n.Current.Name) { $parts += $n.Current.Name } }
+    $prev = [IntPtr]::Zero
+    while ($true) {
+      $prev = [MN]::FindWindowExW($Dlg, $prev, 'Static', [IntPtr]::Zero)
+      if ($prev -eq [IntPtr]::Zero) { break }
+      $b = New-Object char[] 4096
+      [void][MN]::SendText($prev, 0x000D, [IntPtr]4095, $b)
+      $t = (-join $b).TrimEnd([char]0)
+      if ($t) { $parts += $t }
+    }
     return ($parts -join "`n")
   } catch { return '' }          # a dialog can be gone by the time it is read
 }
@@ -348,7 +356,14 @@ function DragBlock([IntPtr]$Wnd, [double]$Fx0, [double]$Fy0, [double]$Fx1, [doub
   $cr = New-Object MNRect
   [void][MN]::GetClientRect($Wnd, [ref]$cr)
   $cwPx = $cr.R - $cr.L; $chPx = $cr.B - $cr.T
-  $px0 = [int]($cwPx * $Fx0); $py0 = [int]($chPx * $Fy0)
+  # The reader draws a tab strip at the top of the client, and the strip is
+  # chrome: a click down there belongs to it, never to the document, exactly
+  # like a toolbar. Its band grows with the window's scale, so the drag start is
+  # clamped below the strip as the app measures it (TabStripPx, tests\lib.ps1) -
+  # a fixed pixel count sits inside the strip on a high-dpi display and the
+  # press is eaten by the strip's own hit test.
+  $stripPx = TabStripPx $Wnd
+  $px0 = [int]($cwPx * $Fx0); $py0 = [Math]::Max([int]($chPx * $Fy0), $stripPx)
   $px1 = [int]($cwPx * $Fx1); $py1 = [int]($chPx * $Fy1)
   [void][MN]::PostMessageW($Wnd, 0x0201, [IntPtr]1, (New-Object IntPtr (($py0 -shl 16) -bor ($px0 -band 0xFFFF))))
   Start-Sleep -Milliseconds 60

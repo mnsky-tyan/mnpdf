@@ -1,4 +1,4 @@
-mnpdf v2.3.0 - Windows x64 portable release
+mnpdf v2.4.0 - Windows x64 portable release
 
 Run mnpdf.exe. Keep pdfium.dll in the same folder.
 
@@ -23,20 +23,20 @@ Ctrl+Z and Ctrl+Y.
 Annotations never stack on top of each other and never block the page: a
 pin's editor stays inside the window, and clicking anywhere else closes it.
 
-PAGES
-The right-click menu opens two drawers beside the reader. Thumbnails shows
-a strip of page previews: click one to jump there, Ctrl+Up and Ctrl+Down to
-move the selected page, Delete to remove it, R to turn it. Outline panel
-lists the document's own bookmarks, indented, and a click goes to the page
-it names.
+ADVANCED
+Advanced, in the right-click menu, holds everything past plain reading.
+
+The two drawers live there. Thumbnails shows a strip of page previews:
+click one to jump there, Ctrl+Up and Ctrl+Down to move the selected page,
+Delete to remove it, R to turn it. Outline panel lists the document's own
+bookmarks, indented, and a click goes to the page it names.
+
+Night mode inverts the page for a dark screen and comes back that way after
+a restart.
 
 Merge PDFs adds other files to the end of the document you are reading.
 Split pages exports a range - 2-5 or 1,3,8 - into a new PDF and leaves the
 original alone.
-
-Reopen last document goes back to the document the current one replaced, so
-opening the wrong file by mistake costs one click to undo. It spans this
-session only.
 
 Insert signature takes a JPEG and asks where to put it: the next click on a
 page drops the stamp there. Clear signatures takes them all away again. A
@@ -44,13 +44,14 @@ stamp reaches the PDF when you save, and sits in the sidecar until then,
 exactly like a highlight. A signature has to be a JPEG: the picker refuses
 anything else rather than handing it to the image decoder.
 
-Night mode inverts the page for a dark screen and comes back that way after
-a restart.
+Reopen last document goes back to the document the current one replaced, so
+opening the wrong file by mistake costs one click to undo. It spans this
+session only.
 
-Advanced, at the bottom of the right-click menu, lists the heavy options -
-OCR, Word export, editing text in place, form creation, encryption, tabs.
-They are greyed on purpose: they need a different kind of program, and this
-one stays a reader you can copy onto a USB stick.
+Below those, the same menu lists what is still to come - OCR, Word export,
+editing text in place, form creation, encryption, side-by-side tabs - greyed on
+purpose: they need a different kind of program, and this one stays a reader you
+can copy onto a USB stick.
 
 SAVING
 With autosave on (the default) every change is written to a sidecar file
@@ -60,6 +61,25 @@ rotations into the PDF itself with Save As under Ctrl+Shift+S. Settings,
 palette, night mode, window position and the last document you had open are
 remembered in the same folder, so the next start resumes exactly where you
 left off.
+
+SEVERAL WINDOWS
+Run mnpdf.exe twice and you get two independent windows, each reading its own
+document, so two PDFs can sit side by side. The window you started first owns
+the remembered settings and the document a plain launch reopens; later windows
+read those shared settings but start empty and write none of them, so opening
+a second document does not disturb the first. A plain second launch starts
+empty rather than reopening the document the first window already has.
+
+TABS
+One window can hold several documents as tabs. Ctrl+T opens a new tab, Ctrl+W
+closes the current one, Ctrl+Tab moves to the next, and clicking a tab in the
+strip along the top of the window switches to it - the + at the right end
+opens one too. Each tab keeps its own document, page, zoom, highlights, pins
+and undo history: switch away and back and everything is exactly where you
+left it. Opening a document fills an empty tab, or replaces what the current
+tab is showing, and the last tab you close quits the window, exactly like
+closing it from the taskbar. The strip shows each document's name, with a dot
+in front of it while that tab has unsaved changes.
 
 HIDING THE TITLEBAR
 Hide titlebar removes the caption entirely. The window still moves when you

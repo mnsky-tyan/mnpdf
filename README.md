@@ -47,37 +47,56 @@ operation rather than a loss of information.
 **Pages.** Rotate the current page clockwise or counter-clockwise from the
 right-click menu; the rotation persists with the document.
 
-**Page drawer.** *Thumbnails* (right-click menu) opens a strip of page
-previews beside the reader. Click one to jump to that page, `Ctrl+Up` /
-`Ctrl+Down` to move the selected page, `Delete` to remove it, and `R` to
-rotate it. *Outline panel* opens the document's own bookmarks, indented, and a
-click goes to the page it names.
+**Advanced.** The *Advanced* submenu in the right-click menu holds everything
+past plain reading. The tools that shipped live there, in two groups.
 
-**Rearranging and combining.** *Merge PDFs* adds other files to the end of the
+*Page drawer.* *Thumbnails* opens a strip of page previews beside the reader.
+Click one to jump to that page, `Ctrl+Up` / `Ctrl+Down` to move the selected
+page, `Delete` to remove it, and `R` to rotate it. *Outline panel* opens the
+document's own bookmarks, indented, and a click goes to the page it names.
+
+*Dark reading.* *Night mode* inverts the page for a dark screen and is
+remembered for the next start.
+
+*Rearranging and combining.* *Merge PDFs* adds other files to the end of the
 document you are reading. *Split pages* exports a range - `2-5` or `1,3,8` -
 into a new PDF without touching the original.
 
-**Signing.** *Insert signature* takes a JPEG and asks where to put it; the
+*Signing.* *Insert signature* takes a JPEG and asks where to put it; the
 next click on a page drops the stamp there. A file that is not a JPEG is
 refused rather than decoded. *Clear signatures* takes them all
 away again. A stamp lives in the file once you save, and in the
 sidecar until then, exactly like a highlight.
 
-**Dark reading.** *Night mode* inverts the page for a dark screen and is
-remembered for the next start.
-
-**Coming back.** *Reopen last document* opens the document the current one
+*Coming back.* *Reopen last document* opens the document the current one
 replaced - the one you had a moment ago - so opening the wrong file by
 mistake costs one click to undo. It spans this session only.
 
-**Advanced.** One more row in the right-click menu opens the heavy options -
-OCR, Word export, in-place text editing, form creation, encryption, tabs. They
-are listed and greyed: they need a different kind of program, and this one
-stays a reader you can copy onto a USB stick.
+Below those, the same submenu lists the heavy options still to come - OCR,
+Word export, in-place text editing, form creation, encryption, side-by-side
+tabs. They are listed and greyed: they need a different kind of program, and
+this one stays a reader you can copy onto a USB stick.
 
 **Printing.** `Ctrl+P` opens the standard Windows print dialog and prints
 clean pages. Annotations, highlights and pins stay in the file and on screen
 and are simply not printed.
+
+**Tabs.** One window can hold several documents at once. `Ctrl+T` opens a new
+tab, `Ctrl+W` closes the current one, `Ctrl+Tab` cycles to the next, and
+clicking a tab in the strip along the top of the window switches to it - the
+`+` at the right end opens one too. Every tab carries its own document, page,
+zoom, marks and undo history, so switching away and back leaves everything
+exactly where it was. A document you open fills an empty tab, or replaces what
+the current tab is showing, and closing the last tab quits like closing the
+window. The strip shows each document's name, with a dot in front while that
+tab has unsaved changes.
+
+**Several windows.** Run `mnpdf.exe` twice and you get two independent
+windows, each reading its own document, so two PDFs can sit side by side. The
+window that started first owns the remembered settings and the document a
+plain launch reopens; later windows read those shared settings but start empty
+and write none of them. A plain second launch starts empty rather than
+reopening what the first window already has.
 
 **The window.** Hide the titlebar and the caption is gone for good - it does
 not come back when another window takes focus. The window can still be moved
@@ -92,6 +111,7 @@ including after quitting while minimised.
 | | |
 |---|---|
 | `Ctrl+O` | open a document |
+| `Ctrl+T`, `Ctrl+W`, `Ctrl+Tab` | new tab, close tab, next tab |
 | `Ctrl+S` / `Ctrl+Shift+S` | save / save as |
 | `Ctrl+P` | print |
 | `Ctrl+F`, `F3`, `Shift+F3` | find, next, previous |
@@ -136,7 +156,7 @@ sets up itself with `VsDevCmd.bat -arch=x64`. Output lands in `build/`.
 
 ## Tests
 
-Eight PowerShell suites drive the real application: they launch the built
+Nine PowerShell suites drive the real application: they launch the built
 binary, send it the same messages a reader's mouse and keyboard generate, and
 assert on the app's own state files, its window, its frame, the pages it
 renders (as per-page raster checksums, so "that page moved" is a fact rather
@@ -144,13 +164,14 @@ than a guess) and, for a custom colour and for night mode, the pixels it
 paints.
 
 ```
-bash scripts/gate-test.sh     # from WSL: builds, then runs all eight suites
+bash scripts/gate-test.sh     # from WSL: builds, then runs all nine suites
 ```
 
 Each suite gets its own `APPDATA` and `TEMP`, so nothing written by one can
-reach the next. Nine environment variables are the seams of this setup - six
-read by the app, three by the runner plumbing - and none of them does anything
-unless it is set:
+reach the next. Twelve environment variables are the seams of this setup -
+seven read by the app and seven set by the runner plumbing, with
+`MNPDF_BACKGROUND` and `MNPDF_WINDOW_DESKTOP` in both groups - and none of them
+does anything unless it is set:
 
 | | |
 |---|---|
@@ -163,17 +184,24 @@ unless it is set:
 | `MNPDF_GATE_EXE` | runner: the binary the suites drive, so a suite never hardcodes a path |
 | `MNPDF_GATE_STATE` | runner: the suite's private state directory (`APPDATA`/`TEMP` live under it) |
 | `MNPDF_GATE_SUITE` | runner: which suite script to run |
+| `MNPDF_SKIP_SUITES` | runner: a comma-separated list of suites to drop from the roster for this run, for a suite that is environmentally broken on one machine |
+| `MNPDF_WINDOW_DESKTOP` | app and runner: the 0-based virtual desktop every app window is moved to before any restore or measurement, so a local gate keeps its windows off the desk in use - the app reads it too, to start without ever taking the foreground |
+| `MNPDF_VD_DLL` | runner: the `VirtualDesktopAccessor.dll` path the move-to-desktop above needs |
 
-The WSL runner forwards its three through `WSLENV` (`/w`, Windows-side only),
-which is what lets `gate-test.sh` hand each suite its paths without quoting a
-Windows path into a command line.
+The WSL runner forwards the runner-owned seams (`MNPDF_GATE_EXE`,
+`MNPDF_GATE_STATE`, `MNPDF_GATE_SUITE`, `MNPDF_WINDOW_DESKTOP`, `MNPDF_VD_DLL`)
+plus `MNPDF_BACKGROUND` through `WSLENV` (`/w`, Windows-side only), which is
+what lets `gate-test.sh` hand each suite its paths without quoting a Windows
+path into a command line. `MNPDF_SKIP_SUITES` needs no forwarding:
+`gate-test.sh` filters its own roster with it, the same comma-separated list
+`Read-SuiteRoster` applies for `test-ci.ps1`.
 
 Every suite but `test-colors.ps1` keeps its window minimised: the colour suite
 really types into the app's colour box, and a minimised owner can never give
 that popup the keyboard.
 
 On a plain Windows machine - and in CI - there is no `wslpath`, so
-`scripts/test-ci.ps1` is the same build and the same eight suites with no WSL in
+`scripts/test-ci.ps1` is the same build and the same nine suites with no WSL in
 the way. Both runners share one roster (`scripts/suites.txt`), one build recipe
 and one pass/fail rule (`scripts/gate-common.ps1`), so a suite cannot pass in
 WSL and behave differently in CI. It is what `.github/workflows/ci.yml` runs on
@@ -197,10 +225,10 @@ resource.h
 third_party/pdfium/   PDFium headers, import library, DLL and license
 tests/lib.ps1         shared test harness (window lookup, launch, waiting)
 test-*.ps1            feature suites (select-msg, features, suite2,
-                      continuous, release, captionless, pageedit, colors)
+                      continuous, release, captionless, tab, pageedit, colors)
 test-release.ps1      release contract: version agreement with README.txt, the
                       ZIP file list, the update dialog, a full self-install
-scripts/gate-test.sh  WSL entry point: build and all eight suites
+scripts/gate-test.sh  WSL entry point: build and all nine suites
 scripts/test-ci.ps1   Windows/CI entry point: the same build and suites
 .github/workflows/ci.yml  runs test-ci.ps1 on a Windows runner
 ```

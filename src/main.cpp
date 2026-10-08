@@ -52,7 +52,7 @@
 #pragma comment(lib, "oleaut32.lib")
 
 // ---- state ----
-static const wchar_t* const kAppVersion = L"2.3.0";
+static const wchar_t* const kAppVersion = L"2.4.0";
 static const wchar_t* const kGitHubRoot = L"https://github.com";
 static const wchar_t* const kRepoPath = L"mnsky-tyan/mnpdf";
 static const std::wstring kLatestReleaseUrl =
@@ -69,44 +69,190 @@ static HWND gWnd = nullptr;
 static std::atomic<bool> gUpdateCheckRunning = false;
 static std::atomic<bool> gManualUpdateRequested = false;
 static std::atomic<bool> gShuttingDown = false;
+// true when the app was started under the test gate (MNPDF_BACKGROUND set): the
+// window starts minimised and INACTIVE, and every SetForegroundWindow below is
+// skipped. A gate-run app window lives on a different virtual desktop, and
+// foregrounding a window there FLIPS the whole desktop to it - the one thing a
+// test run must never do to the person using the machine. SetFocus stays: it is
+// thread-internal and cannot change the active desktop.
+static bool gBackground = false;
+
+// true when the launcher told the app its window will be MOVED to another
+// virtual desktop (MNPDF_WINDOW_DESKTOP set by a windowed gate run). The
+// measured failure: a suite that runs with real foreground - the colours
+// suite removes MNPDF_BACKGROUND so it can type into the app - had its window
+// shown on the working desktop at start-up, and every guarded
+// SetForegroundWindow below (the pin editor, the colour box, the range box)
+// then fired, because gBackground was false. With foreground rights granted
+// by the suite's first posted message, those activations land - the app's
+// window comes to the front on its own desktop and flips the person's view
+// over to it. The rule is the same discipline as gBackground: a window bound
+// for another desktop never takes foreground.
+static bool gPlaced = false;
+
+// Whether this window may take foreground at all. Both gate modes say no:
+// a background launch (MNPDF_BACKGROUND) and a window placed on a chosen
+// virtual desktop (MNPDF_WINDOW_DESKTOP).
+static bool mayTakeForeground() { return !gBackground && !gPlaced; }
+
+// Show a popup window. In gate runs this is SW_SHOWNA: plain SW_SHOW
+// ACTIVATES the popup, and activating a window that lives on another virtual
+// desktop flips the user's entire desktop over to it. SetFocus stays safe - it
+// is thread-internal and never changes the active desktop.
+static void showPopup(HWND h) {
+    ShowWindow(h, mayTakeForeground() ? SW_SHOW : SW_SHOWNA);
+}
+
+static bool gVerboseTitle = false;               // MNPDF_VERBOSE: page/zoom/RAM in the title
+
+static int messageBox(HWND owner, const wchar_t* text, const wchar_t* caption, UINT flags) {
+    // Gate runs keep REAL boxes. The launch seam already makes them safe: the
+    // gate spawns the app through WMI, so the process inherits no right to take
+    // foreground and a box displays and stays readable without ever switching
+    // the active desktop (measured: zero foreground transitions across the full
+    // nine-suite roster with real boxes showing). Suites depend on those boxes:
+    // test-release finds the update refusal by title and text and dismisses it
+    // with a posted click. A suppressed box (answered by the flag's default)
+    // silently broke that contract - it answered "save instead of refusing"
+    // for a dirty quit and hid the update refusal entirely.
+    return MessageBoxW(owner, text, caption, flags);
+}
 static long long gLastUpdateCheck = 0;             // unix seconds of the last GitHub attempt
 static std::wstring gLastUpdateTag;                // tag that attempt found ("" = none succeeded yet)
-static std::wstring gPath;
-static FPDF_DOCUMENT gDoc = nullptr;
-static FPDF_PAGE gPage = nullptr;
-static FPDF_TEXTPAGE gTextPage = nullptr;
-static int gPageIndex = 0;
-// true from a sidecar page restore until the user actually scrolls: a restored page is
-// deliberate state, so the viewport-center rule must not second-guess it (see ensureActivePage)
-static bool gRestoredPage = false;
-static int gPageCount = 0;
-static double gPageWpt = 612, gPageHpt = 792;   // current page, points
-static double gZoom = 1.0;                       // device px per point
 static ULONG_PTR gGdiToken = 0;                 // GDI+ startup token
 static bool gGdiOk = false;                     // GDI+ usable: else pin dots fall back to GDI
-static int gScrollX = 0, gScrollY = 0;           // document-pixel scroll offset
 static const int MARGIN = 8;
 static const int GAP = 16;                       // px between stacked pages
-static bool gFitWidth = false;                   // zoom tracks the window width
 
-// per-page layout in points, gathered at open; pixel positions derive from it
-static double* gPageW = nullptr;
-static double* gPageH = nullptr;
-static double* gPrefixPt = nullptr;              // pt y of each page top
-static int* gRot = nullptr;                      // display rotation per page (0..3)
-static int gDocPages = 0;
-static double gMaxPageW = 0;
+// ---- marks and their value-based undo ops ----
+// Defined here because the Doc bundle owns collections of them; all plain
+// values (no ids needed; undo re-applies exactly).
 
-static bool gDirty = false;                      // unsaved highlights/pins/rotations
+// highlights: char ranges per page, rects recomputed at render like selection;
+// persisted in the sidecar until save bakes them into the PDF
+struct Hl { int page, start, count, color; bool baked; };
 
-// ---- undo/redo: value-based ops (no ids needed; values re-apply exactly) ----
-struct Hl;
-struct Pin;
+// pins: sticky notes anchored to a user-space point; rendered as a dot,
+// text edited in the floating editor; baked as real Text annotations on save
+struct Pin { int page; double x, y; std::wstring text; int color; bool baked; };
 
-// selection: (page, char-index) pairs, so a drag can span pages; equal or
-// negative = none; stays valid across scroll and zoom because it is page-space
-static int gSelAnchor = -1, gSelHead = -1;
-static int gSelAnchorPage = -1, gSelHeadPage = -1;
+// signature stamps: a JPEG placed on a page, baked as a real image on save
+struct Sig {
+    int page = 0;
+    double cx = 0, cy = 0;                      // PDF user space, pt, y up, centre
+    double w = 150, h = 60;
+    std::wstring path;
+};
+
+// ---- per-document state: the bundle ----
+// Everything that describes ONE open document: its content (document, current
+// page, marks lifted from the file) and its layout/view state. One bundle exists
+// per open tab, up to kMaxTabs, and gActiveDoc picks the one the file-scope
+// names below read. The historical names continue as macros over the active
+// bundle, so every existing use site keeps reading the same words and gains the
+// indirection for free: switching tabs switches the document without a
+// call-site change.
+struct Tomb { int kind, page, start, count; double x, y; };   // kind 0 = highlight, 1 = pin
+struct Doc {
+  std::wstring path;              // empty until a file is open
+  std::wstring prevPath;         // the document this one replaced: per-tab history
+  FPDF_DOCUMENT doc = nullptr;
+  FPDF_PAGE page = nullptr;
+  FPDF_TEXTPAGE textPage = nullptr;
+  int pageIndex = 0;
+  int pageCount = 0;
+  double pageWpt = 612, pageHpt = 792;   // current page, points
+  // true from a sidecar page restore until the user actually scrolls: a restored page is
+  // deliberate state, so the viewport-center rule must not second-guess it (see ensureActivePage)
+  bool restoredPage = false;
+  double* pageW = nullptr;        // pt width of each page
+  double* pageH = nullptr;        // pt height of each page
+  double* prefixPt = nullptr;     // pt y of each page top
+  int* rot = nullptr;             // display rotation per page (0..3)
+  int docPages = 0;
+  std::vector<double> pageTextPt;    // body text pt per page (0 = unmeasured)
+  double maxPageW = 0;            // widest page, points
+  double zoom = 1.0;              // device px per point
+  int scrollX = 0, scrollY = 0;   // document-pixel scroll offset
+  bool fitWidth = false;          // zoom tracks the window width
+  void release() {                          // frees the per-page arrays a document owns
+      delete[] pageW; pageW = nullptr;
+      delete[] pageH; pageH = nullptr;
+      delete[] prefixPt; prefixPt = nullptr;
+      delete[] rot; rot = nullptr;
+  }
+  std::vector<Tomb> tomb;         // marks lifted from the PDF on open: theirs belong to
+                                  // the file; tombstones keep a deleted baked mark
+                                  // deleted across quit-without-save
+  bool dirty = false;             // unsaved highlights/pins/rotations
+  std::vector<Hl> hls;            // highlights per page
+  std::vector<Pin> pins;          // sticky notes per page
+  std::vector<Sig> sigs;          // signature stamps placed on pages
+  // undo/redo: value-based ops (no ids needed; values re-apply exactly)
+  struct Op {                                // 0 hladd 1 hldel 2 hlrecolor 3 pinadd
+    int kind;                                // 4 pindel 5 pintext 6 rot 7 pinrecolor
+    std::vector<Hl> added, replaced;         // hladd: new segments + overlaps they displaced
+    Hl hlVal = {};                           // hldel / hlrecolor payload
+    int hlFrom = 0, hlTo = 0;                // hlrecolor / pinrecolor colors
+    Pin pinVal = {};                         // pindel / pinadd payload
+    std::wstring textFrom, textTo;           // pintext
+    int pinIdx = -1;                         // pintext target; pinrecolor: the pin undo recoloured
+    int rotPage = 0, rotFrom = 0, rotTo = 0; // rot
+  };
+  std::vector<Op> undo, redo;
+  // selection: (page, char-index) pairs, so a drag can span pages; equal or
+  // negative = none; stays valid across scroll and zoom because it is page-space
+  int selAnchor = -1, selHead = -1;
+  int selAnchorPage = -1, selHeadPage = -1;
+};
+using Op = Doc::Op;   // the undo op is part of the bundle; keep the historical name
+
+// ---- the open documents: one bundle per tab, one active ----
+// A fixed array of pointers, not a vector: addresses stay stable across a tab
+// being added or closed, so gViewTab (and any walk over gDocs) always point
+// at live bundles.
+static const int kMaxTabs = 16;
+static Doc* gDocs[kMaxTabs] = {};
+static int gDocCount = 1;                        // gDocs[0] is allocated at startup
+static int gActiveDoc = 0;
+#define gViewTab (gDocs[gActiveDoc])
+
+#define gPath     gViewTab->path
+#define gPrevPath gViewTab->prevPath
+#define gDoc      gViewTab->doc
+#define gPage     gViewTab->page
+#define gTextPage gViewTab->textPage
+#define gPageIndex gViewTab->pageIndex
+#define gRestoredPage gViewTab->restoredPage
+#define gPageCount gViewTab->pageCount
+#define gPageWpt  gViewTab->pageWpt
+#define gPageHpt  gViewTab->pageHpt
+#define gTomb     gViewTab->tomb
+#define gHls      gViewTab->hls
+#define gPins     gViewTab->pins
+#define gSigs     gViewTab->sigs
+#define gUndo     gViewTab->undo
+#define gRedo     gViewTab->redo
+#define gDirty    gViewTab->dirty
+#define gSelAnchor gViewTab->selAnchor
+#define gSelHead  gViewTab->selHead
+#define gSelAnchorPage gViewTab->selAnchorPage
+#define gSelHeadPage gViewTab->selHeadPage
+#define gPageTextPt gViewTab->pageTextPt
+#define gPageW   gViewTab->pageW
+#define gPageH   gViewTab->pageH
+#define gPrefixPt gViewTab->prefixPt
+#define gRot     gViewTab->rot
+#define gDocPages gViewTab->docPages
+#define gMaxPageW gViewTab->maxPageW
+#define gZoom    gViewTab->zoom
+#define gScrollX gViewTab->scrollX
+#define gScrollY gViewTab->scrollY
+#define gFitWidth gViewTab->fitWidth
+
+static int gHlDefault = 0;                       // default highlight color (0 = yellow)
+// transient context-menu targeting and drag state: they always act on the
+// ACTIVE document, so they stay per-window rather than per-document
 static int gMenuHl = -1;                         // highlight the context menu targets
 static int gMenuPin = -1;                        // pin the context menu targets
 static int gMenuRotPage = -1;                    // page the context menu targets (rotate)
@@ -117,16 +263,6 @@ static bool gSelDrag = false;                    // left button held with a live
 static bool gLastWasDbl = false;                 // for triple-click line select
 static DWORD gLastDblTime = 0;
 static int gLastDblX = 0, gLastDblY = 0;
-
-// highlights: char ranges per page, rects recomputed at render like selection;
-// persisted in the sidecar until save bakes them into the PDF
-struct Hl { int page, start, count, color; bool baked; };
-static std::vector<Hl> gHls;
-static int gHlDefault = 0;                       // default highlight color (0 = yellow)
-// marks lifted from the PDF on open: theirs belong to the file; tombstones keep
-// a deleted baked mark deleted across quit-without-save
-struct Tomb { int kind, page, start, count; double x, y; };   // kind 0 = highlight, 1 = pin
-static std::vector<Tomb> gTomb;
 // one palette serves both mark kinds: built-in colours plus up to three the
 // reader enters as #rrggbb. Red sits last because pins have always been red.
 static const int kPalPreset = 6;
@@ -168,10 +304,6 @@ static std::wstring palLabel(int idx) {
     return L"";
 }
 
-// pins: sticky notes anchored to a user-space point; rendered as a dot,
-// text edited in the floating editor; baked as real Text annotations on save
-struct Pin { int page; double x, y; std::wstring text; int color; bool baked; };
-static std::vector<Pin> gPins;
 static int gEditPin = -1;                        // pin being edited in the floating box
 static std::wstring gPinBefore;                  // text before the edit started
 static bool gPinNew = false;                     // fresh pin with empty text: cancel
@@ -187,35 +319,24 @@ static bool gTitlebar = true;                    // OS caption strip shown
 static int gWinX = CW_USEDEFAULT, gWinY = CW_USEDEFAULT;   // last placement
 static int gWinW = 1100, gWinH = 800;
 static bool gWinMax = false;                     // was maximized at last quit
-static std::wstring gPrevPath;                  // the document open before this one
 static bool gNight = false;                      // invert the page for dark reading
 static bool gThumbsOn = false;                   // thumbnails side drawer visible
 static bool gOutlineOn = false;                  // bookmarks side drawer visible
 
+// Several copies of the reader may run at once, one document each, and they
+// would otherwise fight over the two shared files in %APPDATA%\mnpdf: app.txt
+// (preferences and the saved window rect) and last.txt (the document a plain
+// launch reopens). The FIRST process to create a well-known mutex owns those
+// files; later processes read them at startup but never write them. That leaves
+// each window's geometry and preferences intact instead of last-quit-wins, and
+// keeps a second launch from overwriting the document last.txt remembers.
+static bool gPrimaryInstance = true;
+static HANDLE gInstanceMutex = nullptr;
+
 // a signature stamp: a JPEG dropped into the live gDoc as a page object, so it
 // renders, prints and saves through the paths that already exist. The sidecar
 // keeps "sig=page,cx,cy,w,h,path" lines for the file as it is on disk
-struct Sig {
-    int page = 0;
-    double cx = 0, cy = 0;                      // PDF user space, pt, y up, centre
-    double w = 150, h = 60;
-    std::wstring path;
-};
-static std::vector<Sig> gSigs;
 static std::wstring gSigPlacing;                // a JPEG chosen, waiting for a click
-
-// ---- undo/redo: value-based ops (no ids needed; values re-apply exactly) ----
-struct Op {
-    int kind;                                    // 0 hladd 1 hldel 2 hlrecolor 3 pinadd 4 pindel 5 pintext 6 rot 7 pinrecolor
-    std::vector<Hl> added, replaced;             // hladd: new segments + overlaps they displaced
-    Hl hlVal = {};                               // hldel / hlrecolor payload
-    int hlFrom = 0, hlTo = 0;                    // hlrecolor / pinrecolor colors
-    Pin pinVal = {};                             // pindel / pinadd payload
-    std::wstring textFrom, textTo;               // pintext
-    int pinIdx = -1;                             // pintext target; pinrecolor: the pin undo recoloured
-    int rotPage = 0, rotFrom = 0, rotTo = 0;     // rot
-};
-static std::vector<Op> gUndo, gRedo;
 
 static void markDirty() {
     if (!gDirty) { gDirty = true; }
@@ -415,6 +536,10 @@ static int gClientW = 0, gClientH = 0;
 
 static void renderPage();
 static void updateTitle();
+// the tab strip is chrome, so it paints even with no document open
+static int tabStripH();
+static void drawTabStrip();
+static void drawEmptyTabHint();
 static bool loadPage(int index);
 
 static double clampZoom(double z) { return z < 0.25 ? 0.25 : (z > 8.0 ? 8.0 : z); }
@@ -456,9 +581,22 @@ static int docLeft() {
     return slack > 0 ? slack / 2 : -gScrollX;
 }
 
+static int tabStripH() {
+    int h = MulDiv(30, GetDpiForWindow(gWnd), USER_DEFAULT_SCREEN_DPI);
+    return h < 26 ? 26 : h;
+}
+
+// the strip band is chrome above the document, so the document's viewport is the
+// client below it: layout, the scroll range and every visibility test measure the
+// document from that height, never from the whole client
+static int docViewH() {
+    int h = gClientH - tabStripH();
+    return h > 0 ? h : 0;
+}
+
 static int docTop() {
-    int slack = gClientH - docHpx();
-    return slack > 0 ? slack / 2 : -gScrollY;
+    int slack = docViewH() - docHpx();
+    return slack > 0 ? tabStripH() + slack / 2 : tabStripH() - gScrollY;
 }
 
 static int pageVx(int i) { return docLeft() + pageLeftPx(i); }   // viewport x
@@ -467,7 +605,7 @@ static int pageVy(int i) { return docTop() + yTopPx(i); }        // viewport y
 static void clampScroll() {
     if (!gPrefixPt || !gDocPages) { gScrollX = gScrollY = 0; return; }   // no doc yet
     int maxX = docWpx() + 2 * MARGIN - gClientW;
-    int maxY = docHpx() - gClientH;
+    int maxY = docHpx() - docViewH();
     if (maxX < 0) maxX = 0;
     if (maxY < 0) maxY = 0;
     if (gScrollX > maxX) gScrollX = maxX;
@@ -488,6 +626,9 @@ static FPDF_PAGE gPcPage[PCACHE];
 static FPDF_TEXTPAGE gPcText[PCACHE];
 static unsigned gPcTick[PCACHE];
 static unsigned gPcClock;
+// which bundle each cached page belongs to: a slot is only a hit for the
+// active document, so a page can never be served to (or outlive) another tab
+static const Doc* gPcOwner[PCACHE] = {};
 
 static void flushPageCache(void) {
     for (int k = 0; k < PCACHE; k++) {
@@ -496,9 +637,12 @@ static void flushPageCache(void) {
         gPcIndex[k] = -1;
         gPcPage[k] = nullptr;
         gPcText[k] = nullptr;
+        gPcOwner[k] = nullptr;                   // a page never outlives its bundle
     }
-    gPage = nullptr;                               // these alias cache slots
-    gTextPage = nullptr;
+    for (int d = 0; d < gDocCount; d++) {        // every bundle aliased the shared cache
+        gDocs[d]->page = nullptr;
+        gDocs[d]->textPage = nullptr;
+    }
 }
 
 // parsed handle for page i, cached; recency-ordered, evicts the oldest slot
@@ -507,7 +651,7 @@ static FPDF_PAGE acquirePage(int i) {
     if (!gDoc || i < 0 || i >= gDocPages) return nullptr;
     int slot = -1, oldest = -1;
     for (int k = 0; k < PCACHE; k++) {
-        if (gPcIndex[k] == i) { gPcTick[k] = ++gPcClock; return gPcPage[k]; }
+        if (gPcIndex[k] == i && gPcOwner[k] == (const Doc*)gViewTab) { gPcTick[k] = ++gPcClock; return gPcPage[k]; }
         if (gPcIndex[k] < 0) { slot = k; break; }
         if (gPcIndex[k] != gPageIndex && (oldest < 0 || gPcTick[k] < gPcTick[oldest])) oldest = k;
     }
@@ -517,6 +661,7 @@ static FPDF_PAGE acquirePage(int i) {
     if (gPcPage[slot]) FPDF_ClosePage(gPcPage[slot]);
     gPcPage[slot] = nullptr;
     gPcIndex[slot] = i;
+    gPcOwner[slot] = (const Doc*)gViewTab;
     gPcPage[slot] = FPDF_LoadPage(gDoc, i);
     if (!gPcPage[slot]) gPcIndex[slot] = -1;       // don't cache a failed load
     gPcTick[slot] = ++gPcClock;
@@ -609,6 +754,7 @@ static int snapIndexNear(int page, int cx, int cy) {
 
 static int charIndexAtDoc(int cx, int cy, int* pageOut) {
     *pageOut = -1;
+    if (cy < tabStripH()) return -1;               // the strip is chrome: it is not on the page
     if (!gPrefixPt || !gDocPages) return -1;
     int docY = cy - docTop();
     int page = pageAtDocY(docY);
@@ -647,6 +793,7 @@ static int charIndexAtDoc(int cx, int cy, int* pageOut) {
 // cursor variant: strict glyph hit (no blank-space snapping), cheap per move
 static int charIndexStrict(int cx, int cy, int* pageOut) {
     *pageOut = -1;
+    if (cy < tabStripH()) return -1;               // the strip is chrome: it is not on the page
     if (!gPrefixPt || !gDocPages) return -1;
     int docY = cy - docTop();
     int page = pageAtDocY(docY);
@@ -1022,6 +1169,7 @@ static void drawPins() {
 }
 
 static int pinAt(int cx, int cy) {
+    if (cy < tabStripH()) return -1;               // the strip is chrome: it is not on the page
     if (!gPrefixPt || !gDocPages) return -1;
     int i = pageAtDocY(cy - docTop());
     if (i < 0) return -1;
@@ -1071,7 +1219,6 @@ static void hidePinTip(HWND h) {
 // and downwards once it wraps. The text is sized to the page's own body text
 // so a note reads like the document it sits on.
 
-static std::vector<double> gPageTextPt;         // body text pt per page (0 = unmeasured)
 static const int kNoteMaxChars = 4000;           // note text length limit
 static HFONT gNoteFont = nullptr;               // shared by the hover note and editor
 static int gNoteFontPx = 0;                     // px height the shared font was built at
@@ -1372,8 +1519,8 @@ static void startPinEdit(int idx, bool isNew) {
     SendMessageW(gPinBox, EM_LIMITTEXT, kNoteMaxChars, 0);
     SetWindowTextW(gPinBox, gPins[idx].text.c_str());
     gPinBoxBase = (WNDPROC)SetWindowLongPtrW(gPinBox, GWLP_WNDPROC, (LONG_PTR)pinBoxProc);
-    ShowWindow(gPinBox, SW_SHOW);
-    SetForegroundWindow(gPinBox);
+    showPopup(gPinBox);
+    if (mayTakeForeground()) SetForegroundWindow(gPinBox);
     SetFocus(gPinBox);
     sizePinBoxToText();                          // an existing note opens at its own size
     SendMessageW(gPinBox, EM_SETSEL, 0, -1);
@@ -1490,7 +1637,7 @@ static void drawMatches() {
     for (int m = 0; m < gMatchCount; m++) {
         if (gMatches[m].page != gPageIndex) continue;
         bool active = m == gMatchActive;
-        blendCharRects(gPageIndex, gTextPage, gMatches[m].start, gMatches[m].count,
+        blendCharRects(gPageIndex, textPageOf(gPageIndex), gMatches[m].start, gMatches[m].count,
                        highlightDC(active ? &gHiActive : &gHiMatch,
                                    0, active ? 150 : 208, 255));
     }
@@ -1551,7 +1698,7 @@ static void scrollMatchIntoView() {
     int y0 = yTopPx(pg) + ry0;
     int y1 = yTopPx(pg) + ry1;
     if (y0 < gScrollY) gScrollY = y0 - 8;
-    else if (y1 > gScrollY + gClientH) gScrollY = y1 - gClientH + 8;
+    else if (y1 > gScrollY + docViewH()) gScrollY = y1 - docViewH() + 8;
     clampScroll();
 }
 
@@ -1591,8 +1738,8 @@ static void toggleSearch(bool show) {
 static void placeSearchBar() {
     if (!gSearchBox) return;
     int x = clientW() - 260 - 12;
-    MoveWindow(gSearchBox, x, 10, 260, 26, TRUE);
-    if (gMatchLabel) MoveWindow(gMatchLabel, x - 66, 10, 62, 26, TRUE);
+    MoveWindow(gSearchBox, x, tabStripH() + 2, 260, 26, TRUE);   // below the strip
+    if (gMatchLabel) MoveWindow(gMatchLabel, x - 66, tabStripH() + 2, 62, 26, TRUE);
 }
 
 static LRESULT CALLBACK editProc(HWND e, UINT m, WPARAM wp, LPARAM lp) {
@@ -1638,7 +1785,7 @@ static bool loadPage(int index) {
 
 static void ensureActivePage() {
     if (!gDoc || gRestoredPage) return;   // a restored page owns gPageIndex until the user scrolls
-    int cy = gScrollY + gClientH / 2;
+    int cy = gScrollY + docViewH() / 2;
     for (int i = 0; i < gDocPages; i++) {
         if (cy < yTopPx(i) + pageHpx(i)) {
             if (i != gPageIndex) loadPage(i);
@@ -1679,7 +1826,14 @@ static void rebuildSurface() {
 
 static void renderPage() {
     updateTitle();   // first: the title must survive the early returns below
-    if (!gPdfBitmap || !gDoc) return;
+    if (!gPdfBitmap) return;
+    if (!gDoc) {                                 // an empty tab: chrome only
+        FPDFBitmap_FillRect(gPdfBitmap, 0, 0, gClientW, gClientH, 0xFF202020);   // letterbox
+        drawTabStrip();
+        drawEmptyTabHint();
+        InvalidateRect(gWnd, nullptr, FALSE);
+        return;
+    }
     FPDFBitmap_FillRect(gPdfBitmap, 0, 0, gClientW, gClientH, 0xFF202020);   // letterbox
     int top = gScrollY, bottom = gScrollY + gClientH;
     // render every page intersecting the viewport; only handles for pages in
@@ -1736,19 +1890,21 @@ static void renderPage() {
             }
         }
     }
+    drawTabStrip();                             // chrome last: over the document, and un-inverted by the night pass
     InvalidateRect(gWnd, nullptr, FALSE);
 }
 
 // zoom mode: fit-width refits on every resize until a manual zoom turns it off
-static void applyFitWidth() {
+static bool applyFitWidth() {
     int cw = clientW() - 2 * MARGIN;
-    if (cw <= 0 || gMaxPageW <= 0) return;
+    if (cw <= 0 || gMaxPageW <= 0) return false;
     double nz = clampZoom(cw / gMaxPageW);
-    if (nz == gZoom) return;                     // same fit, so no page moved
+    if (nz == gZoom) return false;               // same fit, so no page moved
     gZoom = nz;
     // a refit rescales every page, so a scroll anchored to page offsets is now
     // stale: put the restored page back under the viewport top
     if (gRestoredPage) gScrollY = yTopPx(gPageIndex) - MARGIN;
+    return true;
 }
 
 static void fitWidth() {
@@ -1770,7 +1926,7 @@ static void zoomAt(double factor, int cx, int cy) {
     gZoom = nz;
     double newH = docHpx(), newW = docWpx() + 2 * MARGIN;
     gScrollX = (int)((gScrollX + cx) * newW / oldW) - cx;
-    gScrollY = (int)((gScrollY + cy) * newH / oldH) - cy;
+    gScrollY = (int)((gScrollY + cy - tabStripH()) * newH / oldH) - cy + tabStripH();
     clampScroll();
     markSave();
     renderPage();
@@ -2007,8 +2163,6 @@ static void doPrint() {
     GlobalFree(pd.hDevNames);
     GlobalFree(pd.hDevMode);
 }
-
-static bool gVerboseTitle = false;               // MNPDF_VERBOSE: page/zoom/RAM in the title
 
 static void updateTitle() {
     wchar_t t[256];
@@ -2479,8 +2633,31 @@ static void cleanupUpdateLeftovers() {
     }
 }
 
+static std::wstring lastDocumentPath();
+
+// a path going back out on the command line: the relaunched copy reads it with
+// CommandLineToArgvW, so embedded quotes are escaped and the result wrapped
+static std::wstring quoteForCommandLine(const std::wstring& path) {
+    std::wstring out = L"\"";
+    for (wchar_t c : path) {
+        if (c == L'"') out += L'\\';
+        out += c;
+    }
+    return out + L"\"";
+}
+
+// the document the relaunch hands on: the open bundle's own path if this process
+// has one, else what a plain launch would reopen. Empty means the reader has no
+// document to resume, and the relaunch stays argument-less.
+static std::wstring resumeArgumentForUpdate() {
+    const std::wstring& path = gViewTab->path;
+    if (!path.empty()) return quoteForCommandLine(path);
+    std::wstring last = lastDocumentPath();
+    return last.empty() ? L"" : quoteForCommandLine(last);
+}
+
 // One thread does the whole install; the UI thread only ever hears about it.
-static void installUpdate(const std::wstring& tag) {
+static void installUpdate(const std::wstring& tag, const std::wstring& resume) {
     std::wstring zip = updateZipFor(tag);
     std::wstring staging = zip.substr(0, zip.find_last_of(L"\\") + 1) + L"mnpdf-update-" + tag + L"\\";
     std::wstring folder = updateFolder();
@@ -2528,7 +2705,8 @@ static void installUpdate(const std::wstring& tag) {
     if (ok) {
         std::wstring exe = folder + L"\\mnpdf.exe";
         reportUpdateStep(L"Starting mnpdf " + tag + L"...", false, false, true);
-        HINSTANCE started = ShellExecuteW(gWnd, L"open", exe.c_str(), nullptr,
+        const wchar_t* param = resume.empty() ? nullptr : resume.c_str();
+        HINSTANCE started = ShellExecuteW(gWnd, L"open", exe.c_str(), param,
                                           folder.c_str(), SW_SHOWNORMAL);
         ok = ((INT_PTR)started > 32);
         if (!ok) error = L"the updated mnpdf could not be started";
@@ -2549,8 +2727,9 @@ static void startUpdateInstall(const std::wstring& tag) {
     updateDialogAction();
     updateDialogText(L"Installing mnpdf " + tag + L". Keep mnpdf open until it restarts.");
     HWND target = gWnd;
-    std::thread([target, tag]() {
-        installUpdate(tag);
+    std::wstring resume = resumeArgumentForUpdate();   // the UI thread reads the bundle, not the worker
+    std::thread([target, tag, resume]() {
+        installUpdate(tag, resume);
         if (!target || !IsWindow(target) || gShuttingDown.load()) {
             gUpdateInstallRunning.store(false);
             return;
@@ -2618,7 +2797,7 @@ static LRESULT CALLBACK updateProc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
             if (gUpdateBusy) return 0;
             if (gUpdateAvailable && !gUpdateTag.empty()) {
                 if (gDirty) {
-                    MessageBoxW(w, L"This document has unsaved changes.\n\n"
+                    messageBox(w, L"This document has unsaved changes.\n\n"
                                    L"Save it (or close mnpdf) before installing an update.",
                                 L"mnpdf update", MB_OK | MB_ICONWARNING);
                     return 0;
@@ -2655,7 +2834,7 @@ static LRESULT CALLBACK updateProc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
 }
 
 static void openUpdateDialog() {
-    if (gUpdateWnd) { SetForegroundWindow(gUpdateWnd); return; }
+    if (gUpdateWnd) { if (mayTakeForeground()) SetForegroundWindow(gUpdateWnd); return; }
     HINSTANCE inst = (HINSTANCE)GetWindowLongPtrW(gWnd, GWLP_HINSTANCE);
     static bool reg = false;
     if (!reg) {
@@ -2682,7 +2861,7 @@ static void openUpdateDialog() {
                                  gWnd, nullptr, inst, nullptr);
     if (!gUpdateWnd) return;
     placeBesideReader(gUpdateWnd, w, h, 1);
-    ShowWindow(gUpdateWnd, SW_SHOW);
+    showPopup(gUpdateWnd);
 }
 
 // The dialog is the only place a check result is shown: the button is the answer.
@@ -2729,11 +2908,11 @@ static void showUpdateResult(const UpdateResult& result, int minutesAgo = -1) {
         if (result.ok && result.newer) {
             std::wstring text = L"mnpdf " + std::wstring(kAppVersion) + L" -> " + result.tag
                 + L" is available.\n\nOpen the official release page now?";
-            if (MessageBoxW(gWnd, text.c_str(), L"mnpdf update available",
+            if (messageBox(gWnd, text.c_str(), L"mnpdf update available",
                             MB_YESNO | MB_ICONINFORMATION) == IDYES)
                 ShellExecuteW(gWnd, L"open", kLatestReleaseUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
         } else if (result.manual) {
-            MessageBoxW(gWnd, L"mnpdf could not check GitHub for updates. Try again later.",
+            messageBox(gWnd, L"mnpdf could not check GitHub for updates. Try again later.",
                         L"mnpdf updates", MB_OK | MB_ICONWARNING);
         }
         return;
@@ -2825,20 +3004,22 @@ static std::wstring sidecarPathFor(const std::wstring& path) {
 
 static const int kSidecarFmt = 2;                // sidecar schema: pin lines carry a colour
 
-static void writeSidecarNow() {
-    if (gPath.empty() || !gDoc) return;
-    FILE* fp = _wfopen(sidecarPathFor(gPath).c_str(), L"wb");
+// The sidecar belongs to ONE bundle, so this takes it as an argument: a tab that
+// is being left or dropped still has to reach its own sidecar while it is alive.
+static void writeSidecarFor(Doc* d) {
+    if (!d || d->path.empty() || !d->doc) return;
+    FILE* fp = _wfopen(sidecarPathFor(d->path).c_str(), L"wb");
     if (fp) {
-        fprintf(fp, "fmt=%d\nzoom=%.6f\nfit=%d\npage=%d\n", kSidecarFmt, gZoom, gFitWidth ? 1 : 0, gPageIndex + 1);
-        for (const Hl& h : gHls)
+        fprintf(fp, "fmt=%d\nzoom=%.6f\nfit=%d\npage=%d\n", kSidecarFmt, d->zoom, d->fitWidth ? 1 : 0, d->pageIndex + 1);
+        for (const Hl& h : d->hls)
             fprintf(fp, "hl=%d,%d,%d,%d\n", h.page, h.start, h.count, h.color);
-        for (int i = 0; i < gDocPages; i++)
-            if (gRot && gRot[i]) fprintf(fp, "rot=%d,%d\n", i, gRot[i]);
-        for (const Tomb& tb : gTomb) {
+        for (int i = 0; i < d->docPages; i++)
+            if (d->rot && d->rot[i]) fprintf(fp, "rot=%d,%d\n", i, d->rot[i]);
+        for (const Tomb& tb : d->tomb) {
             if (tb.kind == 0) fprintf(fp, "dl=h,%d,%d,%d\n", tb.page, tb.start, tb.count);
             else fprintf(fp, "dl=p,%d,%.2f,%.2f\n", tb.page, tb.x, tb.y);
         }
-        for (const Pin& pn : gPins) {
+        for (const Pin& pn : d->pins) {
             if (pn.text.empty()) continue;
             std::string esc;                       // multiline-safe: \n stays one line
             for (char p : wideToUtf8(pn.text)) {
@@ -2849,7 +3030,7 @@ static void writeSidecarNow() {
             }
             fprintf(fp, "pin=%d,%.2f,%.2f,c%d,%s\n", pn.page, pn.x, pn.y, pn.color, esc.c_str());
         }
-        for (const Sig& sg : gSigs) {
+        for (const Sig& sg : d->sigs) {
             std::string esc;                       // the path carries backslashes
             for (char p : wideToUtf8(sg.path)) {
                 if (p == '\\') esc += "\\\\";
@@ -2861,15 +3042,55 @@ static void writeSidecarNow() {
         }
         fclose(fp);
     }
+}
+
+// last.txt is the document a plain launch reopens. It is shared, so only the
+// primary instance writes it: a second window on another document must not
+// change what the next plain launch brings back.
+static void writeLastDocument(const std::wstring& path) {
+    if (!gPrimaryInstance || path.empty()) return;
     wchar_t dir[MAX_PATH];
     appDirW(dir, MAX_PATH);
     FILE* lfp = _wfopen((std::wstring(dir) + L"\\last.txt").c_str(), L"wb");
     if (lfp) {
-        std::string u8 = wideToUtf8(gPath);
+        std::string u8 = wideToUtf8(path);
         fwrite(u8.data(), 1, u8.size(), lfp);
         fputc('\n', lfp);
         fclose(lfp);
     }
+}
+
+// last.txt is what a launch with no argument of its own reopens: it is decoded
+// here once, so a plain launch and the update relaunch read it the same way
+static std::wstring lastDocumentPath() {
+    wchar_t dir[MAX_PATH];
+    appDirW(dir, MAX_PATH);
+    FILE* fp = _wfopen((std::wstring(dir) + L"\\last.txt").c_str(), L"rb");
+    if (!fp) return L"";
+    char buf[MAX_PATH * 3] = "";
+    size_t got = fread(buf, 1, sizeof(buf) - 1, fp);
+    fclose(fp);
+    while (got && (buf[got - 1] == '\n' || buf[got - 1] == '\r')) got--;
+    buf[got] = 0;
+    if (!got) return L"";
+    int wn = MultiByteToWideChar(CP_UTF8, 0, buf, -1, nullptr, 0);
+    if (wn <= 0) return L"";
+    std::vector<wchar_t> wpath((size_t)wn);
+    MultiByteToWideChar(CP_UTF8, 0, buf, -1, wpath.data(), wn);
+    return std::wstring(wpath.data());
+}
+
+static void writeSidecarNow() {
+    if (gPath.empty() || !gDoc) return;
+    writeSidecarFor(gViewTab);
+    writeLastDocument(gPath);
+}
+
+// quitting (and any other exit) has to reach EVERY open tab's sidecar, not just
+// the active one: marks made in a background tab are as real as the front one's
+static void writeAllSidecars() {
+    for (int i = 0; i < gDocCount; i++) writeSidecarFor(gDocs[i]);
+    writeLastDocument(gViewTab->path);
 }
 
 static void markSave() {
@@ -2891,6 +3112,11 @@ static void markSave() {
 // WPF_RESTORETOMAXIMIZED, so a window minimized from a maximized one still comes
 // back maximized.
 static void writeAppPref() {
+    // One shared app.txt: preferences and the saved window rect. A secondary
+    // window must not overwrite the primary's geometry or preferences with its
+    // own, so it writes nothing. In-memory preference changes still apply to
+    // this window; they are simply not persisted until this window is primary.
+    if (!gPrimaryInstance) return;
     wchar_t dir[MAX_PATH];
     appDirW(dir, MAX_PATH);
     FILE* fp = _wfopen((std::wstring(dir) + L"\\app.txt").c_str(), L"wb");
@@ -2966,7 +3192,10 @@ static void toggleTitlebar(HWND h) {
     if (gTitlebar) st |= WS_CAPTION;
     else st &= ~WS_CAPTION;
     SetWindowLongPtrW(h, GWL_STYLE, (LONG_PTR)st);
-    SetWindowPos(h, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+    SetWindowPos(h, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    // SWP_NOACTIVATE: without it the restyle ACTIVATES the window, and a gate-run
+    // window lives on another virtual desktop - activating it flips the user's
+    // whole desktop over (measured during the captionless suite).
     writeAppPref();
     renderPage();
 }
@@ -3169,17 +3398,21 @@ static int nearestPalColor(unsigned r, unsigned g, unsigned b) {
 
 static bool openPath(const std::wstring& path) {
     if (gEditPin >= 0) commitPinEdit();            // an open pin box saves first
+    if (gDirty) writeSidecarFor(gViewTab);         // unsaved marks reach their sidecar before this bundle drops them
     // last.txt names the CURRENT document (autosave rewrites it constantly), so
     // "reopen last" cannot read it: the document being left is the previous one
     if (!gPath.empty() && gPath != path) gPrevPath = gPath;
+    // load the new document BEFORE this bundle gives up the old one, so a file
+    // pdfium rejects leaves the open document exactly as it was
+    // pdfium wants UTF-8; Windows gave us UTF-16
+    std::string u8 = wideToUtf8(path);
+    FPDF_DOCUMENT nd = FPDF_LoadDocument(u8.c_str(), nullptr);
+    if (!nd) { messageBox(gWnd, L"Could not open PDF", L"mnpdf", MB_ICONERROR); return false; }
     gTextPage = nullptr;                           // handles live in the cache now
     gPage = nullptr;
     flushPageCache();
-    if (gDoc) FPDF_CloseDocument(gDoc); gDoc = nullptr;
-    // pdfium wants UTF-8; Windows gave us UTF-16
-    std::string u8 = wideToUtf8(path);
-    gDoc = FPDF_LoadDocument(u8.c_str(), nullptr);
-    if (!gDoc) { MessageBoxW(gWnd, L"Could not open PDF", L"mnpdf", MB_ICONERROR); return false; }
+    if (gDoc) FPDF_CloseDocument(gDoc);
+    gDoc = nd;
     gPath = path;
     gPageCount = FPDF_GetPageCount(gDoc);
     gHls.clear();
@@ -3434,7 +3667,7 @@ static bool doSaveImpl(const std::wstring& target) {
         openPath(target);                          // so restore doesn't resurrect edits
         return true;
     }
-    MessageBoxW(gWnd, L"Save failed", L"mnpdf", MB_ICONERROR);
+    messageBox(gWnd, L"Save failed", L"mnpdf", MB_ICONERROR);
     return false;
 }
 
@@ -3529,9 +3762,12 @@ static void showColorError(HWND box, const wchar_t* text) {
                  L"Type six hex digits, with or without the #:\n\n"
                  L"    #ff4d00\n    ff4d00\n    FF4D00",
                  shown);
-    MessageBoxW(box, msg, L"mnpdf", MB_OK | MB_ICONWARNING | MB_SETFOREGROUND);
+    // MB_SETFOREGROUND is skipped in gate runs: it activates the MessageBox,
+    // and a launch that may not take the foreground must not ask either.
+    messageBox(box, msg, L"mnpdf", MB_OK | MB_ICONWARNING |
+                        (mayTakeForeground() ? (UINT)MB_SETFOREGROUND : 0u));
     gColorErrBusy = false;
-    SetForegroundWindow(box);
+    if (mayTakeForeground()) SetForegroundWindow(box);
     SetFocus(box);
     SendMessageW(box, EM_SETSEL, 0, -1);      // select all: retyping replaces it
 }
@@ -3630,9 +3866,9 @@ static void startColorEntry() {
     SendMessageW(gColorBox, WM_SETFONT, (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
     SendMessageW(gColorBox, EM_LIMITTEXT, 7, 0);
     gColorBoxBase = (WNDPROC)SetWindowLongPtrW(gColorBox, GWLP_WNDPROC, (LONG_PTR)colorBoxProc);
-    ShowWindow(gColorBox, SW_SHOW);
+    showPopup(gColorBox);
     SendMessageW(gColorBox, EM_SETSEL, 1, 1);   // caret just past the '#'
-    SetForegroundWindow(gColorBox);
+    if (mayTakeForeground()) SetForegroundWindow(gColorBox);
     SetFocus(gColorBox);
 }
 
@@ -3904,7 +4140,7 @@ static void commitSigPlacement(int page, double sx, double sy) {
     s.cx = x < lox ? lox : (x > hix ? hix : x);
     s.cy = y < loy ? loy : (y > hiy ? hiy : y);
     if (!placeSigObj(s)) {
-        MessageBoxW(gWnd, L"That image could not be placed.", L"mnpdf", MB_OK | MB_ICONWARNING);
+        messageBox(gWnd, L"That image could not be placed.", L"mnpdf", MB_OK | MB_ICONWARNING);
         return;
     }
     gSigs.push_back(s);
@@ -3968,12 +4204,12 @@ static void pickSignatureImage() {
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY;
     if (!GetOpenFileNameW(&ofn)) return;
     if (!looksLikeJpeg(buf)) {
-        MessageBoxW(gWnd, L"A signature has to be a JPEG image. That file is not one.",
+        messageBox(gWnd, L"A signature has to be a JPEG image. That file is not one.",
                     L"Place signature", MB_OK | MB_ICONWARNING);
         return;
     }
     gSigPlacing = buf;
-    MessageBoxW(gWnd, L"Click the page where the signature should sit. Esc cancels.",
+    messageBox(gWnd, L"Click the page where the signature should sit. Esc cancels.",
                 L"Place signature", MB_OK | MB_ICONINFORMATION);
 }
 
@@ -4055,7 +4291,7 @@ static void replaceDocByOrder(const std::vector<int>& order) {
     if (!nd) return;
     if (!FPDF_ImportPagesByIndex(nd, gDoc, order.data(), (unsigned long)n, 0)) {
         FPDF_CloseDocument(nd);
-        MessageBoxW(gWnd, L"Those pages could not be reordered.", L"mnpdf", MB_OK | MB_ICONWARNING);
+        messageBox(gWnd, L"Those pages could not be reordered.", L"mnpdf", MB_OK | MB_ICONWARNING);
         return;
     }
     // marks follow the permutation; a deleted page takes its marks with it
@@ -4150,7 +4386,7 @@ static void mergeFiles(const std::vector<std::wstring>& files) {
     int at = 0;
     if (!FPDF_ImportPages(nd, gDoc, nullptr, at)) {
         FPDF_CloseDocument(nd);
-        MessageBoxW(gWnd, L"The current document could not be merged.", L"mnpdf", MB_OK | MB_ICONWARNING);
+        messageBox(gWnd, L"The current document could not be merged.", L"mnpdf", MB_OK | MB_ICONWARNING);
         return;
     }
     at = FPDF_GetPageCount(nd);
@@ -4165,7 +4401,7 @@ static void mergeFiles(const std::vector<std::wstring>& files) {
     }
     if (FPDF_GetPageCount(nd) <= gDocPages) {
         FPDF_CloseDocument(nd);
-        MessageBoxW(gWnd, L"No pages could be added.", L"mnpdf", MB_OK | MB_ICONWARNING);
+        messageBox(gWnd, L"No pages could be added.", L"mnpdf", MB_OK | MB_ICONWARNING);
         return;
     }
     adoptDoc(nd, gDocPages);                 // current pages keep their indices
@@ -4207,7 +4443,7 @@ static void splitExport(const std::wstring& target, const std::string& range, bo
     if (!FPDF_ImportPages(nd, gDoc, range.c_str(), 0)) {
         FPDF_CloseDocument(nd);
         if (!quiet)
-            MessageBoxW(gWnd, L"That page range could not be read. Try 2-5 or 1,3,8.",
+            messageBox(gWnd, L"That page range could not be read. Try 2-5 or 1,3,8.",
                         L"Split pages", MB_OK | MB_ICONWARNING);
         return;
     }
@@ -4227,8 +4463,8 @@ static void splitExport(const std::wstring& target, const std::string& range, bo
     }
     FPDF_CloseDocument(nd);
     if (quiet) return;
-    if (wrote) MessageBoxW(gWnd, L"Pages exported.", L"Split pages", MB_OK | MB_ICONINFORMATION);
-    else MessageBoxW(gWnd, L"These pages could not be written to that file.",
+    if (wrote) messageBox(gWnd, L"Pages exported.", L"Split pages", MB_OK | MB_ICONINFORMATION);
+    else messageBox(gWnd, L"These pages could not be written to that file.",
                      L"Split pages", MB_OK | MB_ICONWARNING);
 }
 
@@ -4243,7 +4479,7 @@ static void closeRangePrompt() {
 static LRESULT CALLBACK rangeProc(HWND w, UINT m, WPARAM wp, LPARAM lp);
 
 static void openRangePrompt() {
-    if (gRangeWnd) { SetForegroundWindow(gRangeWnd); return; }
+    if (gRangeWnd) { if (mayTakeForeground()) SetForegroundWindow(gRangeWnd); return; }
     HINSTANCE inst = (HINSTANCE)GetWindowLongPtrW(gWnd, GWLP_HINSTANCE);
     static bool reg = false;
     if (!reg) {
@@ -4265,7 +4501,7 @@ static void openRangePrompt() {
                                 WS_POPUP | WS_CAPTION | WS_SYSMENU, x, y, w, h,
                                 gWnd, nullptr, inst, nullptr);
     if (!gRangeWnd) return;
-    ShowWindow(gRangeWnd, SW_SHOW);
+    showPopup(gRangeWnd);
 }
 
 static LRESULT CALLBACK rangeProc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
@@ -4475,7 +4711,7 @@ static void toggleThumbDrawer() {
     if (gThumbWnd) {
         layoutThumbs();            // rows first; each picture is drawn when it shows
         placeDrawer(gThumbWnd, kThumbW + 24, 0);
-        ShowWindow(gThumbWnd, SW_SHOW);
+        showPopup(gThumbWnd);
     }
 }
 
@@ -4485,6 +4721,14 @@ static void invalidateThumbDrawer() {
 
 static void refreshThumbDrawer() {
     if (!gThumbWnd) return;
+    if (!gDoc) {
+        HWND dead = gThumbWnd;
+        gThumbsOn = false;
+        gThumbWnd = nullptr;
+        DestroyWindow(dead);
+        gThumbScroll = 0;
+        return;
+    }
     // an edit moves pages under the selection, so the selection is only
     // replaced when the page it named is gone (delete, merge, a new document)
     if (gThumbSel < 0 || gThumbSel >= gDocPages) gThumbSel = gPageIndex;
@@ -4645,7 +4889,7 @@ static void toggleOutlineDrawer() {
                                   gWnd, nullptr, inst, nullptr);
     if (gOutlineWnd) {
         placeDrawer(gOutlineWnd, kOutlineW, 1);
-        ShowWindow(gOutlineWnd, SW_SHOW);
+        showPopup(gOutlineWnd);
     }
 }
 
@@ -4655,6 +4899,13 @@ static void invalidateOutlineDrawer() {
 
 static void refreshOutlineDrawer() {
     if (!gOutlineWnd) return;
+    if (!gDoc) {
+        HWND dead = gOutlineWnd;
+        gOutlineOn = false;
+        gOutlineWnd = nullptr;
+        DestroyWindow(dead);
+        return;
+    }
     buildBmList();
     invalidateOutlineDrawer();
 }
@@ -4791,22 +5042,213 @@ static void reopenLastDocument() {
     // pointing at whatever is open, so reading it would reopen the same file.
     std::wstring want = gPrevPath;
     if (want.empty() || want == gPath) {
-        MessageBoxW(gWnd, L"No earlier document to reopen.", L"mnpdf", MB_OK | MB_ICONINFORMATION);
+        messageBox(gWnd, L"No earlier document to reopen.", L"mnpdf", MB_OK | MB_ICONINFORMATION);
         return;
     }
     if (GetFileAttributesW(want.c_str()) == INVALID_FILE_ATTRIBUTES) {
-        MessageBoxW(gWnd, L"That document has moved or been deleted since you left it.",
+        messageBox(gWnd, L"That document has moved or been deleted since you left it.",
                     L"mnpdf", MB_OK | MB_ICONINFORMATION);
         return;
     }
     openPath(want);
 }
 
+// ---- tabs: several documents, one active ----------------------------------
+// Settle what belongs to the OUTGOING document before another takes over:
+// an open pin box saves, a placement dies, search stops, the drag releases.
+static void settleActiveDoc() {
+    if (gEditPin >= 0) commitPinEdit();          // an open pin box saves first
+    writeSidecarFor(gViewTab);                   // the outgoing tab keeps its marks: its own sidecar
+    hidePinTip(gWnd);
+    if (!gSigPlacing.empty()) gSigPlacing.clear();   // a half-finished placement dies here
+    gSelDrag = false;
+    if (GetCapture() == gWnd) ReleaseCapture();
+    if (gSearchOpen) toggleSearch(false);        // matches belong to the outgoing document
+    clearSelection();                            // the incoming one owns its own
+}
+
+static void switchToDoc(int idx) {
+    if (idx < 0 || idx >= gDocCount || idx == gActiveDoc) return;
+    settleActiveDoc();
+    flushPageCache();                            // the outgoing bundle takes its pages with it
+    gActiveDoc = idx;
+    loadPage(gPageIndex);                        // re-derive the incoming bundle's aliases
+    if (gFitWidth && gPageIndex < gDocPages && applyFitWidth())   // a fit-width tab refits to this window
+        gScrollY = yTopPx(gPageIndex) - MARGIN;   // the refit rescaled every page: re-anchor
+    clampScroll();
+    updateTitle();
+    refreshDrawers();
+    placeDrawers();
+    renderPage();
+}
+
+static void newTab() {
+    if (gDocCount >= kMaxTabs) return;
+    settleActiveDoc();
+    flushPageCache();
+    gDocs[gDocCount] = new Doc();
+    gDocCount++;
+    gActiveDoc = gDocCount - 1;                  // appended at the end
+    loadPage(gPageIndex);
+    relayoutPages();
+    clampScroll();
+    updateTitle();
+    refreshDrawers();
+    placeDrawers();
+    renderPage();
+}
+
+static void closeTab() {
+    if (gDocCount <= 1) {                        // the last tab: closing it quits
+        PostMessageW(gWnd, WM_CLOSE, 0, 0);
+        return;
+    }
+    settleActiveDoc();
+    flushPageCache();                            // cached pages belong to this bundle
+    Doc* doomed = gViewTab;
+    gDocs[gActiveDoc] = gDocs[gDocCount - 1];    // the last tab fills the slot
+    gDocs[gDocCount - 1] = nullptr;
+    gDocCount--;
+    if (gActiveDoc >= gDocCount) gActiveDoc = gDocCount - 1;
+    if (doomed->doc) FPDF_CloseDocument(doomed->doc);
+    doomed->release();
+    delete doomed;
+    loadPage(gPageIndex);                        // re-derive the survivor's aliases
+    if (gFitWidth && gPageIndex < gDocPages && applyFitWidth())   // a fit-width tab refits to this window
+        gScrollY = yTopPx(gPageIndex) - MARGIN;   // the refit rescaled every page: re-anchor
+    clampScroll();
+    updateTitle();
+    refreshDrawers();
+    placeDrawers();
+    renderPage();
+}
+
+// ---- the strip: labels, hit-testing, painting --------------------------------
+#define kStripNew (-2)                           // the + button at the strip's right end
+
+// a tab's label: the file name, a dirty dot for unsaved marks, "New tab" while
+// the bundle holds no document yet
+static std::wstring tabLabel(int i) {
+    const std::wstring& p = gDocs[i]->path;
+    if (p.empty()) return L"New tab";
+    size_t slash = p.find_last_of(L"\\/");
+    std::wstring name = p.substr(slash == std::wstring::npos ? 0 : slash + 1);
+    return gDocs[i]->dirty ? L"\x2022 " + name : name;
+}
+
+// tab width: a comfortable fixed size that always shrinks to fit the tabs into
+// the space the + button leaves. Tabs start at kTabX0 and must end before the +
+// button's square (plus kTabGap), whatever the window width and tab count, so
+// the + button never covers a drawn tab.
+static const int kTabX0 = 4;
+static const int kTabGap = 8;
+static int tabW() {
+    int tw = MulDiv(160, GetDpiForWindow(gWnd), USER_DEFAULT_SCREEN_DPI);
+    int avail = gClientW - tabStripH() - kTabGap - kTabX0;
+    if (tw * gDocCount > avail) {
+        tw = avail / gDocCount;
+        if (tw < 1) tw = 1;                      // a degenerate client still needs a divisor
+    }
+    return tw;
+}
+
+// strip-local point -> tab index, kStripNew for the + button, -1 for nothing
+static int tabAt(int x, int y) {
+    if (y < 0 || y >= tabStripH()) return -1;
+    if (x >= gClientW - tabStripH()) return gDocCount < kMaxTabs ? kStripNew : -1;
+    int i = (x - kTabX0) / tabW();
+    return (i >= 0 && i < gDocCount) ? i : -1;
+}
+
+// the strip is bitmap chrome: dark base, the active tab lifted with a light
+// accent, plus-sign at the right. Ellipsis keeps long names off their neighbours.
+// The strip draws its own greyscale-anti-aliased font: the stock UI font lets
+// GDI lay ClearType subpixel fringes down, and those fringes are coloured - the
+// colours suite's classifier counts the blue ones as highlight pixels.
+static HFONT gStripFont = nullptr;
+static int gStripFontPx = 0;                     // px height the strip font was built at
+static HFONT stripFont() {
+    int px = MulDiv(13, GetDpiForWindow(gWnd), USER_DEFAULT_SCREEN_DPI);
+    if (gStripFont && px == gStripFontPx) return gStripFont;
+    if (gStripFont) DeleteObject(gStripFont);
+    LOGFONTW lf = {};
+    lf.lfHeight = -px;
+    lf.lfQuality = ANTIALIASED_QUALITY;   // greyscale: no colour fringes
+    wcscpy_s(lf.lfFaceName, L"MS Shell Dlg");
+    gStripFont = CreateFontIndirectW(&lf);
+    gStripFontPx = px;
+    return gStripFont;
+}
+
+static void drawTabStrip() {
+    int h = tabStripH();
+    HDC dc = gMemDC;
+    HFONT old = (HFONT)SelectObject(dc, stripFont());
+    SetDCBrushColor(dc, RGB(32, 32, 32));
+    RECT r = { 0, 0, gClientW, h };
+    FillRect(dc, &r, (HBRUSH)GetStockObject(DC_BRUSH));
+    int tw = tabW();
+    SetBkMode(dc, TRANSPARENT);
+    for (int i = 0; i < gDocCount; i++) {
+        int x0 = kTabX0 + i * tw, x1 = x0 + tw;
+        SetTextColor(dc, i == gActiveDoc ? RGB(238, 238, 238) : RGB(140, 140, 140));
+        if (i == gActiveDoc) {
+            RECT tr = { x0, 0, x1, h - 2 };
+            SetDCBrushColor(dc, RGB(56, 56, 56));
+            FillRect(dc, &tr, (HBRUSH)GetStockObject(DC_BRUSH));
+            RECT ar = { x0, h - 2, x1, h };
+            SetDCBrushColor(dc, RGB(205, 205, 205));   // neutral: the strip must never
+            FillRect(dc, &ar, (HBRUSH)GetStockObject(DC_BRUSH));   // fake a mark colour
+        }
+        RECT tx = { x0 + 10, 0, x1 - 6, h - 2 };
+        std::wstring t = tabLabel(i);
+        DrawTextW(dc, t.c_str(), -1, &tx, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    }
+    int plus = gClientW - h;
+    int cx = plus + h / 2, cy = h / 2, arm = MulDiv(5, GetDpiForWindow(gWnd), USER_DEFAULT_SCREEN_DPI);
+    HPEN pen = CreatePen(PS_SOLID, MulDiv(1, GetDpiForWindow(gWnd), USER_DEFAULT_SCREEN_DPI), RGB(190, 190, 190));
+    HPEN oldp = (HPEN)SelectObject(dc, pen);
+    MoveToEx(dc, cx - arm, cy, nullptr);
+    LineTo(dc, cx + arm, cy);
+    MoveToEx(dc, cx, cy - arm, nullptr);
+    LineTo(dc, cx, cy + arm);
+    SelectObject(dc, oldp);
+    DeleteObject(pen);
+    SelectObject(dc, old);
+}
+
+// the one thing an empty tab tells the reader: how to get a document into it
+static void drawEmptyTabHint() {
+    const wchar_t* msg = L"Open a document with Ctrl+O  \x2022  New tab: Ctrl+T";
+    HFONT old = (HFONT)SelectObject(gMemDC, stripFont());
+    SetBkMode(gMemDC, TRANSPARENT);
+    SetTextColor(gMemDC, RGB(110, 110, 110));
+    RECT r = { 0, tabStripH(), gClientW, gClientH };
+    DrawTextW(gMemDC, msg, -1, &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    SelectObject(gMemDC, old);
+}
+
 // ---- the Advanced cascade --------------------------------------------------
-// Everything that needs more than the small reader's own machinery lives here,
-// greyed out, so the reader can see the shape of it without a second app.
+// Everything past plain reading lives here. Two groups: the document tools and
+// view modes that shipped in the first feature pass (they are reached far less
+// often than open/save/find/zoom, and they were crowding the top level of the
+// menu), and the greyed placeholders for what is still planned. The ids are the
+// protocol the test suites post, so they keep their numbers wherever the rows
+// sit; only the menu tree changed.
 static HMENU advancedMenu() {
     HMENU m = CreatePopupMenu();
+    AppendMenuW(m, gDoc ? MF_STRING | (gThumbsOn ? MF_CHECKED : 0) : MF_GRAYED,
+                202, L"Thumbnails");
+    AppendMenuW(m, gDoc ? MF_STRING | (gOutlineOn ? MF_CHECKED : 0) : MF_GRAYED,
+                201, L"Outline panel");
+    AppendMenuW(m, MF_STRING | (gNight ? MF_CHECKED : 0), 200, L"Night mode");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, gDoc ? MF_STRING : MF_GRAYED, 205, L"Merge PDFs...");
+    AppendMenuW(m, gDoc && gDocPages > 1 ? MF_STRING : MF_GRAYED, 206, L"Split pages...");
+    AppendMenuW(m, gDoc ? MF_STRING : MF_GRAYED, 203, L"Insert signature...");
+    AppendMenuW(m, gSigs.empty() ? MF_GRAYED : MF_STRING, 204, L"Clear signatures");
+    AppendMenuW(m, gDoc ? MF_STRING : MF_GRAYED, 207, L"Reopen last document");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, MF_STRING | MF_GRAYED, 250, L"OCR text layer  (planned)");
     AppendMenuW(m, MF_STRING | MF_GRAYED, 251, L"Export as Word  (planned)");
     AppendMenuW(m, MF_STRING | MF_GRAYED, 252, L"Edit text in place  (planned)");
@@ -4832,6 +5274,10 @@ static void onKeyDown(HWND h, WPARAM wp) {
     else if (wp == '0' && ctrl) fitWidth();
     else if (wp == 'F' && ctrl) toggleSearch(true);
     else if (wp == 'O' && ctrl) openDialog();
+    else if (wp == 'T' && ctrl && gDocCount < kMaxTabs) newTab();
+    else if (wp == 'W' && ctrl) closeTab();
+    else if (wp == VK_TAB && ctrl)
+        switchToDoc((gActiveDoc + (GetKeyState(VK_SHIFT) & 0x8000 ? gDocCount - 1 : 1)) % gDocCount);
     else if (wp == 'C' && ctrl) copySelection();
     else if (wp == VK_F3 && !gSearchOpen) toggleSearch(true);
     else if (wp == VK_F3) nextMatch((GetKeyState(VK_SHIFT) & 0x8000) ? -1 : 1);
@@ -4878,7 +5324,7 @@ static void onContextMenu(HWND h, LPARAM lp) {   // right click
         AppendMenuW(menu, MF_STRING, 135, L"Highlight");           // one click: default color
         AppendMenuW(menu, MF_POPUP, (UINT_PTR)colorSubmenu(gHlDefault, 140, 146, 149), L"Set default color");
         AppendMenuW(menu, MF_STRING, 101, L"Copy\tCtrl+C");
-    } else if (gDoc) {                          // bare page: pin under cursor
+    } else if (gDoc && cpt.y >= tabStripH()) {  // bare page: pin under cursor
         double px, py;
         pagePxToPt(menuPage, cpt.x - docLeft() - pageLeftPx(menuPage),
                    cpt.y - docTop() - yTopPx(menuPage), &px, &py);
@@ -4890,6 +5336,8 @@ static void onContextMenu(HWND h, LPARAM lp) {   // right click
     }
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, 107, L"Open...\tCtrl+O");
+    AppendMenuW(menu, gDocCount < kMaxTabs ? MF_STRING : MF_GRAYED, 300, L"New Tab\tCtrl+T");
+    AppendMenuW(menu, gDocCount > 1 ? MF_STRING : MF_GRAYED, 301, L"Close Tab\tCtrl+W");
     AppendMenuW(menu, gDoc && gDirty ? MF_STRING : MF_GRAYED, 118, L"Save\tCtrl+S");
     AppendMenuW(menu, gDoc && gDirty ? MF_STRING : MF_GRAYED, 119, L"Save As...\tCtrl+Shift+S");
     AppendMenuW(menu, gDoc ? MF_STRING : MF_GRAYED, 137, L"Print...\tCtrl+P");
@@ -4907,17 +5355,6 @@ static void onContextMenu(HWND h, LPARAM lp) {   // right click
     AppendMenuW(menu, gDoc ? MF_STRING : MF_GRAYED, 133, L"Rotate clockwise");
     AppendMenuW(menu, gDoc ? MF_STRING : MF_GRAYED, 134, L"Rotate counter-clockwise");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(menu, gDoc ? MF_STRING | (gOutlineOn ? MF_CHECKED : 0) : MF_GRAYED,
-               201, L"Outline panel");
-    AppendMenuW(menu, gDoc ? MF_STRING | (gThumbsOn ? MF_CHECKED : 0) : MF_GRAYED,
-               202, L"Thumbnails");
-    AppendMenuW(menu, MF_STRING | (gNight ? MF_CHECKED : 0), 200, L"Night mode");
-    AppendMenuW(menu, gDoc ? MF_STRING : MF_GRAYED, 203, L"Insert signature...");
-    AppendMenuW(menu, gSigs.empty() ? MF_GRAYED : MF_STRING, 204, L"Clear signatures");
-    AppendMenuW(menu, gDoc ? MF_STRING : MF_GRAYED, 205, L"Merge PDFs...");
-    AppendMenuW(menu, gDoc && gDocPages > 1 ? MF_STRING : MF_GRAYED, 206, L"Split pages...");
-    AppendMenuW(menu, gDoc ? MF_STRING : MF_GRAYED, 207, L"Reopen last document");
-    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_POPUP, (UINT_PTR)advancedMenu(), L"Advanced");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, 110, L"Minimize");
@@ -4926,6 +5363,20 @@ static void onContextMenu(HWND h, LPARAM lp) {   // right click
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, 170, L"Check for updates");
     AppendMenuW(menu, MF_STRING, 112, L"Quit");
+    if (!mayTakeForeground()) {
+        // gate run: this popup is the one window the handler shows, and
+        // TrackPopupMenu both appears at the cursor - on the ACTIVE desktop,
+        // wherever the person is working - and forces itself foreground, which
+        // flips their whole desktop over. Everything above has already set the
+        // target state (gMenuHl / gMenuPin / gMenuPinPt), so the suites drive
+        // the same command ids with WM_COMMAND and no menu is ever shown.
+        // NB: this guard covers BOTH gate modes - a background launch AND a
+        // window placed on another desktop - because the right-click can also
+        // come from the person working on that other desktop while the run is
+        // going.
+        DestroyMenu(menu);
+        return;
+    }
     SetForegroundWindow(h);   // TrackPopupMenu dismisses instantly without foreground
     int cmd = TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_RETURNCMD | TPM_NONOTIFY, x, y, 0, h, nullptr);
     DestroyMenu(menu);
@@ -4973,6 +5424,8 @@ static void onCommand(HWND h, WPARAM wp) {
     case 205: if (gDoc) mergeDialog(); return;
     case 206: if (gDoc && gDocPages > 1) openRangePrompt(); return;
     case 207: reopenLastDocument(); return;
+    case 300: newTab(); return;
+    case 301: closeTab(); return;
     case 116:                                   // copy highlight text
         if (gMenuHl >= 0 && gMenuHl < (int)gHls.size()) {
             const Hl& h2 = gHls[gMenuHl];
@@ -5025,7 +5478,7 @@ static void onCommand(HWND h, WPARAM wp) {
     case 169: gColorTarget = 3; startColorEntry(); return;   // Custom... on the default pin
     case 180:                                   // hand the three custom slots back
         if (!anyCustomColor()) return;
-        if (MessageBoxW(h, L"Clear your custom colours?\n\n"
+        if (messageBox(h, L"Clear your custom colours?\n\n"
                            L"Marks that use one fall back to the preset for that "
                            L"kind - a highlight to yellow, a pin to red.",
                         L"mnpdf", MB_YESNO | MB_ICONQUESTION) != IDYES) return;
@@ -5095,7 +5548,8 @@ static void onTimer(HWND h, WPARAM wp) {
         // second rather than pixels, so the pace feels the same at every
         // zoom level.
         const int zone = kEdgeZone;                 // the in-window margin
-        int depth = gEdgeScroll > 0 ? gDragPt.y - (gClientH - zone) : zone - gDragPt.y;
+        int depth = gEdgeScroll > 0 ? gDragPt.y - (gClientH - zone)
+                                    : zone - (gDragPt.y - tabStripH());
         if (depth < 0) depth = 0;
         const int maxDepth = zone * 2;              // held well past the window: top speed
         if (depth > maxDepth) depth = maxDepth;
@@ -5106,7 +5560,8 @@ static void onTimer(HWND h, WPARAM wp) {
         double step = ph * 0.017 * frac;            // ~1.8 s per page at the window edge
         scrollByDy(gEdgeScroll * (int)step);
         int pg;
-        int idx = charIndexClamped(gDragPt.x, gDragPt.y, &pg);
+        int dcy = gDragPt.y > tabStripH() ? gDragPt.y : tabStripH();
+        int idx = charIndexClamped(gDragPt.x, dcy, &pg);
         if (idx >= 0) {
             gSelHeadPage = pg;
             gSelHead = idx;
@@ -5183,6 +5638,13 @@ static LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         return 0;
     }
     case WM_LBUTTONDOWN: {
+        int sx = GET_X_LPARAM(lp), sy = GET_Y_LPARAM(lp);
+        if (sy < tabStripH()) {                  // the strip owns its own clicks:
+            int t = tabAt(sx, sy);              // switch, open a new tab, or eat it
+            if (t == kStripNew) newTab();
+            else if (t >= 0) switchToDoc(t);
+            return 0;
+        }
         if (!gSigPlacing.empty()) {          // the click places the stamp, nothing else
             int hit;
             sigPlacementAt(GET_X_LPARAM(lp), GET_Y_LPARAM(lp), &hit);
@@ -5206,12 +5668,13 @@ static LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         return 0;
     }
     case WM_LBUTTONDBLCLK: {
+        int pg;
+        int idx = charIndexClamped(GET_X_LPARAM(lp), GET_Y_LPARAM(lp), &pg);
+        if (idx < 0 || pg < 0) return 0;             // off the page (the strip band): no selection
         hidePinTip(h);
         SetFocus(h);
         SetCapture(h);
         gSelDrag = true;
-        int pg;
-        int idx = charIndexClamped(GET_X_LPARAM(lp), GET_Y_LPARAM(lp), &pg);
         gSelAnchorPage = gSelHeadPage = pg;
         gSelAnchor = gSelHead = idx;
         selectWord(pg, idx);
@@ -5238,6 +5701,13 @@ static LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
             return TRUE;
         }
         break;
+    case WM_MOUSEACTIVATE:
+        // A real click on a window that lives on another desktop (or runs under
+        // the gate) must not activate it: activating is what flips the whole
+        // desktop over. MA_NOACTIVATE declines the activation while keeping
+        // the click itself, so the document still receives it.
+        if (!mayTakeForeground()) return MA_NOACTIVATE;
+        break;
     case WM_MOUSEMOVE: {
         if (!gSelDrag && gEditPin < 0) {           // hover a pin: offer its text
             int p = pinAt(GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
@@ -5252,7 +5722,7 @@ static LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         if (gSelDrag && gSelAnchor >= 0) {
             gDragPt = { GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
             int edge = 0;
-            if (gDragPt.y < kEdgeZone) edge = -1;         // near the top margin: scroll up
+            if (gDragPt.y < tabStripH() + kEdgeZone) edge = -1;   // the top margin sits under the strip
             else if (gDragPt.y > gClientH - kEdgeZone) edge = 1;
             if (edge != gEdgeScroll) {
                 gEdgeScroll = edge;
@@ -5260,7 +5730,8 @@ static LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
                 else KillTimer(h, 3);
             }
             int pg;
-            int idx = charIndexClamped(gDragPt.x, gDragPt.y, &pg);
+            int dcy = gDragPt.y > tabStripH() ? gDragPt.y : tabStripH();
+            int idx = charIndexClamped(gDragPt.x, dcy, &pg);
             if (idx >= 0 && (pg != gSelHeadPage || idx != gSelHead)) {
                 gSelHeadPage = pg;
                 gSelHead = idx;
@@ -5300,6 +5771,24 @@ static LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     case WM_KEYDOWN: onKeyDown(h, wp); return 0;
     case WM_CONTEXTMENU: onContextMenu(h, lp); return 0;
     case WM_COMMAND: onCommand(h, wp); return 0;
+    case WM_COPYDATA: {                   // another program asks this window to open a
+        // document: the sanctioned cross-process data message, and the only
+        // path that needs no dialog - a modal one would take foreground back
+        // the moment its owner processes the input that opened it
+        PCOPYDATASTRUCT cd = (PCOPYDATASTRUCT)lp;
+        if (cd && cd->dwData == 1 && cd->cbData >= 2 && cd->lpData) {
+            const wchar_t* p = (const wchar_t*)cd->lpData;
+            int maxc = cd->cbData / (int)sizeof(wchar_t);
+            int n = 0;
+            while (n < maxc && p[n]) n++;
+            std::wstring ask(p, n);
+            // the file dialog refuses a path that is not there; this message has
+            // no dialog, so the path is checked here before it is opened
+            if (GetFileAttributesW(ask.c_str()) != INVALID_FILE_ATTRIBUTES)
+                openPath(ask);                     // into the ACTIVE tab: an empty New Tab fills
+        }
+        return TRUE;
+    }
     case WM_NCHITTEST: {
         // With the caption hidden the client covers the whole window (see
         // WM_NCCALCSIZE), so DefWindowProc finds no non-client margin anywhere
@@ -5391,14 +5880,14 @@ static LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         closeUpdateDialog();                       // an update half-installed is not installed
         if (gEditPin >= 0) commitPinEdit();        // an open pin box saves first
         if (gAutosave) {
-            writeSidecarNow();                     // edits survive in the sidecar: no prompt
+            writeAllSidecars();                    // every open tab: edits survive in the sidecar: no prompt
         } else if (gDirty) {
-            int r = MessageBoxW(h, L"Save changes?", L"mnpdf", MB_YESNOCANCEL | MB_ICONQUESTION);
+            int r = messageBox(h, L"Save changes?", L"mnpdf", MB_YESNOCANCEL | MB_ICONQUESTION);
             if (r == IDCANCEL) return 0;
             if (r == IDYES && !doSave()) return 0;  // save failed: stay open
-            writeSidecarNow();
+            writeAllSidecars();
         } else {
-            writeSidecarNow();                     // sidecar always keeps the reading position
+            writeAllSidecars();                    // sidecar always keeps the reading position
         }
         writeAppPref();                            // the last rect read here is the one restored
         DestroyWindow(h);
@@ -5415,11 +5904,21 @@ static LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
 int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int show) {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
+    // claim the shared-preference role, if no other copy holds it. CreateMutexW
+    // answers ERROR_ALREADY_EXISTS when another process owns the name; the
+    // handle is kept for the whole process lifetime (never CloseHandle'd early)
+    // so the ownership is released exactly when this process exits. A failure to
+    // create at all leaves the box primary, which is the old behaviour.
+    gInstanceMutex = CreateMutexW(nullptr, FALSE, L"Global\\mnpdf.instance");
+    if (gInstanceMutex && GetLastError() == ERROR_ALREADY_EXISTS) gPrimaryInstance = false;
+
     Gdiplus::GdiplusStartupInput gsi;
     gGdiOk = (Gdiplus::GdiplusStartup(&gGdiToken, &gsi, nullptr) == Gdiplus::Ok);   // anti-aliased pin dots
 
     FPDF_LIBRARY_CONFIG cfg = { 2, nullptr, nullptr };
     FPDF_InitLibraryWithConfig(&cfg);
+
+    gDocs[0] = new Doc();                          // the startup tab: the restore below fills it
 
     WNDCLASSEXW wc = { sizeof(wc) };
     wc.style = CS_DBLCLKS;
@@ -5449,8 +5948,15 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int show) {
     // both read before the window exists: WM_CREATE and the first WM_SIZE
     // (WS_VISIBLE is in the style) both run inside CreateWindowExW, so a title
     // computed during them must already see these two
-    const bool background = _wgetenv(L"MNPDF_BACKGROUND") != nullptr;
+    gBackground = _wgetenv(L"MNPDF_BACKGROUND") != nullptr;
     gVerboseTitle = _wgetenv(L"MNPDF_VERBOSE") != nullptr;   // test-suite opt-in: richer window title
+    // MNPDF_WINDOW_DESKTOP: a windowed gate run moves this window to another
+    // virtual desktop after the launch. The app reads the seam itself rather
+    // than trusting the mover: the same no-foreground discipline as
+    // MNPDF_BACKGROUND has to hold while the window is still on the working
+    // desktop during start-up, and a right-click arriving there must not open
+    // a menu on it either.
+    gPlaced = _wgetenv(L"MNPDF_WINDOW_DESKTOP") != nullptr;
     // MNPDF_BACKGROUND=1: gate/test runs must not steal focus. Mask WS_VISIBLE
     // out of the create style so the first appearance is already minimized
     // and inactive - a later ShowWindow cannot undo an initial flash.
@@ -5489,7 +5995,7 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int show) {
     // already set again). The caption is hidden by WM_NCCALCSIZE below, which
     // gives the client area the whole window so there is nothing left to draw.
     DWORD winStyle = WS_CLIPCHILDREN | WS_OVERLAPPEDWINDOW | WS_VISIBLE;
-    if (background) winStyle &= ~(DWORD)WS_VISIBLE;
+    if (gBackground || gPlaced) winStyle &= ~(DWORD)WS_VISIBLE;
     gWnd = CreateWindowExW(0, L"mnpdf", L"mnpdf", winStyle,
                            startX, startY, startW, startH,
                            nullptr, nullptr, hInst, nullptr);
@@ -5499,23 +6005,14 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int show) {
     bool opened = false;
     if (argc >= 2) {
         opened = openPath(argv[1]);
+    } else if (!gPrimaryInstance) {
+        // A plain SECOND launch is a deliberate new window: the document the
+        // primary instance already has open is the last thing this window should
+        // show, so it starts empty and offers the open dialog instead.
+        opened = false;
     } else {
-        wchar_t dir[MAX_PATH];
-        appDirW(dir, MAX_PATH);
-        FILE* fp = _wfopen((std::wstring(dir) + L"\\last.txt").c_str(), L"rb");
-        if (fp) {                                   // plain launch: reopen last document
-            char buf[MAX_PATH * 3] = "";
-            size_t got = fread(buf, 1, sizeof(buf) - 1, fp);
-            fclose(fp);
-            while (got && (buf[got - 1] == '\n' || buf[got - 1] == '\r')) got--;
-            buf[got] = 0;
-            if (got) {
-                int wn = MultiByteToWideChar(CP_UTF8, 0, buf, -1, nullptr, 0);
-                std::vector<wchar_t> wpath(wn);
-                MultiByteToWideChar(CP_UTF8, 0, buf, -1, wpath.data(), wn);
-                if (GetFileAttributesW(wpath.data()) != INVALID_FILE_ATTRIBUTES) opened = openPath(wpath.data());
-            }
-        }
+        std::wstring last = lastDocumentPath();     // plain launch: reopen last document
+        if (GetFileAttributesW(last.c_str()) != INVALID_FILE_ATTRIBUTES) opened = openPath(last);
     }
     if (argv) LocalFree(argv);
     if (!opened) openDialog();
@@ -5540,14 +6037,14 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int show) {
         LONG st = (LONG)GetWindowLongPtrW(gWnd, GWL_STYLE);
         SetWindowLongPtrW(gWnd, GWL_STYLE, (LONG_PTR)(st & ~(LONG)WS_CAPTION));
         SetWindowPos(gWnd, nullptr, 0, 0, 0, 0,
-                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
     }
 
     // The title needs no WinMain-side call: WM_SIZE drives updateTitle on every
     // size message, SIZE_MINIMIZED included, and renderPage calls it first.
     // The window still exists: MainWindowHandle resolves, posted messages land,
     // and title reads work - it is only ever minimized and inactive.
-    ShowWindow(gWnd, background ? SW_SHOWMINNOACTIVE
+    ShowWindow(gWnd, (gBackground || gPlaced) ? SW_SHOWMINNOACTIVE
                                 : (gWinMax ? SW_SHOWMAXIMIZED : show));
     // the sweep retries for seconds against the copy that is still shutting down,
     // so it runs off the start-up path instead of holding a window whose message
@@ -5566,8 +6063,15 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int show) {
         }
     }
     flushPageCache();                              // releases gPage/gTextPage too
-    if (gDoc) FPDF_CloseDocument(gDoc);
+    for (int d = 0; d < gDocCount; d++) {          // every bundle, not only the active one
+        if (gDocs[d]->doc) FPDF_CloseDocument(gDocs[d]->doc);
+        gDocs[d]->doc = nullptr;
+        gDocs[d]->release();
+        delete gDocs[d];
+        gDocs[d] = nullptr;
+    }
     FPDF_DestroyLibrary();
+    if (gStripFont) { DeleteObject(gStripFont); gStripFont = nullptr; }
     if (gNoteFont) { DeleteObject(gNoteFont); gNoteFont = nullptr; gNoteFontPx = 0; }
     if (gGdiOk) Gdiplus::GdiplusShutdown(gGdiToken);
     return 0;

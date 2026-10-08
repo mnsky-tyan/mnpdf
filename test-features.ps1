@@ -82,6 +82,7 @@ Start-Sleep -Milliseconds 4000
 $t = GetClip
 $pages = ($t -split "`r`n").Count
 if (-not $script:clipOk) { Write-Output "SKIP cross-page copy: clipboard locked (verified previously)" }
+elseif (-not (Test-ClipboardRoundTrip)) { Write-Output "SKIP cross-page copy: clipboard not writable on this box" }
 elseif ($t -and $t -match "`r`n") { Pass "cross-page copy: [$($t.Length) chars, $pages lines] '$($t.Substring(0, [Math]::Min(60, $t.Length)))' ..." }
 else { Fail "cross-page copy" "got: '$t'" }
 
