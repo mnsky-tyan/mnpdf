@@ -3204,6 +3204,7 @@ static void toggleTitlebar(HWND h) {
 }
 
 static void toggleTabStrip(HWND h) {
+    hidePinTip(h);                  // the band moves under it: a tip anchored to the old layout is stranded
     gTabStrip = !gTabStrip;
     // The strip is chrome, so hiding it hands its height to the document: the
     // find bar rides just below the strip and the scroll range grows by the

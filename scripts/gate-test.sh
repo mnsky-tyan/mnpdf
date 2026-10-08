@@ -44,24 +44,34 @@ export MNPDF_GATE_STATE='' MNPDF_GATE_SUITE=''
 # plain non-login `bash` that does not source ~/.profile, where ~/.local/bin is
 # not on PATH. If the seat still cannot resolve, warn LOUDLY: the run then
 # places windows on whatever desktop is current (the person's working one), and
-# the log must say so rather than looking identical to a clean run.
-seat_tool="$(command -v win-desktop-show 2>/dev/null || true)"
-[[ -n "$seat_tool" ]] || { [[ -x "$HOME/.local/bin/win-desktop-show" ]] && seat_tool="$HOME/.local/bin/win-desktop-show"; }
+# the log must say so rather than looking identical to a clean run. Both lookups
+# - PATH, then the absolute $HOME/.local/bin - collapse into one variable that
+# is tested once, so no lookup branch can fall through silently: either the seat
+# resolves or exactly one loud line goes to stderr.
 if [[ -n "${MNPDF_WINDOW_DESKTOP:-}" ]]; then
   printf 'GATE: window placement already set by the wrapper (desktop %s)\n' "$MNPDF_WINDOW_DESKTOP"
-elif [[ -n "$seat_tool" ]]; then
-  seat="$(timeout 20s "$seat_tool" --seat 2>/dev/null || true)"
-  seat_index="$(printf '%s\n' "$seat" | sed -n '1p')"
-  seat_dll="$(printf '%s\n' "$seat" | sed -n '2p')"
-  if [[ "$seat_index" =~ ^[0-9]+$ && -n "$seat_dll" ]]; then
+else
+  # PATH first, then the absolute fallback: this runs under a plain non-login
+  # `bash` that never sources ~/.profile, so ~/.local/bin is not on PATH there
+  seat_tool="$(command -v win-desktop-show 2>/dev/null || true)"
+  if [[ -z "$seat_tool" && -x "$HOME/.local/bin/win-desktop-show" ]]; then
+    seat_tool="$HOME/.local/bin/win-desktop-show"
+  fi
+  seat_index=''
+  seat_dll=''
+  if [[ -n "$seat_tool" ]]; then
+    seat="$(timeout 20s "$seat_tool" --seat 2>/dev/null || true)"
+    candidate="$(printf '%s\n' "$seat" | sed -n '1p')"
+    if [[ "$candidate" =~ ^[0-9]+$ ]]; then seat_index="$candidate"; fi
+    seat_dll="$(printf '%s\n' "$seat" | sed -n '2p')"
+  fi
+  if [[ -n "$seat_index" && -n "$seat_dll" ]]; then
     export MNPDF_WINDOW_DESKTOP="$seat_index"
     export MNPDF_VD_DLL="$seat_dll"
     printf 'GATE: windows are placed on desktop %s for this run\n' "$seat_index"
   else
-    printf '%s\n' "GATE: WARNING - could not resolve the agent desktop seat (win-desktop-show --seat failed). Suite windows will appear on the CURRENT desktop (the one in use). This is the fallback, not the safe path." >&2
+    printf '%s\n' 'GATE: no placement seat resolved; windows will appear on the current desktop' >&2
   fi
-else
-  printf '%s\n' "GATE: WARNING - win-desktop-show not found on PATH or in $HOME/.local/bin. Suite windows will appear on the CURRENT desktop (the one in use). This is the fallback, not the safe path." >&2
 fi
 export MNPDF_BACKGROUND=1
 export WSLENV="${WSLENV:+${WSLENV}:}MNPDF_GATE_EXE/w:MNPDF_GATE_STATE/w:MNPDF_GATE_SUITE/w:MNPDF_BACKGROUND/w:MNPDF_WINDOW_DESKTOP/w:MNPDF_VD_DLL/w"
