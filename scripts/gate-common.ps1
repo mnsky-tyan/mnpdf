@@ -133,12 +133,6 @@ function Invoke-SuiteRun {
     $env:MNPDF_GATE_SUITE = $suitePath
     if ($foreground) { Remove-Item Env:MNPDF_BACKGROUND -ErrorAction SilentlyContinue }
     else { $env:MNPDF_BACKGROUND = '1' }
-    # A machine someone is using can ask for every suite - the foreground one
-    # included - to start the app minimized, so nothing ever appears on the
-    # active desktop; the suite restores and measures the window on whatever
-    # desktop the launch seam (MNPDF_WINDOW_DESKTOP) put it on. CI never sets
-    # this, so CI keeps the roster's own foreground rule unchanged.
-    if ($env:MNPDF_FORCE_BACKGROUND) { $env:MNPDF_BACKGROUND = '1' }
     # The suite is invoked directly rather than through Start-Process -Wait:
     # that also waits for the child's inherited output handle, and the app the
     # suite launches holds it open long after the suite itself has finished.

@@ -105,12 +105,6 @@ static void showPopup(HWND h) {
 
 static bool gVerboseTitle = false;               // MNPDF_VERBOSE: page/zoom/RAM in the title
 
-// A modal box is itself an activation path: it makes the owning window the
-// foreground window and flashes its taskbar button, and on a window bound for
-// another desktop it flips the person's whole view over to it. The shipped
-// decision is that every run - a gate run included - keeps the real box, so this
-// wrapper simply delegates to MessageBoxW; the launch seam below, never
-// suppression, is what keeps a gate-run box from flipping the desktop.
 static int messageBox(HWND owner, const wchar_t* text, const wchar_t* caption, UINT flags) {
     // Gate runs keep REAL boxes. The launch seam already makes them safe: the
     // gate spawns the app through WMI, so the process inherits no right to take
@@ -5097,7 +5091,6 @@ static void newTab() {
     gActiveDoc = gDocCount - 1;                  // appended at the end
     loadPage(gPageIndex);
     relayoutPages();
-    if (gFitWidth) applyFitWidth();
     clampScroll();
     updateTitle();
     refreshDrawers();
@@ -5555,7 +5548,8 @@ static void onTimer(HWND h, WPARAM wp) {
         // second rather than pixels, so the pace feels the same at every
         // zoom level.
         const int zone = kEdgeZone;                 // the in-window margin
-        int depth = gEdgeScroll > 0 ? gDragPt.y - (gClientH - zone) : zone - gDragPt.y;
+        int depth = gEdgeScroll > 0 ? gDragPt.y - (gClientH - zone)
+                                    : zone - (gDragPt.y - tabStripH());
         if (depth < 0) depth = 0;
         const int maxDepth = zone * 2;              // held well past the window: top speed
         if (depth > maxDepth) depth = maxDepth;
@@ -5566,7 +5560,8 @@ static void onTimer(HWND h, WPARAM wp) {
         double step = ph * 0.017 * frac;            // ~1.8 s per page at the window edge
         scrollByDy(gEdgeScroll * (int)step);
         int pg;
-        int idx = charIndexClamped(gDragPt.x, gDragPt.y, &pg);
+        int dcy = gDragPt.y > tabStripH() ? gDragPt.y : tabStripH();
+        int idx = charIndexClamped(gDragPt.x, dcy, &pg);
         if (idx >= 0) {
             gSelHeadPage = pg;
             gSelHead = idx;
@@ -5727,7 +5722,7 @@ static LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         if (gSelDrag && gSelAnchor >= 0) {
             gDragPt = { GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
             int edge = 0;
-            if (gDragPt.y < kEdgeZone) edge = -1;         // near the top margin: scroll up
+            if (gDragPt.y < tabStripH() + kEdgeZone) edge = -1;   // the top margin sits under the strip
             else if (gDragPt.y > gClientH - kEdgeZone) edge = 1;
             if (edge != gEdgeScroll) {
                 gEdgeScroll = edge;
@@ -5735,7 +5730,8 @@ static LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
                 else KillTimer(h, 3);
             }
             int pg;
-            int idx = charIndexClamped(gDragPt.x, gDragPt.y, &pg);
+            int dcy = gDragPt.y > tabStripH() ? gDragPt.y : tabStripH();
+            int idx = charIndexClamped(gDragPt.x, dcy, &pg);
             if (idx >= 0 && (pg != gSelHeadPage || idx != gSelHead)) {
                 gSelHeadPage = pg;
                 gSelHead = idx;

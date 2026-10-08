@@ -32,7 +32,7 @@ flock -n 9 || { printf '%s\n' 'GATE: another runner owns this checkout.' >&2; ex
 export MNPDF_GATE_EXE="${WINPWD}\\build\\mnpdf.exe"
 export MNPDF_GATE_STATE='' MNPDF_GATE_SUITE=''
 export MNPDF_BACKGROUND=1
-export WSLENV="${WSLENV:+${WSLENV}:}MNPDF_GATE_EXE/w:MNPDF_GATE_STATE/w:MNPDF_GATE_SUITE/w:MNPDF_BACKGROUND/w:MNPDF_FORCE_BACKGROUND/w:MNPDF_WINDOW_DESKTOP/w:MNPDF_VD_DLL/w"
+export WSLENV="${WSLENV:+${WSLENV}:}MNPDF_GATE_EXE/w:MNPDF_GATE_STATE/w:MNPDF_GATE_SUITE/w:MNPDF_BACKGROUND/w:MNPDF_WINDOW_DESKTOP/w:MNPDF_VD_DLL/w"
 # MNPDF_BACKGROUND: the app starts minimized without activating, so gate runs
 # never steal focus. Suites inherit it through the test shell's environment.
 GATE_COMMON="${WINPWD}\\scripts\\gate-common.ps1"
