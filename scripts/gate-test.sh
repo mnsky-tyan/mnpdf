@@ -109,7 +109,8 @@ printf 'GATE: logs and isolated preferences: %s\n' "$run_dir"
 for s in "${suites[@]}"; do
   state="$run_dir/$s"
   mkdir -p "$state/appdata" "$state/temp"
-  export MNPDF_GATE_STATE=$(wslpath -w "$state")
+  state_w=$(wslpath -w "$state")
+  export MNPDF_GATE_STATE="$state_w"
   export MNPDF_GATE_SUITE="${WINPWD}\\${s}.ps1"
   # the app only checks that the variable exists, so a foreground suite needs it
   # gone, not set to 0

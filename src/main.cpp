@@ -144,14 +144,14 @@ struct Sig {
     std::wstring path;
 };
 
-// ---- per-document state: the bundle (tab groundwork, steps 1-3) ----
+// ---- per-document state: the bundle ----
 // Everything that describes ONE open document: its content (document, current
-// page, marks lifted from the file) and its layout/view state. Today exactly
-// one bundle exists; the tabs step adds more and switches the active pointer.
-// The historical file-scope names continue as macros over the active bundle, so
-// every existing use site keeps reading the same words and gains the
-// indirection for free: when tabs land, switching gViewTab switches the
-// document without a single call-site change.
+// page, marks lifted from the file) and its layout/view state. One bundle exists
+// per open tab, up to kMaxTabs, and gActiveDoc picks the one the file-scope
+// names below read. The historical names continue as macros over the active
+// bundle, so every existing use site keeps reading the same words and gains the
+// indirection for free: switching tabs switches the document without a
+// call-site change.
 struct Tomb { int kind, page, start, count; double x, y; };   // kind 0 = highlight, 1 = pin
 struct Doc {
   std::wstring path;              // empty until a file is open
@@ -536,7 +536,7 @@ static int gClientW = 0, gClientH = 0;
 
 static void renderPage();
 static void updateTitle();
-// the tab strip is chrome, so it paints even with no document open (4b)
+// the tab strip is chrome, so it paints even with no document open
 static int tabStripH();
 static void drawTabStrip();
 static void drawEmptyTabHint();

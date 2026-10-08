@@ -169,9 +169,9 @@ bash scripts/gate-test.sh     # from WSL: builds, then runs all nine suites
 
 Each suite gets its own `APPDATA` and `TEMP`, so nothing written by one can
 reach the next. Twelve environment variables are the seams of this setup -
-seven read by the app, six set by the runner plumbing (`MNPDF_WINDOW_DESKTOP`
-is both, so the table counts it once) - and none of them does
-anything unless it is set:
+seven read by the app and seven set by the runner plumbing, with
+`MNPDF_BACKGROUND` and `MNPDF_WINDOW_DESKTOP` in both groups - and none of them
+does anything unless it is set:
 
 | | |
 |---|---|
@@ -188,13 +188,13 @@ anything unless it is set:
 | `MNPDF_WINDOW_DESKTOP` | app and runner: the 0-based virtual desktop every app window is moved to before any restore or measurement, so a local gate keeps its windows off the desk in use - the app reads it too, to start without ever taking the foreground |
 | `MNPDF_VD_DLL` | runner: the `VirtualDesktopAccessor.dll` path the move-to-desktop above needs |
 
-The WSL runner forwards its six runner seams (`MNPDF_GATE_EXE`,
-`MNPDF_GATE_STATE`, `MNPDF_GATE_SUITE`, `MNPDF_BACKGROUND`, `MNPDF_WINDOW_DESKTOP`, `MNPDF_VD_DLL`)
-through `WSLENV`
-(`/w`, Windows-side only), which is what lets `gate-test.sh` hand each suite
-its paths without quoting a Windows path into a command line. `MNPDF_SKIP_SUITES`
-needs no forwarding: `gate-test.sh` filters its own roster with it, the same
-comma-separated list `Read-SuiteRoster` applies for `test-ci.ps1`.
+The WSL runner forwards the runner-owned seams (`MNPDF_GATE_EXE`,
+`MNPDF_GATE_STATE`, `MNPDF_GATE_SUITE`, `MNPDF_WINDOW_DESKTOP`, `MNPDF_VD_DLL`)
+plus `MNPDF_BACKGROUND` through `WSLENV` (`/w`, Windows-side only), which is
+what lets `gate-test.sh` hand each suite its paths without quoting a Windows
+path into a command line. `MNPDF_SKIP_SUITES` needs no forwarding:
+`gate-test.sh` filters its own roster with it, the same comma-separated list
+`Read-SuiteRoster` applies for `test-ci.ps1`.
 
 Every suite but `test-colors.ps1` keeps its window minimised: the colour suite
 really types into the app's colour box, and a minimised owner can never give
