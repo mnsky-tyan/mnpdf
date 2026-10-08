@@ -291,7 +291,13 @@ if (-not (AwaitTitle $wD 'mnpdf 1/\d+')) {
       [void][MN]::GetClientRect($wD2, [ref]$crD)
       $plusX = $crD.R - $crD.L - [int]($mD.strip / 2)
       ClickAt $wD2 $plusX ([int]($mD.strip / 2))       # where the + would be
-      if (AwaitTitle $wD2 'mnpdf 1/\d+\s+\d+%') {
+      Start-Sleep -Milliseconds 300                    # let the click's effect land
+      # The document title is asserted DIRECTLY after the click: the verbose
+      # title always carries 'mnpdf N/M Z%', so polling AwaitTitle would match
+      # before the click could matter. If the strip were shown, this click opens
+      # a tab and the title becomes a bare 'mnpdf'; reading the title directly
+      # here is what actually proves the click changed nothing.
+      if ((Title $wD2) -match 'mnpdf 1/\d+\s+\d+%') {
         Pass 'a relaunch with the strip hidden starts with no strip'
         [void][MN]::PostMessageW($wD2, 0x0111, [IntPtr]302, [IntPtr]::Zero)   # Show tab strip
         Start-Sleep -Milliseconds 400

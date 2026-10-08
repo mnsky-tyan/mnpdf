@@ -22,6 +22,10 @@
 # stale-value read.
 $ErrorActionPreference = 'Stop'
 
+# the per-launch desktop watchers kept alive for the suite's lifetime; a plain
+# empty list so Start-DesktopWatcher's += is always safe
+$global:desktopWatchers = @()
+
 # ---- the app's interop surface (one Add-Type per suite process) ----------
 Add-Type -TypeDefinition @"
 using System;
@@ -188,24 +192,32 @@ $script:appWaitMs = 20000   # one bound for both launch waits
 #
 # Set MNPDF_WINDOW_DESKTOP (a 0-based desktop number) and MNPDF_VD_DLL (the
 # VirtualDesktopAccessor.dll path) to have every app window moved to that
-# desktop as part of the launch. This is how a local gate keeps test windows off
-# the desktop someone is using: the move happens here, deterministically, before
-# any restore or measurement - not by a watcher racing the suite. Both variables
-# are unset on CI, where the block below never runs and behaviour is unchanged.
+# desktop. This is how a local gate keeps test windows off the desktop someone
+# is using: the main window is moved deterministically as part of the launch,
+# before any restore or measurement, and a watcher then follows the process so
+# the popups it opens later follow too. Both variables are unset on CI, where
+# the block below never runs and behaviour is unchanged.
 $script:vdReady = $false
-function Move-AppWindowToDesktop([IntPtr]$Wnd) {
-  if (-not $env:MNPDF_WINDOW_DESKTOP) { return }
-  if (-not $script:vdReady) {
-    $dll = $env:MNPDF_VD_DLL
-    if (-not $dll -or -not (Test-Path $dll)) { return }
-    try { Add-Type -TypeDefinition @'
+# one binding, shared by the one-shot main-window move and the pid watcher: both
+# need the same bound accessor DLL and both must be a no-op when placement is
+# off (CI, no MNPDF_WINDOW_DESKTOP / MNPDF_VD_DLL)
+function Ensure-VdaReady {
+  if ($script:vdReady) { return $true }
+  if (-not $env:MNPDF_WINDOW_DESKTOP) { return $false }
+  $dll = $env:MNPDF_VD_DLL
+  if (-not $dll -or -not (Test-Path $dll)) { return $false }
+  try { Add-Type -TypeDefinition @'
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 public static class VDM {
   [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
   public static extern IntPtr LoadLibraryW(string p);
   [DllImport("kernel32.dll", CharSet=CharSet.Ansi)]
   public static extern IntPtr GetProcAddress(IntPtr h, string n);
+  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr p);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+  public delegate bool EnumProc(IntPtr h, IntPtr p);
   public delegate int D1(IntPtr h);
   public delegate int D2(IntPtr h, int n);
   public static IntPtr H;
@@ -224,20 +236,92 @@ public static class VDM {
   }
   public static int DesktopOf(IntPtr h) { return pOf(h); }
   public static int MoveTo(IntPtr h, int n) { return pMove(h, n); }
-}
-'@ } catch { if (-not [VDM]::pOf) { return } }   # already loaded: reuse it
-    if (-not [VDM]::Bind($dll)) { return }
-    $script:vdReady = $true
+  // every TOP-LEVEL window owned by one pid, so a single watcher can follow the
+  // app's main window and every popup it opens later (pin tip, pin editor,
+  // update box, colour box, range box, drawers) - they all belong to the same
+  // process, and a popup belongs to the desktop current when it is shown
+  static List<IntPtr> found = new List<IntPtr>();
+  static uint want;
+  static bool Pick(IntPtr h, IntPtr l) {
+    uint pid; GetWindowThreadProcessId(h, out pid);
+    if (pid == want) found.Add(h);
+    return true;
   }
-  # a window created moments ago has no desktop yet (-1): wait out the
-  # assignment, then move and verify, retrying the move itself a few times
-  for ($i = 0; $i -lt 40 -and [VDM]::DesktopOf($Wnd) -lt 0; $i++) { Start-Sleep -Milliseconds 50 }
+  public static IntPtr[] TopLevelOf(uint pid) {
+    found = new List<IntPtr>(); want = pid;
+    EnumWindows(Pick, IntPtr.Zero);
+    return found.ToArray();
+  }
+}
+'@ } catch { if (-not [VDM]::pOf) { return $false } }   # already loaded: reuse it
+  if (-not [VDM]::Bind($dll)) { return $false }
+  $script:vdReady = $true
+  return $true
+}
+
+function Move-AppWindowToDesktop([IntPtr]$Wnd) {
+  if (-not (Ensure-VdaReady)) { return }
   $target = 0
   if (-not [int]::TryParse($env:MNPDF_WINDOW_DESKTOP, [ref]$target)) { return }
+  # -1 is the accessor for DEFAULT_DESKTOP, not a "not assigned yet" state: a
+  # window created moments ago really is already on a desktop, and that desktop
+  # is the one in use. So there is nothing to wait out - move it, then verify
+  # and retry the move itself a few times.
   for ($i = 0; $i -lt 10 -and [VDM]::DesktopOf($Wnd) -ne $target; $i++) {
     [void][VDM]::MoveTo($Wnd, $target)
     Start-Sleep -Milliseconds 60
   }
+}
+
+# Follow the launched app's pid and move EVERY top-level window it opens, for as
+# long as that process lives. The one-shot move above only covers the main
+# window that existed at launch; the app also opens popups later (the pin tip,
+# the pin editor, the update box, the colour box, the split-range box and the
+# thumbnail/outline drawers) and a popup is created on whichever desktop is
+# CURRENT when it is shown. So a window already placed by the one-shot move is
+# not enough: without this, a popup opened mid-suite lands on the desktop the
+# person is actually using.
+# The popup's own number is the accessor's DEFAULT_DESKTOP, -1, and that is
+# exactly the case this has to catch: a popup the app never placed is already
+# on the desktop in use, and moving it is the whole point. Treating -1 as "not
+# assigned yet, skip it" left every popup there - measured: a Thumbnails drawer
+# the app opened mid-run still reported -1 after 6s of watching, and the same
+# handle moved to the seat on the first attempt once the skip was gone. A
+# handle that is stale or was never a window also reads -1 and moves nothing;
+# the move's own return value cannot say so (it is -1 both for a refusal and
+# for a success that has not settled yet), so the next pass re-reads instead.
+# Runs on its own runspace so the suite's thread is never blocked, and exits on
+# its own once the app process is gone.
+function Start-DesktopWatcher([int]$ProcId) {
+  if (-not (Ensure-VdaReady)) { return }
+  $target = 0
+  if (-not [int]::TryParse($env:MNPDF_WINDOW_DESKTOP, [ref]$target)) { return }
+  $shell = [runspacefactory]::CreateRunspace()
+  $shell.Open()
+  $rs = [powershell]::Create(); $rs.Runspace = $shell
+  # nothing is read from or written to the pipeline; the watcher only inspects
+  # and moves windows, and swallows its own errors so a transient desktop race
+  # can never abort the suite from a background thread
+  [void]$rs.AddScript({
+    param($pidToWatch, $desktop)
+    $ErrorActionPreference = 'Continue'
+    while ($true) {
+      $p = Get-Process -Id $pidToWatch -ErrorAction SilentlyContinue
+      if (-not $p) { break }                     # the app exited: stop watching
+      foreach ($h in [VDM]::TopLevelOf([uint32]$pidToWatch)) {
+        try {
+          $of = [VDM]::DesktopOf($h)
+          if ($of -eq $desktop) { continue }     # already where it belongs
+          [void][VDM]::MoveTo($h, $desktop)      # -1 = DEFAULT_DESKTOP: the one to move
+        } catch { }
+      }
+      Start-Sleep -Milliseconds 250
+    }
+  }).AddArgument($ProcId).AddArgument($target)
+  $handle = $rs.BeginInvoke()
+  # keep the runspace alive for the suite's lifetime; both it and the handle go
+  # away with this process when the app exits
+  $global:desktopWatchers += ,@($shell, $rs, $handle)
 }
 
 # Start the app and hand back its running process with a shown, owned window,
@@ -292,6 +376,7 @@ function Start-App([string]$Exe, [string]$Doc) {
   if (-not (Await { (FindAppWindow $proc.Id) -ne [IntPtr]::Zero } $script:appWaitMs)) { throw "no mnpdf app window ($Exe $Doc)" }
   $w = FindAppWindow $proc.Id
   Move-AppWindowToDesktop $w
+  Start-DesktopWatcher $proc.Id
   if (-not (Await { [MN]::IsWindowVisible($w) } $script:appWaitMs)) { throw "app window never shown" }
   return $proc
 }

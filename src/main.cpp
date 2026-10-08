@@ -3212,6 +3212,7 @@ static void toggleTabStrip(HWND h) {
     // the toggle from activating a window on another desktop.
     placeSearchBar();
     clampScroll();
+    ensureActivePage();      // the viewport moved: re-derive the active page
     writeAppPref();
     renderPage();
 }
