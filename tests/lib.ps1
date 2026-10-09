@@ -280,9 +280,18 @@ function Move-AppWindowToDesktop([IntPtr]$Wnd) {
   # window created moments ago really is already on a desktop, and that desktop
   # is the one in use. So there is nothing to wait out - move it, then verify
   # and retry the move itself a few times.
-  for ($i = 0; $i -lt 10 -and [VDM]::DesktopOf($Wnd) -ne $target; $i++) {
+  #
+  # The sleep between tries is 10ms, not 60ms, and the cap is 100 tries: the
+  # window is visible off-target for as long as this loop has not settled it,
+  # and a placed window is minimised-but-taskbarred on the desktop someone is
+  # using. Measured before this change: the app's window existed at ~750ms on
+  # the working desktop and only landed on the seat at ~1950ms, i.e. ~1.2s of
+  # taskbar button per launch; the roster launches a window per case, so a run
+  # read as continuous flashing. The accessor move itself is cheap (one call),
+  # so a tight poll is the honest way to shrink that window.
+  for ($i = 0; $i -lt 100 -and [VDM]::DesktopOf($Wnd) -ne $target; $i++) {
     [void][VDM]::MoveTo($Wnd, $target)
-    Start-Sleep -Milliseconds 60
+    Start-Sleep -Milliseconds 10
   }
 }
 
@@ -330,7 +339,7 @@ function Start-DesktopWatcher([int]$ProcId) {
           [void][VDM]::MoveTo($h, $desktop)      # -1 = DEFAULT_DESKTOP: the one to move
         } catch { }
       }
-      Start-Sleep -Milliseconds 250
+      Start-Sleep -Milliseconds 25
     }
   }).AddArgument($ProcId).AddArgument($target)
   $handle = $rs.BeginInvoke()
@@ -389,13 +398,39 @@ function Start-App([string]$Exe, [string]$Doc) {
     $r = $pmc.InvokeMethod('Create', $in, $null)
     if ($r['ReturnValue'] -ne 0) { throw "WMI launch failed ($Exe): $($r['ReturnValue'])" }
     $proc = $null
-    for ($i = 0; $i -lt 20 -and -not $proc; $i++) {
-      try { $proc = Get-Process -Id $r['ProcessId'] -ErrorAction Stop } catch { Start-Sleep -Milliseconds 50 }
+    # 10ms, not 50ms: the process exists within a few milliseconds of the WMI
+    # create returning, and every extra millisecond here is a millisecond the
+    # window is up on the wrong desktop before Move-AppWindowToDesktop runs.
+    for ($i = 0; $i -lt 100 -and -not $proc; $i++) {
+      try { $proc = Get-Process -Id $r['ProcessId'] -ErrorAction Stop } catch { Start-Sleep -Milliseconds 10 }
     }
     if (-not $proc) { throw "app process vanished right after launch ($Exe)" }
   }
   elseif ([string]::IsNullOrEmpty($Doc)) { $proc = Start-Process -FilePath $Exe -PassThru }
   else { $proc = Start-Process -FilePath $Exe -ArgumentList """$Doc""" -PassThru }
+  # move the window the instant it exists, not after Await returns: the app
+  # creates the window early (openPath runs before its own first ShowWindow) and
+  # everything between creation and this move is time the window spends as a
+  # taskbar button on the desktop someone is using. Measured 2026-10-09 with a
+  # 50ms process poll and a 60ms move retry: ~1.2s off-target, which a roster
+  # that launches a window per case reads as continuous flashing. The early
+  # loop below plus the tighter polls take the placed time to ~270-375ms
+  # measured end to end (window already on the seat when Launch returns); the
+  # window style must stay an ordinary top-level window, because the virtual-
+  # desktop API cannot see or move a WS_EX_TOOLWINDOW one.
+  if ($env:MNPDF_WINDOW_DESKTOP -and (Ensure-VdaReady)) {
+    $target = 0
+    if ([int]::TryParse($env:MNPDF_WINDOW_DESKTOP, [ref]$target)) {
+      for ($i = 0; $i -lt 500; $i++) {
+        $w0 = FindAppWindow $proc.Id
+        if ($w0 -ne [IntPtr]::Zero) {
+          if ([VDM]::DesktopOf($w0) -eq $target) { break }
+          [void][VDM]::MoveTo($w0, $target)
+        }
+        Start-Sleep -Milliseconds 10
+      }
+    }
+  }
   if (-not (Await { (FindAppWindow $proc.Id) -ne [IntPtr]::Zero } $script:appWaitMs)) { throw "no mnpdf app window ($Exe $Doc)" }
   $w = FindAppWindow $proc.Id
   Move-AppWindowToDesktop $w

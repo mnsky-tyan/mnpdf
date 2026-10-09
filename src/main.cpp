@@ -6026,6 +6026,14 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int show) {
     // GWL_STYLE immediately after CreateWindowExW - the cleared bits are
     // already set again). The caption is hidden by WM_NCCALCSIZE below, which
     // gives the client area the whole window so there is nothing left to draw.
+    //
+    // Do NOT give this window WS_EX_TOOLWINDOW to hide the taskbar button of a
+    // placed run. Measured 2026-10-09: the virtual-desktop API treats a tool
+    // window as not top-level, so the harness' mover can neither see nor move
+    // it - with MNPDF_WINDOW_DESKTOP set, the window then stays on the desktop
+    // the person is using, which is strictly worse than the taskbar blink it
+    // was meant to remove. The seam that places this window needs an ordinary
+    // top-level window.
     DWORD winStyle = WS_CLIPCHILDREN | WS_OVERLAPPEDWINDOW | WS_VISIBLE;
     if (gBackground || gPlaced) winStyle &= ~(DWORD)WS_VISIBLE;
     gWnd = CreateWindowExW(0, L"mnpdf", L"mnpdf", winStyle,
