@@ -13,6 +13,23 @@ cd "$(dirname "$0")/.."
 # every command's cleanup
 SH() { "$@" 9>&-; }
 
+# MNPDF_VD_DLL is a WINDOWS path (the seat prints C:\... from the Windows side,
+# and ~/.local/bin/mnpdf-gate exports the same), because PowerShell is what loads
+# it via Test-Path/LoadLibraryW. A bare -f tests the Linux filesystem, where
+# 'C:\...' never exists, so translate the Windows form before testing and fall
+# back to the raw path for a native Linux path (CI has neither and must not warn
+# spuriously - the caller only warns when the variable is set but unusable).
+dll_exists() {
+  local p="${1:-}" w
+  [[ -n "$p" ]] || return 1
+  if [[ "$p" == [A-Za-z]:[\\/]* ]]; then
+    w=$(wslpath "$p" 2>/dev/null || true)
+    [[ -n "$w" && -f "$w" ]]
+  else
+    [[ -f "$p" ]]
+  fi
+}
+
 PS=/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe
 WINPWD=$(wslpath -w "$PWD")
 case "$WINPWD" in
@@ -54,7 +71,7 @@ if [[ -n "${MNPDF_WINDOW_DESKTOP:-}" ]]; then
   # only reads MNPDF_WINDOW_DESKTOP itself; tests/lib.ps1 needs MNPDF_VD_DLL to
   # do the moving). Claiming placement without it would describe a run that
   # leaves every window on the current desktop, so the DLL is required here too.
-  if [[ -n "${MNPDF_VD_DLL:-}" && -f "${MNPDF_VD_DLL}" ]]; then
+  if dll_exists "${MNPDF_VD_DLL:-}"; then
     printf 'GATE: window placement already set by the wrapper (desktop %s)\n' "$MNPDF_WINDOW_DESKTOP"
   else
     printf 'GATE: no placement seat resolved (MNPDF_VD_DLL is unset or missing); windows will appear on the current desktop\n' >&2
@@ -74,7 +91,7 @@ else
     if [[ "$candidate" =~ ^[0-9]+$ ]]; then seat_index="$candidate"; fi
     seat_dll="$(printf '%s\n' "$seat" | sed -n '2p')"
   fi
-  if [[ -n "$seat_index" && -f "$seat_dll" ]]; then
+  if [[ -n "$seat_index" ]] && dll_exists "$seat_dll"; then
     export MNPDF_WINDOW_DESKTOP="$seat_index"
     export MNPDF_VD_DLL="$seat_dll"
     printf 'GATE: windows are placed on desktop %s for this run\n' "$seat_index"
