@@ -175,11 +175,12 @@ struct Doc {
   double zoom = 1.0;              // device px per point
   int scrollX = 0, scrollY = 0;   // document-pixel scroll offset
   bool fitWidth = false;          // zoom tracks the window width
-  void release() {                          // frees the per-page arrays a document owns
-      delete[] pageW; pageW = nullptr;
-      delete[] pageH; pageH = nullptr;
-      delete[] prefixPt; prefixPt = nullptr;
-      delete[] rot; rot = nullptr;
+  ~Doc() {                                  // frees the per-page arrays a document owns;
+                                            // the vectors behind the marks free themselves
+      delete[] pageW;
+      delete[] pageH;
+      delete[] prefixPt;
+      delete[] rot;
   }
   std::vector<Tomb> tomb;         // marks lifted from the PDF on open: theirs belong to
                                   // the file; tombstones keep a deleted baked mark
@@ -793,20 +794,6 @@ static int charIndexAtDoc(int cx, int cy, int* pageOut) {
 // selection-friendly variant: resolves blank page gaps to (page, char) the way
 // a text editor would - negative raw codes become page start/end
 // cursor variant: strict glyph hit (no blank-space snapping), cheap per move
-static int charIndexStrict(int cx, int cy, int* pageOut) {
-    *pageOut = -1;
-    if (cy < tabStripH()) return -1;               // the strip is chrome: it is not on the page
-    if (!gPrefixPt || !gDocPages) return -1;
-    int docY = cy - docTop();
-    int page = pageAtDocY(docY);
-    if (page < 0) return -1;
-    FPDF_TEXTPAGE tp = textPageOf(page);
-    if (!tp) return -1;
-    double px, py;
-    pagePxToPt(page, cx - docLeft() - pageLeftPx(page), docY - yTopPx(page), &px, &py);
-    return charIndexWithTol(tp, px, py, 16);
-}
-
 static int charIndexClamped(int cx, int cy, int* pageOut) {
     int idx = charIndexAtDoc(cx, cy, pageOut);
     if (*pageOut < 0) return -1;
@@ -1233,18 +1220,16 @@ static double pageTextPt(int page) {
     FPDF_TEXTPAGE tp = textPageOf(page);
     if (tp) {
         int n = FPDFText_CountChars(tp);
-        std::vector<std::pair<int, int>> hist;  // rounded pt -> char count
-        for (int i = 0; i < n && i < 3000; i++) {
+        int counts[256] = {0};                  // rounded pt -> char count; body text is small,
+        for (int i = 0; i < n && i < 3000; i++) {   // and an index beats a per-char linear scan
             double s = FPDFText_GetFontSize(tp, i);
             if (s <= 0.5) continue;
             int r = (int)(s + 0.5);
-            size_t k = 0;
-            for (; k < hist.size(); k++) if (hist[k].first == r) { hist[k].second++; break; }
-            if (k == hist.size()) hist.push_back(std::make_pair(r, 1));
+            if (r > 0 && r < 256) counts[r]++;
         }
         int best = 0, bestN = 0;
-        for (size_t k = 0; k < hist.size(); k++)
-            if (hist[k].second > bestN) { bestN = hist[k].second; best = hist[k].first; }
+        for (int k = 1; k < 256; k++)
+            if (counts[k] > bestN) { bestN = counts[k]; best = k; }
         if (bestN >= 5) pt = best;              // a stray glyph is not body text
     }
     gPageTextPt[page] = pt;
@@ -1917,6 +1902,14 @@ static void fitWidth() {
     renderPage();
 }
 
+// a fit-width tab refits to this window on a tab switch or close, and the refit
+// rescales every page, so the restored page goes back under the viewport top;
+// both tab transitions express the same intent, so the idiom lives here once
+static void refitWidthAndAnchor() {
+    if (gFitWidth && gPageIndex < gDocPages && applyFitWidth())
+        gScrollY = yTopPx(gPageIndex) - MARGIN;
+}
+
 // zoom anchored proportionally on the document point under the cursor; a
 // manual zoom ends fit-width mode
 static void zoomAt(double factor, int cx, int cy) {
@@ -2175,16 +2168,16 @@ static void updateTitle() {
             mb = pmc.PrivateUsage / 1048576.0;
         const wchar_t* dot = gDirty ? L"\x2022 " : L"";
         if (gEditPin >= 0)
-            swprintf_s(t, L"mnpdf %d/%d  %.0f%%  %.1f MB  pin text (Enter = new line, Esc saves)",
+            _snwprintf_s(t, _countof(t), _TRUNCATE, L"mnpdf %d/%d  %.0f%%  %.1f MB  pin text (Enter = new line, Esc saves)",
                        gPageIndex + 1, gPageCount, gZoom * 100.0, mb);
         else if (gSearchOpen && gQuery[0])
-            swprintf_s(t, L"mnpdf %d/%d  %.0f%%  %.1f MB  %s %d/%d",
+            _snwprintf_s(t, _countof(t), _TRUNCATE, L"mnpdf %d/%d  %.0f%%  %.1f MB  %s %d/%d",
                        gPageIndex + 1, gPageCount, gZoom * 100.0, mb,
                        gQuery, gMatchActive + 1, gMatchCount);
         else
-            swprintf_s(t, L"%smnpdf %d/%d  %.0f%%  %.1f MB", dot, gPageIndex + 1, gPageCount, gZoom * 100.0, mb);
+            _snwprintf_s(t, _countof(t), _TRUNCATE, L"%smnpdf %d/%d  %.0f%%  %.1f MB", dot, gPageIndex + 1, gPageCount, gZoom * 100.0, mb);
     } else {
-        swprintf_s(t, L"%smnpdf", gDirty ? L"\x2022 " : L"");
+        _snwprintf_s(t, _countof(t), _TRUNCATE, L"%smnpdf", gDirty ? L"\x2022 " : L"");
     }
     SetWindowTextW(gWnd, t);
 }
@@ -2525,6 +2518,10 @@ static bool zipLooksReal(const std::wstring& path, std::wstring& error) {
     return true;
 }
 
+// the matched pair an update ships, swaps and cleans: named once so every
+// update-path check and message stays in lockstep
+static const wchar_t* const kUpdateFiles[] = { L"mnpdf.exe", L"pdfium.dll" };
+
 // Unpack with the shell's own ZIP handler (in-box, no extra dependency). CopyHere
 // is asynchronous, so the wait is on the file the app actually needs, held until
 // its size stops growing.
@@ -2552,7 +2549,7 @@ static bool extractZip(const std::wstring& zip, const std::wstring& dir, std::ws
                 // both files the swap needs, not the exe alone: pdfium.dll is the
                 // bigger of the two and is still being written while the exe is
                 // already complete
-                const wchar_t* wanted[] = { L"mnpdf.exe", L"pdfium.dll" };
+                auto& wanted = kUpdateFiles;
                 long last[2] = { -1, -1 };
                 bool done[2] = { false, false };
                 bool all = false;
@@ -2614,7 +2611,7 @@ static bool swapFileIn(const std::wstring& staged, const std::wstring& target, s
 // can delete because the old process is gone by then
 static void cleanupUpdateLeftovers() {
     std::wstring dir = moduleDirectory();
-    const wchar_t* names[] = { L"mnpdf.exe", L"pdfium.dll" };
+    auto& names = kUpdateFiles;
     // A .old whose live file is gone is not garbage: a swap that was interrupted
     // between the rename and the copy left the last working copy under that name,
     // and deleting it would leave no mnpdf at all.
@@ -2683,7 +2680,7 @@ static void installUpdate(const std::wstring& tag, const std::wstring& resume) {
     }
     if (ok) {
         reportUpdateStep(L"Replacing mnpdf in\n" + folder + L" ...", false, false, false);
-        const wchar_t* files[] = { L"mnpdf.exe", L"pdfium.dll" };
+        auto& files = kUpdateFiles;
         int swapped = 0;
         for (const wchar_t* n : files) {
             std::wstring staged = staging + n;
@@ -3149,13 +3146,16 @@ static void writeAppPref() {
     }
 }
 
+static bool readSidecarLine(FILE* fp, std::vector<char>& buf);   // growable line reader below
+
 static void loadAppPref() {
     wchar_t dir[MAX_PATH];
     appDirW(dir, MAX_PATH);
     FILE* fp = _wfopen((std::wstring(dir) + L"\\app.txt").c_str(), L"rb");
     if (!fp) return;
-    char line[64];
-    while (fgets(line, 64, fp)) {
+    std::vector<char> lineBuf(128);            // growable: a fixed fgets buffer would
+    while (readSidecarLine(fp, lineBuf)) {     // silently truncate a long value
+        char* line = lineBuf.data();
         int iv;
         long long llv;
         if (sscanf(line, "tabstrip=%d", &iv) == 1) gTabStrip = iv != 0;
@@ -3176,7 +3176,6 @@ static void loadAppPref() {
         else if (strncmp(line, "updtag=", 7) == 0) {
             char* v = line + 7;
             size_t len = strlen(v);
-            while (len && (v[len - 1] == '\n' || v[len - 1] == '\r')) v[--len] = 0;
             gLastUpdateTag = utf8ToWide(std::string(v, len));
         }
         else if (strncmp(line, "pal", 3) == 0 && line[4] == '=') {
@@ -3376,6 +3375,10 @@ static void restoreSidecar(const std::wstring& path) {
                 if (gHls[k].page == tb.page && gHls[k].start == tb.start && gHls[k].count == tb.count)
                     { gHls.erase(gHls.begin() + k); break; }
         } else {
+            // point-proximity is the deliberate key here, unlike pinSame's
+            // page+point+text: a deleted BAKED annot's text is unknown (the
+            // sidecar records only where the stamp sat), so text cannot join
+            // the match
             for (int k = (int)gPins.size() - 1; k >= 0; k--)
                 if (gPins[k].page == tb.page && fabs(gPins[k].x - tb.x) < 2.0 && fabs(gPins[k].y - tb.y) < 2.0)
                     { gPins.erase(gPins.begin() + k); break; }
@@ -4556,7 +4559,8 @@ static LRESULT CALLBACK rangeProc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
             ofn.hwndOwner = w;
             ofn.lpstrFilter = L"PDF files (*.pdf)\0*.pdf\0All files (*.*)\0*.*\0";
             ofn.lpstrFile = target;
-            ofn.nMaxFile = MAX_PATH * 4;
+            ofn.nMaxFile = (DWORD)(nb.size() / sizeof(WCHAR));   // chars, not bytes: the
+                                                                 // buffer holds half this many
             ofn.lpstrTitle = L"Export the selected pages to";
             ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
             if (!GetSaveFileNameW(&ofn)) return 0;
@@ -5092,8 +5096,7 @@ static void switchToDoc(int idx) {
     flushPageCache();                            // the outgoing bundle takes its pages with it
     gActiveDoc = idx;
     loadPage(gPageIndex);                        // re-derive the incoming bundle's aliases
-    if (gFitWidth && gPageIndex < gDocPages && applyFitWidth())   // a fit-width tab refits to this window
-        gScrollY = yTopPx(gPageIndex) - MARGIN;   // the refit rescaled every page: re-anchor
+    refitWidthAndAnchor();
     clampScroll();
     updateTitle();
     refreshDrawers();
@@ -5101,8 +5104,12 @@ static void switchToDoc(int idx) {
     renderPage();
 }
 
+// one enabled-state answer for the New Tab row, its keyboard binding and the
+// strip's + square, so the three can never disagree
+static bool canNewTab() { return gDocCount < kMaxTabs; }
+
 static void newTab() {
-    if (gDocCount >= kMaxTabs) return;
+    if (!canNewTab()) return;
     settleActiveDoc();
     flushPageCache();
     gDocs[gDocCount] = new Doc();
@@ -5130,11 +5137,9 @@ static void closeTab() {
     gDocCount--;
     if (gActiveDoc >= gDocCount) gActiveDoc = gDocCount - 1;
     if (doomed->doc) FPDF_CloseDocument(doomed->doc);
-    doomed->release();
-    delete doomed;
+    delete doomed;                             // ~Doc frees the arrays AND the mark heaps
     loadPage(gPageIndex);                        // re-derive the survivor's aliases
-    if (gFitWidth && gPageIndex < gDocPages && applyFitWidth())   // a fit-width tab refits to this window
-        gScrollY = yTopPx(gPageIndex) - MARGIN;   // the refit rescaled every page: re-anchor
+    refitWidthAndAnchor();
     clampScroll();
     updateTitle();
     refreshDrawers();
@@ -5174,7 +5179,7 @@ static int tabW() {
 // strip-local point -> tab index, kStripNew for the + button, -1 for nothing
 static int tabAt(int x, int y) {
     if (y < 0 || y >= tabStripH()) return -1;
-    if (x >= gClientW - tabStripH()) return gDocCount < kMaxTabs ? kStripNew : -1;
+    if (x >= gClientW - tabStripH()) return canNewTab() ? kStripNew : -1;
     int i = (x - kTabX0) / tabW();
     return (i >= 0 && i < gDocCount) ? i : -1;
 }
@@ -5294,7 +5299,7 @@ static void onKeyDown(HWND h, WPARAM wp) {
     else if (wp == '0' && ctrl) fitWidth();
     else if (wp == 'F' && ctrl) toggleSearch(true);
     else if (wp == 'O' && ctrl) openDialog();
-    else if (wp == 'T' && ctrl && gDocCount < kMaxTabs) newTab();
+    else if (wp == 'T' && ctrl && canNewTab()) newTab();
     else if (wp == 'W' && ctrl) closeTab();
     else if (wp == VK_TAB && ctrl)
         switchToDoc((gActiveDoc + (GetKeyState(VK_SHIFT) & 0x8000 ? gDocCount - 1 : 1)) % gDocCount);
@@ -5356,7 +5361,7 @@ static void onContextMenu(HWND h, LPARAM lp) {   // right click
     }
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, 107, L"Open...\tCtrl+O");
-    AppendMenuW(menu, gDocCount < kMaxTabs ? MF_STRING : MF_GRAYED, 300, L"New Tab\tCtrl+T");
+    AppendMenuW(menu, canNewTab() ? MF_STRING : MF_GRAYED, 300, L"New Tab\tCtrl+T");
     AppendMenuW(menu, gDocCount > 1 ? MF_STRING : MF_GRAYED, 301, L"Close Tab\tCtrl+W");
     AppendMenuW(menu, gDoc && gDirty ? MF_STRING : MF_GRAYED, 118, L"Save\tCtrl+S");
     AppendMenuW(menu, gDoc && gDirty ? MF_STRING : MF_GRAYED, 119, L"Save As...\tCtrl+Shift+S");
@@ -5718,7 +5723,9 @@ static LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
             GetCursorPos(&cp);
             ScreenToClient(h, &cp);
             int pg;
-            int idx = charIndexStrict(cp.x, cp.y, &pg);
+            // the same resolution a click uses, so the cursor never says "no text"
+            // where a click would select
+            int idx = charIndexClamped(cp.x, cp.y, &pg);
             SetCursor(LoadCursor(nullptr, idx >= 0 ? IDC_IBEAM : IDC_ARROW));
             return TRUE;
         }
@@ -5917,6 +5924,9 @@ static LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     case WM_DESTROY:
         gShuttingDown.store(true);
         flushPageCache();
+        // The only PostQuitMessage: every quit flows through WM_CLOSE, which has
+        // already written the sidecars and the preferences. A second quit path
+        // must do the same before posting WM_QUIT, or in-memory marks are lost.
         PostQuitMessage(0);
         return 0;
     }
@@ -6088,8 +6098,7 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int show) {
     for (int d = 0; d < gDocCount; d++) {          // every bundle, not only the active one
         if (gDocs[d]->doc) FPDF_CloseDocument(gDocs[d]->doc);
         gDocs[d]->doc = nullptr;
-        gDocs[d]->release();
-        delete gDocs[d];
+        delete gDocs[d];                           // ~Doc frees the arrays and the mark heaps
         gDocs[d] = nullptr;
     }
     FPDF_DestroyLibrary();

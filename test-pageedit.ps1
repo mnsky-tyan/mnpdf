@@ -3,12 +3,16 @@
 # surface in lib): the drawer's own pixel sizes then land in real pixels
 [MN]::SetProcessDpiAwarenessContext([IntPtr](-4)) | Out-Null
 
-function Title([IntPtr]$h) { $sb = New-Object System.Text.StringBuilder 256; [void][MN]::GetWindowTextW($h, $sb, 256); $sb.ToString() }
 function PageOf([string]$t) { if ($t -match 'mnpdf (\d+)/(\d+)') { return @([int]$Matches[1], [int]$Matches[2]) } return @(0, 0) }
-function Lparam([int]$x, [int]$y) { [IntPtr](($y -shl 16) -bor ($x -band 0xFFFF)) }
-function Text-Of([IntPtr]$h) { $sb = New-Object System.Text.StringBuilder 256; [void][MN]::GetWindowTextW($h, $sb, 256); $sb.ToString() }
 function Find-Class([string]$cl) { [MN]::FindWindowExW([IntPtr]::Zero, [IntPtr]::Zero, $cl, [IntPtr]::Zero) }
 function Wait-Class([string]$cl) { $script:found = [IntPtr]::Zero; [void](Await { $script:found = Find-Class $cl } 10000); return $script:found }
+$script:launched = @()   # every process this suite started: the finally reaps these,
+                         # never an instance the user opened himself
+function Launch-Tracked([string]$Exe, [string]$Doc) {
+  $p = Launch $Exe $Doc
+  $script:launched = @($script:launched) + $p
+  return $p
+}
 function Quit-Proc($p) {
   if (-not $p -or $p.HasExited) { return }
   $w = FindAppWindow $p.Id
@@ -56,7 +60,7 @@ function Run-Hooked([string]$Spec, [string]$Doc, [string]$HashFile = '') {
   $env:MNPDF_HOOK = $Spec
   $p = $null
   try {
-    $p = Launch $exe $Doc
+    $p = Launch-Tracked $exe $Doc
     $h = FindAppWindow $p.Id
     [void](Await { (Title $h) -match 'mnpdf \d+/\d+' } 15000)
     $title = Title $h
@@ -162,7 +166,7 @@ try {
 
   $before = (Get-Item $sigDoc).Length
   $env:MNPDF_HOOK = ("sig|{0}|0" -f $jpg)
-  $p = Launch $exe $sigDoc
+  $p = Launch-Tracked $exe $sigDoc
   $h = FindAppWindow $p.Id
   [void](Await { (Title $h) -match 'mnpdf \d+/\d+' } 15000)
   $dirtyTitle = Title $h
@@ -309,7 +313,7 @@ try {
   # reopen the same file and look like nothing happened: the 1-page fixture is
   # opened on top of the 13-page one, and the command has to bring 13 back.
   $env:MNPDF_HOOK = "open|" + (Join-Path $PSScriptRoot 'tests\arc-annot.pdf')
-  $p = Launch $exe (New-Case)
+  $p = Launch-Tracked $exe (New-Case)
   $h = FindAppWindow $p.Id
   [void](Await { (Title $h) -match 'mnpdf 1/1' } 15000)
   $onOne = (Title $h) -match 'mnpdf 1/1'
@@ -331,7 +335,7 @@ try {
   } else { Fail 'stamp replay' 'page 1 does not match the stamped page after a restart' }
 
   # --- 8. the drawers are windows of their own --------------------------------
-  $p = Launch $exe (New-Case)
+  $p = Launch-Tracked $exe (New-Case)
   $h = FindAppWindow $p.Id
   [MN]::PostMessageW($h, 0x0111, [IntPtr]$CMD_THUMBS, [IntPtr]0) | Out-Null
   $thumb = Wait-Class 'MNThumbs'
@@ -374,17 +378,17 @@ try {
   Quit-Proc $p
 
   # --- 9. the split prompt is a real window with a real cancel ----------------
-  $p = Launch $exe (New-Case)
+  $p = Launch-Tracked $exe (New-Case)
   $h = FindAppWindow $p.Id
   [MN]::PostMessageW($h, 0x0111, [IntPtr]$CMD_SPLIT, [IntPtr]0) | Out-Null
   $range = Wait-Class 'MNRange'
   if ($range -ne [IntPtr]::Zero) {
-    if ((Text-Of $range) -eq 'Split pages') { Pass 'the split prompt opened with its own title' }
-    else { Fail 'split prompt title' "'$(Text-Of $range)'" }
+    if ((Title $range) -eq 'Split pages') { Pass 'the split prompt opened with its own title' }
+    else { Fail 'split prompt title' "'$(Title $range)'" }
     # the prompt lays its buttons out left to right: Choose file... then Cancel
     $first = [MN]::FindWindowExW($range, [IntPtr]::Zero, 'BUTTON', [IntPtr]::Zero)
     $cancel = if ($first -ne [IntPtr]::Zero) { [MN]::FindWindowExW($range, $first, 'BUTTON', [IntPtr]::Zero) } else { [IntPtr]::Zero }
-    $btnText = if ($cancel -ne [IntPtr]::Zero) { Text-Of $cancel } else { '' }
+    $btnText = if ($cancel -ne [IntPtr]::Zero) { Title $cancel } else { '' }
     if ($btnText -eq 'Cancel') { Pass 'the split prompt has a Cancel button' }
     else { Fail 'split prompt cancel' "the second button reads '$btnText'" }
     [MN]::PostMessageW($range, 0x0010, [IntPtr]0, [IntPtr]0) | Out-Null
@@ -399,7 +403,7 @@ try {
   if ($pref -match '(?m)^night=1\s*$') { Pass 'night mode is remembered in app.txt' }
   else { Fail 'night pref' (($pref -replace "`n", ' | ')) }
   $env:MNPDF_HOOK = 'night|0'
-  $p = Launch $exe (New-Case)
+  $p = Launch-Tracked $exe (New-Case)
   $h = FindAppWindow $p.Id
   [void](Await { (Title $h) -match 'mnpdf \d+/\d+' } 15000)
   $env:MNPDF_HOOK = $null
@@ -416,7 +420,8 @@ try {
   } else { Pass 'the drawers do not reopen by themselves' }
   Quit-Proc $p
 } finally {
-  Get-Process mnpdf -ErrorAction SilentlyContinue | ForEach-Object { $_.Kill() }
+  foreach ($mine in $script:launched) { Quit-Proc $mine }   # owned processes only:
+                                                            # graceful, then force
   foreach ($d in @($work, $scratch)) { Remove-Item $d -Recurse -Force -ErrorAction SilentlyContinue }
   Restore-AppPref          # the reader's real app.txt goes back on every path
 }

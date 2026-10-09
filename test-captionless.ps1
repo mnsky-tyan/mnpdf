@@ -44,7 +44,6 @@ $doc = Join-Path $PSScriptRoot 'tests\arc.pdf'
 $exe = Resolve-AppExe
 $appPref = Join-Path $env:APPDATA 'mnpdf\app.txt'
 
-function Title([IntPtr]$Wnd) { $sb = New-Object System.Text.StringBuilder 256; [void][MN]::GetWindowTextW($Wnd, $sb, 256); $sb.ToString() }
 
 # how much of the window the non-client area still eats, in pixels
 function CaptionGap([IntPtr]$Wnd) {
@@ -77,8 +76,8 @@ function FrameTop([IntPtr]$Wnd) {
 # The frame this suite asserts on only exists while the window is really shown:
 # a window still minimizing offers a client rect of 0x0 and a window rect that is
 # Windows' parked position, neither of which the app ever shows a reader.
-function SettledRect([IntPtr]$Wnd) {
-  [void](Await { -not [MN]::IsIconic($Wnd) -and (ClientSize $Wnd)[1] -gt 200 } 15000)
+function AwaitSettled([IntPtr]$Wnd) {
+  return (Await { -not [MN]::IsIconic($Wnd) -and (ClientSize $Wnd)[1] -gt 200 } 15000)
 }
 function Toggle([IntPtr]$Wnd) {
   [void][MN]::PostMessageW($Wnd, 0x0111, [IntPtr]$CMD_TITLEBAR, [IntPtr]::Zero)
@@ -105,7 +104,7 @@ try {
 
   $p = Launch $exe $doc
   $h = FindAppWindow $p.Id
-  SettledRect $h
+  AwaitSettled $h | Out-Null
   [void](Await { (Title $h) -match 'mnpdf \d+/\d+' } 20000)
 
   # ---- 1. a captioned launch carves the caption out ------------------------
@@ -168,7 +167,7 @@ try {
   QuitAndWait $p
   $p2 = Launch $exe $doc
   $h2 = FindAppWindow $p2.Id
-  SettledRect $h2
+  AwaitSettled $h2 | Out-Null
   [void](Await { (Title $h2) -match 'mnpdf \d+/\d+' } 20000)
   $gapRel = CaptionGap $h2
   if ($gapRel -eq 0) { Pass 'a relaunch with the titlebar hidden comes up caption-less' }

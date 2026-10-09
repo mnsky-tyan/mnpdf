@@ -3,8 +3,6 @@
 # surface in lib): the strip coordinates below are computed from the window's
 # own dpi, so a wrong awareness here would aim at pixels no reader sees
 [MN]::SetProcessDpiAwarenessContext([IntPtr](-4)) | Out-Null
-function Lparam([int]$x, [int]$y) { [IntPtr](($y -shl 16) -bor ($x -band 0xFFFF)) }
-function Title([IntPtr]$h) { $sb = New-Object System.Text.StringBuilder 256; [void][MN]::GetWindowTextW($h, $sb, 256); $sb.ToString() }
 
 $env:MNPDF_VERBOSE = "1"   # verbose titles: which document is active is the title
 
@@ -87,8 +85,8 @@ else { Fail 'opens on a single tab with the document' "'$(Title $h)'" }
 # --- T2: zoom twice, so each tab has a distinguishable view to come back to ---
 # the starting zoom is fit-width, so the number is whatever the fit is; what
 # matters is that the tab keeps ITS number when it comes back
-[void][MN]::PostMessageW($h, 0x0111, [IntPtr]105, [IntPtr]::Zero)   # Zoom In
-[void][MN]::PostMessageW($h, 0x0111, [IntPtr]105, [IntPtr]::Zero)   # Zoom In
+[void][MN]::PostMessageW($h, 0x0111, [IntPtr]$CMD_ZOOM_IN, [IntPtr]::Zero)   # Zoom In
+[void][MN]::PostMessageW($h, 0x0111, [IntPtr]$CMD_ZOOM_IN, [IntPtr]::Zero)   # Zoom In
 Start-Sleep -Seconds 1     # both commands land before the number is read: a
                            # match on the first of two queued zooms reads 207%
                            # while the tab settles at 249%
@@ -98,7 +96,7 @@ if ($zoomA) { Pass 'zoomed in, so the tab has its own view' "'$(Title $h)'" }
 else { Fail 'zoomed in, so the tab has its own view' "'$(Title $h)'" }
 
 # --- T3: New Tab opens an empty tab; the verbose title loses the page info ----
-[void][MN]::PostMessageW($h, 0x0111, [IntPtr]300, [IntPtr]::Zero)   # New Tab
+[void][MN]::PostMessageW($h, 0x0111, [IntPtr]$CMD_NEW_TAB, [IntPtr]::Zero)   # New Tab
 if (AwaitTitle $h '^mnpdf$') { Pass 'New Tab opens an empty tab' }
 else { Fail 'New Tab opens an empty tab' "'$(Title $h)'" }
 
@@ -132,7 +130,7 @@ else { Fail 'clicking the second tab switches to its document' "'$(Title $h)'" }
 # see. What each side of the toggle must do is asserted through the band itself:
 # while the strip is hidden the coordinates that USED to be tab 1 belong to the
 # document, so clicking them cannot switch tabs; once it is back they switch again.
-[void][MN]::PostMessageW($h, 0x0111, [IntPtr]302, [IntPtr]::Zero)   # Hide tab strip
+[void][MN]::PostMessageW($h, 0x0111, [IntPtr]$CMD_HIDE_TABSTRIP, [IntPtr]::Zero)   # Hide tab strip
 Start-Sleep -Milliseconds 400
 # a diagnostic, not a verdict: what the app persisted is proved by T12's
 # relaunch, which reads it back through the app's own behaviour. Only the band
@@ -143,7 +141,7 @@ Write-Host "note: app.txt after hiding the strip: $($prefText.Trim())"
 ClickAt $h $x1 $ys                     # the coordinates that were tab 1
 if (AwaitTitle $h "mnpdf 1/$pagesB") { Pass 'a hidden strip no longer claims the band' }
 else { Fail 'a hidden strip no longer claims the band' "'$(Title $h)'" }
-[void][MN]::PostMessageW($h, 0x0111, [IntPtr]302, [IntPtr]::Zero)   # Show tab strip
+[void][MN]::PostMessageW($h, 0x0111, [IntPtr]$CMD_HIDE_TABSTRIP, [IntPtr]::Zero)   # Show tab strip
 Start-Sleep -Milliseconds 400
 ClickAt $h $x1 $ys
 if (AwaitTitle $h "mnpdf 1/$pagesA\s+$zoomA") { Pass 'showing the strip gives the band back to the tabs' }
@@ -153,7 +151,7 @@ if (AwaitTitle $h "mnpdf 1/$pagesB") { Pass 'the second document is active again
 else { Fail 'the second document is active again' "'$(Title $h)'" }
 
 # --- T7: Close Tab closes the second document; the first survives ------------
-[void][MN]::PostMessageW($h, 0x0111, [IntPtr]301, [IntPtr]::Zero)   # Close Tab
+[void][MN]::PostMessageW($h, 0x0111, [IntPtr]$CMD_CLOSE_TAB, [IntPtr]::Zero)   # Close Tab
 if (AwaitTitle $h "mnpdf 1/$pagesA\s+$zoomA") { Pass 'Close Tab drops the second document and keeps the first' }
 else { Fail 'Close Tab drops the second document and keeps the first' "'$(Title $h)'" }
 
@@ -163,7 +161,7 @@ $cr = New-Object MNRect
 $clientW = $cr.R - $cr.L
 ClickAt $h ($clientW - [int]($m.strip / 2)) $ys
 if (AwaitTitle $h '^mnpdf$') {
-  [void][MN]::PostMessageW($h, 0x0111, [IntPtr]301, [IntPtr]::Zero)   # Close Tab
+  [void][MN]::PostMessageW($h, 0x0111, [IntPtr]$CMD_CLOSE_TAB, [IntPtr]::Zero)   # Close Tab
   if (AwaitTitle $h "mnpdf 1/$pagesA\s+$zoomA") { Pass 'the + button opens a tab and closing it returns' }
   else { Fail 'the + button opens a tab and closing it returns' "'$(Title $h)'" }
 } else {
@@ -171,7 +169,7 @@ if (AwaitTitle $h '^mnpdf$') {
 }
 
 # --- T9: closing the last tab quits the window --------------------------------
-[void][MN]::PostMessageW($h, 0x0111, [IntPtr]301, [IntPtr]::Zero)   # Close Tab
+[void][MN]::PostMessageW($h, 0x0111, [IntPtr]$CMD_CLOSE_TAB, [IntPtr]::Zero)   # Close Tab
 $exited = $false
 for ($i = 0; $i -lt 60 -and -not $exited; $i++) {
   $exited = $proc.HasExited
@@ -225,7 +223,7 @@ if (-not (AwaitTitle $wA "mnpdf 1/$pagesA")) {
   [void](QuitApp $procA)
 } else {
   $zA = ZoomTo $wA 2 $CMD_ZOOM_IN
-  [void][MN]::PostMessageW($wA, 0x0111, [IntPtr]300, [IntPtr]::Zero)   # New Tab
+  [void][MN]::PostMessageW($wA, 0x0111, [IntPtr]$CMD_NEW_TAB, [IntPtr]::Zero)   # New Tab
   AskOpen $wA $B                       # the second tab is the active one now
   $quit = $false
   if (AwaitTitle $wA 'mnpdf 1/\d+') { $quit = QuitApp $procA }
@@ -250,7 +248,7 @@ if (-not (AwaitTitle $wC "mnpdf 1/$pagesA")) {
   [void](QuitApp $procC)
 } else {
   [void](ZoomTo $wC 2 $CMD_ZOOM_IN)                  # the mark this tab will own
-  [void][MN]::PostMessageW($wC, 0x0111, [IntPtr]300, [IntPtr]::Zero)   # New Tab
+  [void][MN]::PostMessageW($wC, 0x0111, [IntPtr]$CMD_NEW_TAB, [IntPtr]::Zero)   # New Tab
   AskOpen $wC $B
   $mC = StripMetrics $wC
   $pagesB = 0
@@ -259,7 +257,7 @@ if (-not (AwaitTitle $wC "mnpdf 1/$pagesA")) {
   ClickAt $wC $xTab1 ([int]($mC.strip / 2))                            # back to tab 1
   $zClose = ''
   if (AwaitTitle $wC "mnpdf 1/$pagesA") { $zClose = ZoomTo $wC 1 $CMD_ZOOM_OUT }   # a different view, still unsaved
-  [void][MN]::PostMessageW($wC, 0x0111, [IntPtr]301, [IntPtr]::Zero)   # Close Tab: THIS tab goes
+  [void][MN]::PostMessageW($wC, 0x0111, [IntPtr]$CMD_CLOSE_TAB, [IntPtr]::Zero)   # Close Tab: THIS tab goes
   $took = $false
   if (($pagesB -gt 0) -and (AwaitTitle $wC "mnpdf 1/$pagesB")) { $took = QuitApp $procC }
   if (-not ($took -and $zClose)) { Fail 'closing a tab keeps its mark in its sidecar' "closed tab: '$(Title $wC)'" }
@@ -282,7 +280,7 @@ $wD = FindAppWindow $procD.Id
 if (-not (AwaitTitle $wD 'mnpdf 1/\d+')) {
   Fail 'a hidden strip stays hidden across a relaunch' "no document window: '$(Title $wD)'"
 } else {
-  [void][MN]::PostMessageW($wD, 0x0111, [IntPtr]302, [IntPtr]::Zero)   # Hide tab strip
+  [void][MN]::PostMessageW($wD, 0x0111, [IntPtr]$CMD_HIDE_TABSTRIP, [IntPtr]::Zero)   # Hide tab strip
   Start-Sleep -Milliseconds 400
   if (QuitApp $procD) {
     $procD2 = Launch (Resolve-AppExe) $A
@@ -301,7 +299,7 @@ if (-not (AwaitTitle $wD 'mnpdf 1/\d+')) {
       # here is what actually proves the click changed nothing.
       if ((Title $wD2) -match 'mnpdf 1/\d+\s+\d+%') {
         Pass 'a relaunch with the strip hidden starts with no strip'
-        [void][MN]::PostMessageW($wD2, 0x0111, [IntPtr]302, [IntPtr]::Zero)   # Show tab strip
+        [void][MN]::PostMessageW($wD2, 0x0111, [IntPtr]$CMD_HIDE_TABSTRIP, [IntPtr]::Zero)   # Show tab strip
         Start-Sleep -Milliseconds 400
         ClickAt $wD2 $plusX ([int]($mD.strip / 2))     # now it is the + square
         if (AwaitTitle $wD2 '^mnpdf$') { Pass 'showing the strip restores the + button' }

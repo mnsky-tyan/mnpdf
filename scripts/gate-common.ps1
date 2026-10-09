@@ -133,6 +133,10 @@ function Invoke-SuiteRun {
     $env:MNPDF_GATE_SUITE = $suitePath
     if ($foreground) { Remove-Item Env:MNPDF_BACKGROUND -ErrorAction SilentlyContinue }
     else { $env:MNPDF_BACKGROUND = '1' }
+    # LOCKSTEP: scripts/test-ci.ps1 makes the same set/remove decision for the CI
+    # runner from the same roster marker, and scripts/gate-test.sh mirrors both
+    # for the WSL path - the app checks existence only, so the rule is one
+    # sentence and must stay identical everywhere it is applied.
     # The suite is invoked directly rather than through Start-Process -Wait:
     # that also waits for the child's inherited output handle, and the app the
     # suite launches holds it open long after the suite itself has finished.

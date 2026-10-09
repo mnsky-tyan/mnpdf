@@ -74,6 +74,10 @@ public static class MN {
 # ---- menu-command ids the app's WM_COMMAND answers (src/main.cpp) --------
 # Named once here so a suite never re-types a bare int with an ad-hoc comment;
 # the ids are the menu protocol and stay exactly what main.cpp dispatches.
+# The table is deliberately complete even where a suite drives a command only
+# through the MNPDF_HOOK seam instead (the modal-dialog commands: signature
+# pick, merge, split - test-pageedit.ps1 explains why the menu path is
+# unreachable for those).
 ${CMD_MENU_FIND}        = 2     # Edit > Find (the search bar's own command id)
 ${CMD_COPY}             = 101
 ${CMD_FIND}             = 103
@@ -114,6 +118,13 @@ ${CMD_SPLIT}            = 206   # export a page range into a new file
 ${CMD_REOPEN_LAST}      = 207   # open the document this one replaced
 ${CMD_NEW_TAB}          = 300   # New Tab: one more document in this window
 ${CMD_CLOSE_TAB}       = 301   # Close Tab: drop the active one
+${CMD_HIDE_TABSTRIP}   = 302   # Hide/Show tab strip (the toggle's both directions)
+
+# posted mouse input: WM_LBUTTONDOWN/UP pack y in the hiword, x in the lowword
+function Lparam([int]$x, [int]$y) { [IntPtr](($y -shl 16) -bor ($x -band 0xFFFF)) }
+
+# the verbose window title: which document, page and zoom the app says it is on
+function Title([IntPtr]$h) { $sb = New-Object System.Text.StringBuilder 256; [void][MN]::GetWindowTextW($h, $sb, 256); $sb.ToString() }
 
 # the arc.pdf fixture's page count, read out of the title assertions it feeds
 ${FixturePages} = 13

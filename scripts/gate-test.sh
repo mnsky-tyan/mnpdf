@@ -134,6 +134,11 @@ if [[ -n "${MNPDF_SKIP_SUITES:-}" ]]; then
 fi
 suites=()
 foreground=' '
+# LOCKSTEP with scripts/gate-common.ps1 Read-SuiteRoster: this bash parser and
+# that PowerShell reader must agree on comments, the trailing-* foreground
+# marker and MNPDF_SKIP_SUITES, or the WSL gate and CI would run different
+# rosters. The parse lives here because it must work before PowerShell is ever
+# invoked; keep the two in step when the rules change.
 while IFS= read -r raw || [[ -n "$raw" ]]; do
   line=$(printf '%s' "${raw%%#*}" | tr -d ' \t\r')
   [[ -z "$line" ]] && continue
@@ -158,7 +163,9 @@ for s in "${suites[@]}"; do
   export MNPDF_GATE_STATE="$state_w"
   export MNPDF_GATE_SUITE="${WINPWD}\\${s}.ps1"
   # the app only checks that the variable exists, so a foreground suite needs it
-  # gone, not set to 0
+  # gone, not set to 0. LOCKSTEP: scripts/test-ci.ps1:43-45 makes the same
+  # decision for the CI runner from the same roster marker - a change to the
+  # rule (the sentinel, the marker) must land in both.
   if [[ "$foreground" == *" $s "* ]]; then unset MNPDF_BACKGROUND; else export MNPDF_BACKGROUND=1; fi
   printf '=== %s\n' "$s"
   rc=0
@@ -167,6 +174,10 @@ for s in "${suites[@]}"; do
   cleanup_instances
   # the log is written by PowerShell, so its lines end CRLF: the optional CR
   # in the pattern is what keeps the verdict match honest
+  # the grep is a second, independent verdict on purpose: it catches the case
+  # where the suite shell died before Invoke-SuiteRun could append the line at
+  # all. The wording lives in gate-common.ps1 (Get-SuiteVerdict and the verdict
+  # Add-Content); a change there must be mirrored in this pattern.
   if (( rc != 0 )) || ! grep -qE $'^SUITE RESULT: OK\r?$' "$state/output.log"; then
     printf 'GATE: %s FAILED (exit %s); stopping before another suite launches.\n' "$s" "$rc" >&2
     exit 1

@@ -2,9 +2,7 @@
 # the app is per-monitor aware, so this process must be too (shared P/Invoke
 # surface in lib): wheel deltas and MoveWindow then land in real pixels
 [MN]::SetProcessDpiAwarenessContext([IntPtr](-4)) | Out-Null
-function Lparam([int]$x, [int]$y) { [IntPtr](($y -shl 16) -bor ($x -band 0xFFFF)) }
 
-function Title([IntPtr]$h) { $sb = New-Object System.Text.StringBuilder 256; [void][MN]::GetWindowTextW($h, $sb, 256); $sb.ToString() }
 
 $env:MNPDF_VERBOSE = "1"   # verbose titles for title-based assertions
 # The real print dialog is modal and a posted-message harness cannot click it,
