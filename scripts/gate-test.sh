@@ -74,12 +74,12 @@ else
     if [[ "$candidate" =~ ^[0-9]+$ ]]; then seat_index="$candidate"; fi
     seat_dll="$(printf '%s\n' "$seat" | sed -n '2p')"
   fi
-  if [[ -n "$seat_index" && -n "$seat_dll" ]]; then
+  if [[ -n "$seat_index" && -f "$seat_dll" ]]; then
     export MNPDF_WINDOW_DESKTOP="$seat_index"
     export MNPDF_VD_DLL="$seat_dll"
     printf 'GATE: windows are placed on desktop %s for this run\n' "$seat_index"
   else
-    printf '%s\n' 'GATE: no placement seat resolved; windows will appear on the current desktop' >&2
+    printf '%s\n' 'GATE: no placement seat resolved (the seat did not report a usable accessor DLL); windows will appear on the current desktop' >&2
   fi
 fi
 export MNPDF_BACKGROUND=1
