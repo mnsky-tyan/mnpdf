@@ -1787,7 +1787,17 @@ static bool loadPage(int index) {
     if (index < 0) index = 0;
     if (index >= gDocPages) index = gDocPages - 1;
     FPDF_PAGE p = acquirePage(index);              // owned by the page cache
-    if (!p) return false;
+    if (!p) {
+        // the page genuinely did not load, but the invariant still holds: the
+        // clamped index is a valid index of THIS document, and the aliases are
+        // cleared rather than left pointing at the previous document's page
+        gPage = nullptr;
+        gTextPage = nullptr;
+        gPageIndex = index;
+        gPageWpt = gPageW[index];
+        gPageHpt = gPageH[index];
+        return false;
+    }
     FPDF_TEXTPAGE t = textPageOf(index);           // resolve BEFORE switching gPageIndex
     gPage = p;
     gTextPage = t;
