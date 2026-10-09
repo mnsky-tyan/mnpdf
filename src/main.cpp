@@ -791,9 +791,9 @@ static int charIndexAtDoc(int cx, int cy, int* pageOut) {
     return idx;
 }
 
-// selection-friendly variant: resolves blank page gaps to (page, char) the way
-// a text editor would - negative raw codes become page start/end
-// cursor variant: strict glyph hit (no blank-space snapping), cheap per move
+// the single text-resolution path: resolves blank page gaps to (page, char) the
+// way a text editor would, so a click and the cursor over it agree - negative
+// raw codes become page start/end
 static int charIndexClamped(int cx, int cy, int* pageOut) {
     int idx = charIndexAtDoc(cx, cy, pageOut);
     if (*pageOut < 0) return -1;
@@ -1220,15 +1220,15 @@ static double pageTextPt(int page) {
     FPDF_TEXTPAGE tp = textPageOf(page);
     if (tp) {
         int n = FPDFText_CountChars(tp);
-        int counts[256] = {0};                  // rounded pt -> char count; body text is small,
-        for (int i = 0; i < n && i < 3000; i++) {   // and an index beats a per-char linear scan
+        int counts[4096] = {0};                 // rounded pt -> char count; an index
+        for (int i = 0; i < n && i < 3000; i++) {   // beats a per-char linear scan
             double s = FPDFText_GetFontSize(tp, i);
             if (s <= 0.5) continue;
             int r = (int)(s + 0.5);
-            if (r > 0 && r < 256) counts[r]++;
+            if (r > 0 && r < 4096) counts[r]++;
         }
         int best = 0, bestN = 0;
-        for (int k = 1; k < 256; k++)
+        for (int k = 1; k < 4096; k++)
             if (counts[k] > bestN) { bestN = counts[k]; best = k; }
         if (bestN >= 5) pt = best;              // a stray glyph is not body text
     }

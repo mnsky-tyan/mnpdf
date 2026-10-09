@@ -50,7 +50,15 @@ export MNPDF_GATE_STATE='' MNPDF_GATE_SUITE=''
 # is tested once, so no lookup branch can fall through silently: either the seat
 # resolves or exactly one loud line goes to stderr.
 if [[ -n "${MNPDF_WINDOW_DESKTOP:-}" ]]; then
-  printf 'GATE: window placement already set by the wrapper (desktop %s)\n' "$MNPDF_WINDOW_DESKTOP"
+  # A wrapper may have exported the desktop but not the accessor DLL (the app
+  # only reads MNPDF_WINDOW_DESKTOP itself; tests/lib.ps1 needs MNPDF_VD_DLL to
+  # do the moving). Claiming placement without it would describe a run that
+  # leaves every window on the current desktop, so the DLL is required here too.
+  if [[ -n "${MNPDF_VD_DLL:-}" && -f "${MNPDF_VD_DLL}" ]]; then
+    printf 'GATE: window placement already set by the wrapper (desktop %s)\n' "$MNPDF_WINDOW_DESKTOP"
+  else
+    printf 'GATE: no placement seat resolved (MNPDF_VD_DLL is unset or missing); windows will appear on the current desktop\n' >&2
+  fi
 else
   # PATH first, then the absolute fallback: this runs under a plain non-login
   # `bash` that never sources ~/.profile, so ~/.local/bin is not on PATH there
