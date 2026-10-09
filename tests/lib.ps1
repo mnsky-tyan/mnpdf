@@ -621,10 +621,16 @@ function GetClip {
   $proc = Start-Process powershell -ArgumentList '-NoProfile','-Command',"Get-Clipboard -Raw | Out-File -Encoding unicode '$tmp'" -PassThru -WindowStyle Hidden
   if (-not $proc.WaitForExit(2000)) {
     try { $proc.Kill() } catch {}
+    Remove-Item $tmp -ErrorAction SilentlyContinue
     $script:clipOk = $false   # zombie lock: bail out for good
     return ''
   }
-  return ((Get-Content $tmp -Raw -ErrorAction SilentlyContinue) -replace "\r?\n?$", '')
+  # the temp file must go on EVERY path, including the read below: GetClip is
+  # called in a loop (test-features' drag/word sweeps call it hundreds of times
+  # per run), and the old code leaked one tmp*.tmp per call. Its sibling
+  # Test-ClipboardRoundTrip above has always removed its file in a finally.
+  try { return ((Get-Content $tmp -Raw -ErrorAction SilentlyContinue) -replace "\r?\n?$", '') }
+  finally { Remove-Item $tmp -ErrorAction SilentlyContinue }
 }
 
 # ---- sidecar filename (the app's own hash, in one place) ------------------

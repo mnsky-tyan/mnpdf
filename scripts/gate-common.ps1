@@ -21,6 +21,9 @@ function Read-SuiteRoster {
     if (-not $line) { continue }
     $fg = $line.EndsWith('*')
     $name = $line.TrimEnd('*').Trim()
+    # NOTE: nothing may be written to the pipeline here - this function's output
+    # IS the roster, so a stray Write-Output would be parsed as a suite entry.
+    # Each suite is announced by the caller instead (Write-RosterPlan).
     if ($skip -contains $name) { continue }
     [pscustomobject]@{ Name = $name; Foreground = $fg }
   }

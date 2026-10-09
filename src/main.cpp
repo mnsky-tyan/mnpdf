@@ -532,6 +532,7 @@ static const BLENDFUNCTION gSelBlend = { AC_SRC_OVER, 0, 90, 0 };
 // viewport bitmap (the only allocation that scales with the screen)
 static HDC gMemDC = nullptr;
 static HBITMAP gDib = nullptr;
+static HGDIOBJ gDibOld = nullptr;   // what SelectObject(gMemDC, gDib) displaced
 static void* gBits = nullptr;
 static FPDF_BITMAP gPdfBitmap = nullptr;
 static int gClientW = 0, gClientH = 0;
@@ -673,8 +674,13 @@ static FPDF_PAGE acquirePage(int i) {
 
 static FPDF_TEXTPAGE textPageOf(int page) {
     if (!acquirePage(page)) return nullptr;
+    // The owner predicate MUST match acquirePage's. Two slots can carry the same
+    // page index with different owners (acquirePage takes the first empty slot
+    // and only evicts when none is free), so matching on the index alone can
+    // return a FPDF_TEXTPAGE built from another bundle's page - the exact thing
+    // the page cache exists to prevent.
     for (int k = 0; k < PCACHE; k++)
-        if (gPcIndex[k] == page) {
+        if (gPcIndex[k] == page && gPcOwner[k] == (const Doc*)gViewTab) {
             if (!gPcText[k]) gPcText[k] = FPDFText_LoadPage(gPcPage[k]);
             return gPcText[k];
         }
@@ -1557,6 +1563,13 @@ static void commitPinEdit() {
 
 // add a pin under a client point and open its editor
 static void addPinAt(int page, double px, double py) {
+    // The invariant every pin consumer relies on: pagePxToPt/pinDrawPos index
+    // gPrefixPt/gPageW/gPageH by this value, and those arrays are only as long
+    // as gDocPages. Callers pass values derived from the active page or a menu
+    // captured earher, so the bound is enforced here rather than trusted.
+    if (gDocPages <= 0) return;
+    if (page < 0) page = 0;
+    if (page >= gDocPages) page = gDocPages - 1;
     gPins.push_back({ page, px, py, L"", gPinDefault, false });
     startPinEdit((int)gPins.size() - 1, true);
 }
@@ -1758,7 +1771,21 @@ static void createSearchBar(HWND h, HINSTANCE inst) {
 // swap the active page handle (the one that owns selection/search); never
 // renders and never touches the scroll, callers decide what view follows
 static bool loadPage(int index) {
-    if (!gDoc || index < 0 || index >= gDocPages) return false;
+    // Clamp rather than refuse: a caller that passes an index this document does
+    // not have (openPath loading page 0 of a document whose page tree will not
+    // produce a page, a stale index left from the previous document, an index
+    // past a page the user deleted) must not be left with gPageIndex naming a
+    // page of a DIFFERENT document - updateTitle would print "41/3" and the
+    // unguarded reads that trust gPageIndex (e.g. the Add-pin fallback,
+    // gPageW[gPageIndex]) would read outside gPageW/gPageH. Measured before this
+    // change: openPath ignored loadPage(0)'s result, so a document whose first
+    // page fails FPDF_LoadPage left the previous document's page index in place
+    // while gDocPages/gPageW/gPageH had already been rebuilt for the new one.
+    // The clamp keeps the invariant "gPageIndex is always a valid index of the
+    // active document, or 0 when there is no document" true for every caller.
+    if (!gDoc || gDocPages <= 0) { gPageIndex = 0; gPage = nullptr; gTextPage = nullptr; return false; }
+    if (index < 0) index = 0;
+    if (index >= gDocPages) index = gDocPages - 1;
     FPDF_PAGE p = acquirePage(index);              // owned by the page cache
     if (!p) return false;
     FPDF_TEXTPAGE t = textPageOf(index);           // resolve BEFORE switching gPageIndex
@@ -1787,6 +1814,17 @@ static void rebuildSurface() {
     if (gClientW <= 0 || gClientH <= 0) return;
 
     if (gPdfBitmap) { FPDFBitmap_Destroy(gPdfBitmap); gPdfBitmap = nullptr; }
+    // Restore the DC's original bitmap, THEN delete ours, THEN the DC. Order
+    // matters and the obvious order is wrong: GDI refuses to delete a bitmap
+    // that is still selected into a device context (DeleteObject returns FALSE
+    // and changes nothing), and deleting the DC does not free a still-selected
+    // bitmap either. Selecting gDibOld back in is what makes gDib ownerless and
+    // deletable. Without this the old code leaked one client-sized 32bpp DIB per
+    // rebuildSurface, i.e. per WM_SIZE on a non-minimised window - a drag across
+    // the screen emits dozens of size messages and leaks hundreds of MB, with no
+    // suite watching memory. The same restore-then-delete idiom is used for the
+    // highlight blends (releaseHiHl) and the tab-strip font below.
+    if (gMemDC && gDibOld) { SelectObject(gMemDC, gDibOld); gDibOld = nullptr; }
     if (gDib) { DeleteObject(gDib); gDib = nullptr; }
     if (gMemDC) { DeleteDC(gMemDC); gMemDC = nullptr; }
 
@@ -1802,8 +1840,16 @@ static void rebuildSurface() {
     gMemDC = CreateCompatibleDC(screen);
     gDib = CreateDIBSection(screen, &bmi, DIB_RGB_COLORS, &gBits, nullptr, 0);
     ReleaseDC(gWnd, screen);
-    if (!gDib || !gBits) return;
-    SelectObject(gMemDC, gDib);
+    // A failed allocation must not leave a live DC or a dangling gBits behind:
+    // the old single return leaked the DC and left gBits pointing at memory that
+    // was never allocated, which a later paint path could have written through.
+    if (!gMemDC || !gDib || !gBits) {
+        if (gDib) { DeleteObject(gDib); gDib = nullptr; }
+        if (gMemDC) { DeleteDC(gMemDC); gMemDC = nullptr; }
+        gBits = nullptr;
+        return;
+    }
+    gDibOld = SelectObject(gMemDC, gDib);
 
     gPdfBitmap = FPDFBitmap_CreateEx(gClientW, gClientH, FPDFBitmap_BGRA, gBits, gClientW * 4);
     clampScroll();
@@ -2981,10 +3027,16 @@ static void startUpdateCheck(bool manual) {
 // ---- autosave: per-document reading state (zoom, fit, page) + last file ----
 
 static void appDirW(wchar_t* out, size_t n) {
+    // _snwprintf_s with _TRUNCATE, not _snwprintf: the plain form returns -1 and
+    // leaves the buffer WITHOUT a terminator when the value does not fit, and
+    // every caller then builds a std::wstring from it and reads past the end of
+    // the stack array. Reachable with a long %APPDATA% (roaming or redirected
+    // profiles). Same class as loadAppPref's growable reader and updateTitle's
+    // truncated swprintf, both fixed in the previous review round.
     const wchar_t* app = _wgetenv(L"APPDATA");
-    if (app && *app) _snwprintf(out, n, L"%s\\mnpdf", app);
-    else _snwprintf(out, n, L".");
-    CreateDirectoryW(out, nullptr);                 // ok if it exists
+    if (app && *app) { if (_snwprintf_s(out, n, _TRUNCATE, L"%s\\mnpdf", app) < 0) out[0] = L'\0'; }
+    else { if (_snwprintf_s(out, n, _TRUNCATE, L".") < 0) out[0] = L'\0'; }
+    if (out[0]) CreateDirectoryW(out, nullptr);     // ok if it exists
 }
 
 static std::wstring sidecarPathFor(const std::wstring& path) {
@@ -5407,6 +5459,16 @@ static void onContextMenu(HWND h, LPARAM lp) {   // right click
     int cmd = TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_RETURNCMD | TPM_NONOTIFY, x, y, 0, h, nullptr);
     DestroyMenu(menu);
     if (cmd) SendMessageW(h, WM_COMMAND, MAKEWPARAM(cmd, 0), 0);   // sync: focus is still ours
+    // Clear the captured menu targets only AFTER the command above has consumed
+    // them: every late case (edit/delete/recolour pin, delete/recolour highlight,
+    // rotate page) reads gMenuHl / gMenuPin / gMenuRotPage during that dispatch,
+    // so clearing earlier silently disables them. What must not survive is the
+    // DROP POINT: gMenuPinPtPage is a page index captured when the menu opened
+    // and acted on later, by which time the document can have shrunk (page
+    // deleted, new document opened), and the old code let addPinAt store a pin
+    // on a page the document no longer had.
+    gMenuPinPtPage = -1;
+    gMenuPinPtX = gMenuPinPtY = 0.0;
 }
 
 // the colour a colour-menu command id names, or -1 when it is not one: a preset
@@ -5543,8 +5605,14 @@ static void onCommand(HWND h, WPARAM wp) {
     case 130:                                   // add pin at the menu drop point
         if (gMenuPinPtPage >= 0) {
             addPinAt(gMenuPinPtPage, gMenuPinPtX, gMenuPinPtY);
-        } else if (gDoc) {                      // fallback (posted id): center of the active page
-            addPinAt(gPageIndex, gPageW[gPageIndex] / 2, gPageH[gPageIndex] / 2);
+        } else if (gDoc && gDocPages > 0) {     // fallback (posted id): center of the active page
+            // bounds are explicit here too: gPageIndex is a valid index by
+            // loadPage's invariant, but this site reads gPageW/gPageH directly,
+            // and the arrays are only as long as gDocPages.
+            int pi = gPageIndex;
+            if (pi < 0) pi = 0;
+            if (pi >= gDocPages) pi = gDocPages - 1;
+            addPinAt(pi, gPageW[pi] / 2, gPageH[pi] / 2);
         }
         return;
     case 131:                                   // edit pin text

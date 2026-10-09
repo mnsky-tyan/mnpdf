@@ -28,7 +28,18 @@ $before = Get-TestInstanceSnapshot -ExePath $exe
 
 $suiteFailed = $null
 try {
-  foreach ($s in (Read-SuiteRoster (Join-Path $PSScriptRoot 'suites.txt'))) {
+  # Announce the plan once, naming any suite MNPDF_SKIP_SUITES drops. The roster
+  # parser itself cannot print (its output IS the roster), and without this a
+  # skipped suite is indistinguishable in the log from one lost to a parse bug -
+  # "all suites OK" must never quietly mean "all but one".
+  $plan = @(Read-SuiteRoster (Join-Path $PSScriptRoot 'suites.txt'))
+  if ($env:MNPDF_SKIP_SUITES) {
+    $skipped = @($env:MNPDF_SKIP_SUITES.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    Write-Output ("CI: roster {0} suite(s); MNPDF_SKIP_SUITES drops: {1}" -f $plan.Count, ($skipped -join ', '))
+  } else {
+    Write-Output ("CI: roster {0} suite(s); none skipped" -f $plan.Count)
+  }
+  foreach ($s in $plan) {
     # $state is built from the real TEMP captured above: a suite rewrites
     # TEMP only inside its own child shell, never here
     $state = Join-Path $realTemp ("mnpdf-ci-" + [Guid]::NewGuid().ToString('n'))

@@ -158,6 +158,7 @@ if [[ -n "${MNPDF_SKIP_SUITES:-}" ]]; then
   for k in ${MNPDF_SKIP_SUITES//,/ }; do skip="$skip$k "; done
 fi
 suites=()
+skipped=()
 foreground=' '
 # LOCKSTEP with scripts/gate-common.ps1 Read-SuiteRoster: this bash parser and
 # that PowerShell reader must agree on comments, the trailing-* foreground
@@ -165,18 +166,35 @@ foreground=' '
 # rosters. The parse lives here because it must work before PowerShell is ever
 # invoked; keep the two in step when the rules change.
 while IFS= read -r raw || [[ -n "$raw" ]]; do
-  line=$(printf '%s' "${raw%%#*}" | tr -d ' \t\r')
+  # trim ONLY the ends, matching PowerShell's .Trim(): `tr -d ' \t\r'` also strips
+  # INTERNAL whitespace, so a roster line like "test a" became the suite name
+  # "testa" here while the CI reader kept "test a" - the two gates would then run
+  # different suites. A non-trailing '*' is likewise only a foreground marker when
+  # it is the LAST character, exactly as EndsWith('*') decides it.
+  line=$(printf '%s' "${raw%%#*}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
   [[ -z "$line" ]] && continue
   fg=0
-  if [[ "$line" == *'*' ]]; then
+  # only a TRAILING '*' marks a foreground suite (PowerShell: $line.EndsWith('*'))
+  if [[ "$line" == *'*' && "${line: -1}" == '*' ]]; then
     line="${line%\*}"
+    line=$(printf '%s' "$line" | sed -e 's/[[:space:]]*$//')
     fg=1
   fi
-  [[ "${skip,,}" == *" ${line,,} "* ]] && continue
+  [[ "${skip,,}" == *" ${line,,} "* ]] && { skipped+=("$line"); continue; }
   if (( fg )); then foreground="$foreground$line "; fi
   suites+=("$line")
 done < scripts/suites.txt
 ((${#suites[@]})) || { printf '%s\n' 'GATE: no suites in scripts/suites.txt.' >&2; exit 1; }
+# name the plan and anything MNPDF_SKIP_SUITES dropped. Without this a skipped
+# suite is indistinguishable in the log from one lost to a roster-parse bug, and
+# this wrapper is exactly where the local roster differs from CI's (mnpdf-gate
+# sets MNPDF_SKIP_SUITES=select-msg-test, so a local run covers 8 where CI covers
+# 9) - "all suites OK" must never quietly mean "all but one".
+if ((${#skipped[@]})); then
+  printf 'GATE: running %d suite(s); MNPDF_SKIP_SUITES drops: %s\n' "${#suites[@]}" "${skipped[*]}"
+else
+  printf 'GATE: running %d suite(s); none skipped\n' "${#suites[@]}"
+fi
 
 run_dir=$(mktemp -d "$PWD/build/gate-run.XXXXXX")
 printf 'GATE: logs and isolated preferences: %s\n' "$run_dir"

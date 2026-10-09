@@ -5,7 +5,12 @@
 
 function PageOf([string]$t) { if ($t -match 'mnpdf (\d+)/(\d+)') { return @([int]$Matches[1], [int]$Matches[2]) } return @(0, 0) }
 function Find-Class([string]$cl) { [MN]::FindWindowExW([IntPtr]::Zero, [IntPtr]::Zero, $cl, [IntPtr]::Zero) }
-function Wait-Class([string]$cl) { $script:found = [IntPtr]::Zero; [void](Await { $script:found = Find-Class $cl } 10000); return $script:found }
+# the condition MUST produce a value: a bare assignment emits nothing to the
+# pipeline, so `if (& $Cond)` was always false and every call burned the full
+# 10s timeout instead of returning as soon as the window appeared - 30s of dead
+# wait across this suite's three calls, and a window that appeared just after the
+# deadline was missed and reported as a real failure.
+function Wait-Class([string]$cl) { $script:found = [IntPtr]::Zero; [void](Await { ($script:found = Find-Class $cl) -ne [IntPtr]::Zero } 10000); return $script:found }
 $script:launched = @()   # every process this suite started: the finally reaps these,
                          # never an instance the user opened himself
 function Launch-Tracked([string]$Exe, [string]$Doc) {
