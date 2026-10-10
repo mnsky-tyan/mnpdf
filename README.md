@@ -214,8 +214,8 @@ a Windows runner, so every push and pull request carries a real check.
 powershell -ExecutionPolicy Bypass -File scripts\test-ci.ps1
 ```
 
-`test-release.ps1` on its own is the release contract: the binary's version,
-the README's first line, the four files a release ZIP must contain, and the
+`test-release.ps1` on its own checks the binary's version against the
+README's first line, the four files a release ZIP must contain, and the
 update flow itself - what the dialog answers, a full install against a scratch
 copy, and an update that fails with a reason.
 
@@ -233,26 +233,31 @@ test-release.ps1      release contract: version agreement with README.txt, the
                       ZIP file list, the update dialog, a full self-install
 scripts/gate-test.sh  WSL entry point: build and all nine suites
 scripts/test-ci.ps1   Windows/CI entry point: the same build and suites
+scripts/make-release-zip.ps1  the release ZIP: it refuses to build when
+                      kAppVersion, README.txt and the archive name disagree
 .github/workflows/ci.yml  runs test-ci.ps1 on a Windows runner
 ```
 
 ## Release contract
 
-Two places must agree on the version, and `test-release.ps1` fails if they do
-not:
+Three places must agree on the version, and `scripts/make-release-zip.ps1`
+refuses to build the ZIP if they do not:
 
 - `kAppVersion` in `src/main.cpp:55`
 - the first line of `README.txt` - `mnpdf vX.Y.Z` - which is also the file the
   portable ZIP carries
+- the ZIP's own name, `mnpdf-win-x64-<tag>.zip` - the name the updater
+  requests, so an archive labelled for one version and carrying another is a
+  release no reader can ever update to
 
 A release is a tag plus a ZIP built from exactly four files: `mnpdf.exe`,
-`pdfium.dll`, `README.txt` and `PDFIUM-LICENSE.txt`. The ZIP is published as
-`mnpdf-win-x64-<tag>.zip` - that name is what the updater requests, so it is
-part of the same contract.
+`pdfium.dll`, `README.txt` and `PDFIUM-LICENSE.txt` - which is the ZIP
+`scripts/make-release-zip.ps1` assembles.
 
-`test-release.ps1` installs through both update seams (`MNPDF_UPDATE_ZIP` and
-`MNPDF_UPDATE_DIR`, in the table above) against a scratch copy, so the whole
-flow runs with no network and without the machine's own reader as its subject.
+`test-release.ps1` keeps the update side of the contract honest: it installs
+through both update seams (`MNPDF_UPDATE_ZIP` and `MNPDF_UPDATE_DIR`, in the
+table above) against a scratch copy, so the whole flow runs with no network
+and without the machine's own reader as its subject.
 
 ## License
 

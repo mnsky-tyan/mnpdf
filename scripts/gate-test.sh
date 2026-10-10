@@ -4,8 +4,9 @@
 # Windows, which is what .github/workflows/ci.yml runs. The roster, the build,
 # the per-suite isolation and the verdict all live in scripts/gate-common.ps1
 # and scripts/suites.txt, shared with that runner; what is left here is the
-# WSL-specific glue: the drive-letter guard, the checkout lock, evidence
-# retention, orphan reaping, and the refusal to close an app that is already up.
+# WSL-specific glue: the drive-letter guard, the checkout lock, the placement
+# seat resolution, evidence retention, orphan reaping, and the refusal to close
+# an app that is already up.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
