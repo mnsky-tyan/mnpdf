@@ -656,9 +656,10 @@ function SidecarFor([string]$pdfPath) {
 # The strip is chrome above the document: a press inside it belongs to a tab,
 # never to the page. It scales with the window's dpi, so any point meant for the
 # document must clear it - a fixed pixel count is wrong on any other display.
-# tabStripH() is MulDiv(30, dpi, 96) with a floor of 26; ceiling the product is
-# never below MulDiv's rounded result, so a caller that clamps to this value
-# always lands on the first document row. This is the ONE PowerShell copy.
+# tabStripH() is MulDiv(30, dpi, 96) with a floor of 26 while the strip is
+# shown, and 0 once command 302 hides it; ceiling the product is never below
+# MulDiv's rounded result, so a caller that clamps to this value still lands on
+# a document row. This is the ONE PowerShell copy of the shown height.
 function TabStripPx([IntPtr]$Wnd) {
   $dpi = [MN]::GetDpiForWindow($Wnd)
   return [Math]::Max(26, [int][Math]::Ceiling($dpi * 30 / 96))
