@@ -23,7 +23,9 @@ function Read-SuiteRoster {
     $name = $line.TrimEnd('*').Trim()
     # NOTE: nothing may be written to the pipeline here - this function's output
     # IS the roster, so a stray Write-Output would be parsed as a suite entry.
-    # Each suite is announced by the caller instead (Write-RosterPlan).
+    # The plan is announced by each caller instead, after parsing: test-ci.ps1
+    # prints 'CI: roster N suite(s)...' and gate-test.sh prints
+    # 'GATE: running N suite(s)...'.
     if ($skip -contains $name) { continue }
     [pscustomobject]@{ Name = $name; Foreground = $fg }
   }
