@@ -207,9 +207,9 @@ for s in "${suites[@]}"; do
   export MNPDF_GATE_STATE="$state_w"
   export MNPDF_GATE_SUITE="${WINPWD}\\${s}.ps1"
   # the app only checks that the variable exists, so a foreground suite needs it
-  # gone, not set to 0. LOCKSTEP: scripts/test-ci.ps1:43-45 makes the same
-  # decision for the CI runner from the same roster marker - a change to the
-  # rule (the sentinel, the marker) must land in both.
+  # gone, not set to 0. LOCKSTEP: scripts/test-ci.ps1 makes the same decision
+  # for the CI runner from the same roster marker - a change to the rule (the
+  # sentinel, the marker) must land in both.
   if [[ "$foreground" == *" $s "* ]]; then unset MNPDF_BACKGROUND; else export MNPDF_BACKGROUND=1; fi
   printf '=== %s\n' "$s"
   rc=0

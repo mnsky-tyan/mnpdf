@@ -1566,7 +1566,7 @@ static void addPinAt(int page, double px, double py) {
     // The invariant every pin consumer relies on: pagePxToPt/pinDrawPos index
     // gPrefixPt/gPageW/gPageH by this value, and those arrays are only as long
     // as gDocPages. Callers pass values derived from the active page or a menu
-    // captured earher, so the bound is enforced here rather than trusted.
+    // captured earlier, so the bound is enforced here rather than trusted.
     if (gDocPages <= 0) return;
     if (page < 0) page = 0;
     if (page >= gDocPages) page = gDocPages - 1;
