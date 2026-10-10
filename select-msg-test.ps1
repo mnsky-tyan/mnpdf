@@ -3,13 +3,11 @@
 # and copy messages straight into mnpdf's queue, exercises double-click word
 # select, triple-click line select and the search bar, and reads the window
 # title and clipboard as the observables.
-param([string]$Pdf)
 # the fixture lives in tests\ because build\ is all output and can be deleted
 # wholesale; every run works on a fresh copy so a mutating run cannot poison
 # the next one (no more git-checkout restore ritual). Copied after the SKIP
 # guard below, so a skipped run leaves the checkout untouched.
-$useDefaultPdf = -not $Pdf
-if ($useDefaultPdf) { $Pdf = Join-Path $PSScriptRoot "build\arc.pdf" }
+$Pdf = Join-Path $PSScriptRoot "build\arc.pdf"
 . "$PSScriptRoot\tests\lib.ps1"   # one definition of the window-resolution rule
 # the app is per-monitor aware, so this process must be too: posted clicks then
 # land in the same pixels the app measures (shared P/Invoke surface in lib)
@@ -21,12 +19,6 @@ function Post([IntPtr]$h, [uint32]$m, [IntPtr]$w, [IntPtr]$l) { [void][MN]::Post
 function HlCount { $sc2 = Get-ChildItem "$env:APPDATA\mnpdf\doc-*.txt" -ErrorAction SilentlyContinue | Select-Object -First 1
   if (-not $sc2) { return 0 }
   @(Get-Content $sc2.FullName | Where-Object { $_ -match '^hl=' }).Count }
-function Lparam([int]$x, [int]$y) { [IntPtr](($y -shl 16) -bor ($x -band 0xFFFF)) }
-function Title([IntPtr]$h) {
-  $sb = New-Object System.Text.StringBuilder 256
-  [void][MN]::GetWindowTextW($h, $sb, 256)
-  $sb.ToString()
-}
 function CopyAndWait([IntPtr]$h, [string]$prev) {
   if (-not $script:clipOk) { Post $h 0x0301 ([IntPtr]0) ([IntPtr]0); Start-Sleep -Milliseconds 300; return '' }
   Post $h 0x0301 ([IntPtr]0) ([IntPtr]0)                        # WM_COPY
@@ -44,7 +36,7 @@ function OpenSearch([IntPtr]$h) {
 
 # requires a fresh instance we own: the assertions assume a clean state
 Assert-NoRunningApp
-if ($useDefaultPdf) { Copy-Item (Join-Path $PSScriptRoot "tests\arc.pdf") $Pdf -Force }
+Copy-Item (Join-Path $PSScriptRoot "tests\arc.pdf") $Pdf -Force
 $env:MNPDF_VERBOSE = "1"   # verbose titles for title-based assertions
 Remove-Item "$env:APPDATA\mnpdf\*" -Recurse -Force -ErrorAction SilentlyContinue   # fresh state
 # shared Launch (tests/lib.ps1) resolves the real window and restores it without

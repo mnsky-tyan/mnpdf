@@ -89,7 +89,10 @@ zoom, marks and undo history, so switching away and back leaves everything
 exactly where it was. A document you open fills an empty tab, or replaces what
 the current tab is showing, and closing the last tab quits like closing the
 window. The strip shows each document's name, with a dot in front while that
-tab has unsaved changes.
+tab has unsaved changes. **Hide tab strip** in the right-click menu takes the
+strip away for a taller view of the document, and **Show tab strip** brings it
+back; the choice is remembered, and `Ctrl+T`, `Ctrl+W` and `Ctrl+Tab` still
+move between tabs while the strip is hidden.
 
 **Several windows.** Run `mnpdf.exe` twice and you get two independent
 windows, each reading its own document, so two PDFs can sit side by side. The
@@ -130,7 +133,7 @@ Everything the app remembers is under `%APPDATA%\mnpdf`:
 
 | File | Contents |
 |---|---|
-| `app.txt` | titlebar, autosave, default highlight and pin colours, custom palette, night mode, window geometry (`winx`, `winy`, `winw`, `winh`, `winmax`), last update check (`updcheck`) and the newest tag it found (`updtag`) - the tag the update button offers and the one an install fetches |
+| `app.txt` | titlebar, tab strip visibility, autosave, default highlight and pin colours, custom palette, night mode, window geometry (`winx`, `winy`, `winw`, `winh`, `winmax`), last update check (`updcheck`) and the newest tag it found (`updtag`) - the tag the update button offers and the one an install fetches |
 | `doc-<hash>.txt` | per-document sidecar: zoom, fit, current page, highlights, page rotations, pins, signature stamps, deleted marks |
 | `last.txt` | the document that was open when you quit |
 
@@ -185,7 +188,7 @@ does anything unless it is set:
 | `MNPDF_GATE_STATE` | runner: the suite's private state directory (`APPDATA`/`TEMP` live under it) |
 | `MNPDF_GATE_SUITE` | runner: which suite script to run |
 | `MNPDF_SKIP_SUITES` | runner: a comma-separated list of suites to drop from the roster for this run, for a suite that is environmentally broken on one machine |
-| `MNPDF_WINDOW_DESKTOP` | app and runner: the 0-based virtual desktop every app window is moved to before any restore or measurement, so a local gate keeps its windows off the desk in use - the app reads it too, to start without ever taking the foreground |
+| `MNPDF_WINDOW_DESKTOP` | app and runner: the 0-based virtual desktop a local gate keeps every app window on, off the desk in use - the runner moves the main window before any restore or measurement and a watcher follows the app so the popups it opens later move too; the app reads it too, to start without ever taking the foreground |
 | `MNPDF_VD_DLL` | runner: the `VirtualDesktopAccessor.dll` path the move-to-desktop above needs |
 
 The WSL runner forwards the runner-owned seams (`MNPDF_GATE_EXE`,
@@ -211,8 +214,8 @@ a Windows runner, so every push and pull request carries a real check.
 powershell -ExecutionPolicy Bypass -File scripts\test-ci.ps1
 ```
 
-`test-release.ps1` on its own is the release contract: the binary's version,
-the README's first line, the four files a release ZIP must contain, and the
+`test-release.ps1` on its own checks the binary's version against the
+README's first line, the four files a release ZIP must contain, and the
 update flow itself - what the dialog answers, a full install against a scratch
 copy, and an update that fails with a reason.
 
@@ -230,26 +233,36 @@ test-release.ps1      release contract: version agreement with README.txt, the
                       ZIP file list, the update dialog, a full self-install
 scripts/gate-test.sh  WSL entry point: build and all nine suites
 scripts/test-ci.ps1   Windows/CI entry point: the same build and suites
+scripts/make-release-zip.ps1  the release ZIP: it refuses to build when
+                      kAppVersion, README.txt and the archive name disagree
 .github/workflows/ci.yml  runs test-ci.ps1 on a Windows runner
 ```
 
 ## Release contract
 
-Two places must agree on the version, and `test-release.ps1` fails if they do
-not:
+Three places name the version, and `scripts/make-release-zip.ps1` refuses to
+build the ZIP when they disagree:
 
 - `kAppVersion` in `src/main.cpp:55`
 - the first line of `README.txt` - `mnpdf vX.Y.Z` - which is also the file the
   portable ZIP carries
+- the ZIP's own name, `mnpdf-win-x64-<tag>.zip` - the name the updater
+  requests, so an archive labelled for one version and carrying another is a
+  release no reader can ever update to
+
+The script compares the first two against each other. The third it cannot
+compare against itself, because it derives the archive name from `kAppVersion`;
+instead it checks that the app's own update-URL template builds that same
+`mnpdf-win-x64-<tag>.zip` name, and refuses if the app's pattern was renamed.
 
 A release is a tag plus a ZIP built from exactly four files: `mnpdf.exe`,
-`pdfium.dll`, `README.txt` and `PDFIUM-LICENSE.txt`. The ZIP is published as
-`mnpdf-win-x64-<tag>.zip` - that name is what the updater requests, so it is
-part of the same contract.
+`pdfium.dll`, `README.txt` and `PDFIUM-LICENSE.txt` - which is the ZIP
+`scripts/make-release-zip.ps1` assembles.
 
-`test-release.ps1` installs through both update seams (`MNPDF_UPDATE_ZIP` and
-`MNPDF_UPDATE_DIR`, in the table above) against a scratch copy, so the whole
-flow runs with no network and without the machine's own reader as its subject.
+`test-release.ps1` keeps the update side of the contract honest: it installs
+through both update seams (`MNPDF_UPDATE_ZIP` and `MNPDF_UPDATE_DIR`, in the
+table above) against a scratch copy, so the whole flow runs with no network
+and without the machine's own reader as its subject.
 
 ## License
 

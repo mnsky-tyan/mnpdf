@@ -12,8 +12,6 @@ public static class T2 {
   [DllImport("user32.dll")] public static extern int GetMenuItemID(IntPtr hMenu, int nPos);
 }
 "@
-function Lparam([int]$x, [int]$y) { [IntPtr](($y -shl 16) -bor ($x -band 0xFFFF)) }
-function Title([IntPtr]$h) { $sb = New-Object System.Text.StringBuilder 256; [void][MN]::GetWindowTextW($h, $sb, 256); $sb.ToString() }
 function Cmd([IntPtr]$h, [int]$id) { [MN]::PostMessageW($h, 0x0111, [IntPtr]$id, [IntPtr]0) | Out-Null }
 
 $env:MNPDF_VERBOSE = "1"   # verbose titles for title-based assertions
@@ -191,7 +189,8 @@ Start-Sleep -Milliseconds 2500   # negative assertion: wait long enough that any
 $dlAgain = ([regex]::Matches('' + (Get-Content $scq2 -Raw -ErrorAction SilentlyContinue), 'dl=h,')).Count
 if ($dlAgain -gt $dlAfter) { Fail "deleted baked highlight resurrected" "$dlAfter -> $dlAgain" }
 else { Pass "deleted baked highlight stays deleted" }
-$p3.CloseMainWindow() | Out-Null
+if (-not $p3.HasExited) { Cmd $h3 $CMD_QUIT; Await { $p3.HasExited } 8000 | Out-Null }
+if (-not $p3.HasExited) { $p3.Kill() }   # same graceful-then-force rule as p4/p5
 
 # ---- update-check cooldown: one network attempt per hour, persisted ----
 # inside the window: the launch must spend no request, so the stamp is untouched

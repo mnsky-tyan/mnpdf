@@ -2,9 +2,7 @@
 # the app is per-monitor aware, so this process must be too (shared P/Invoke
 # surface in lib): wheel deltas and MoveWindow then land in real pixels
 [MN]::SetProcessDpiAwarenessContext([IntPtr](-4)) | Out-Null
-function Lparam([int]$x, [int]$y) { [IntPtr](($y -shl 16) -bor ($x -band 0xFFFF)) }
 
-function Title([IntPtr]$h) { $sb = New-Object System.Text.StringBuilder 256; [void][MN]::GetWindowTextW($h, $sb, 256); $sb.ToString() }
 
 $env:MNPDF_VERBOSE = "1"   # verbose titles for title-based assertions
 # The real print dialog is modal and a posted-message harness cannot click it,
@@ -54,8 +52,13 @@ $sidecar = Get-ChildItem "$env:APPDATA\mnpdf\doc-*.txt" -ErrorAction SilentlyCon
 if ($sidecar) {
   $content = Get-Content $sidecar.FullName -Raw
   Write-Output ("sidecar: " + ($content -replace "`n", ' | '))
-  if ($content -match 'page=(\d+)') { Pass "autosave wrote page=$($Matches[1]) (title was '$tScroll')" }
-  else { Fail "sidecar content" $content }
+  # Assert the page it CLAIMS to have saved, not merely that a page= line exists:
+  # a launch always writes page=1, so "a line is present" passed even when the
+  # scrolled page was never saved. $wantPage comes from the title after the wheel
+  # ticks above, and the Await above already waited for exactly this value.
+  $got = if ($content -match 'page=(\d+)') { [int]$Matches[1] } else { -1 }
+  if ($got -eq $wantPage) { Pass "autosave wrote page=$got (title was '$tScroll')" }
+  else { Fail "autosave page" "wrote page=$got, expected $wantPage (title was '$tScroll')" }
 } else { Fail "autosave file" "no sidecar file" }
 if (Test-Path "$env:APPDATA\mnpdf\last.txt") { Pass "last.txt written" }
 else { Fail "last.txt" "not written" }
@@ -83,7 +86,12 @@ $t = GetClip
 $pages = ($t -split "`r`n").Count
 if (-not $script:clipOk) { Write-Output "SKIP cross-page copy: clipboard locked (verified previously)" }
 elseif (-not (Test-ClipboardRoundTrip)) { Write-Output "SKIP cross-page copy: clipboard not writable on this box" }
-elseif ($t -and $t -match "`r`n") { Pass "cross-page copy: [$($t.Length) chars, $pages lines] '$($t.Substring(0, [Math]::Min(60, $t.Length)))' ..." }
+# Must DIFFER from what was on the clipboard before the copy: the old condition
+# was merely "non-empty and contains a CRLF", so stale content from any earlier
+# case satisfied it even if the app's WM_COPY did nothing. select-msg-test.ps1
+# compares against its own previous value; this now matches that.
+elseif ($t -and $t -cne $prev -and $t -match "`r`n") { Pass "cross-page copy: [$($t.Length) chars, $pages lines] '$($t.Substring(0, [Math]::Min(60, $t.Length)))' ..." }
+elseif ($t -ceq $prev -and $t) { Fail "cross-page copy" "clipboard unchanged from before the copy" }
 else { Fail "cross-page copy" "got: '$t'" }
 
 # --- T4: quit, then plain-launch reopen restores the saved page ---

@@ -335,12 +335,12 @@ function ColourCount([IntPtr]$Wnd) {
 # yet is a window still painting (all black, or a blend), so the measurement a
 # caller takes from it is about the capture and not about the app.
 function AwaitPaintedPage([IntPtr]$Wnd, [int]$TimeoutMs = 25000) {
-  [void](Await { (ColourCount $Wnd).lum -gt 200 } $TimeoutMs)
+  return (Await { (ColourCount $Wnd).lum -gt 200 } $TimeoutMs)
 }
 # A mark that has not reached the picture yet counts zero, so wait until it
 # does rather than measuring the moment after the command.
 function WaitCount([IntPtr]$Wnd, [string]$What, [int]$MoreThan, [int]$TimeoutMs = 15000) {
-  [void](Await { (ColourCount $Wnd).$What -gt $MoreThan } $TimeoutMs)
+  return (Await { (ColourCount $Wnd).$What -gt $MoreThan } $TimeoutMs)
 }
 # A block selection rather than a row: which rows of this document carry text
 # is not fixed, and only a block is a selection that always lands on some.
@@ -365,15 +365,15 @@ function DragBlock([IntPtr]$Wnd, [double]$Fx0, [double]$Fy0, [double]$Fx1, [doub
   $stripPx = TabStripPx $Wnd
   $px0 = [int]($cwPx * $Fx0); $py0 = [Math]::Max([int]($chPx * $Fy0), $stripPx)
   $px1 = [int]($cwPx * $Fx1); $py1 = [int]($chPx * $Fy1)
-  [void][MN]::PostMessageW($Wnd, 0x0201, [IntPtr]1, (New-Object IntPtr (($py0 -shl 16) -bor ($px0 -band 0xFFFF))))
+  [void][MN]::PostMessageW($Wnd, 0x0201, [IntPtr]1, (Lparam $px0 $py0))
   Start-Sleep -Milliseconds 60
   foreach ($frac in @(0.33, 0.66)) {
     $mx = [int]($cwPx * ($Fx0 + ($Fx1 - $Fx0) * $frac))
     $my = [int]($chPx * ($Fy0 + ($Fy1 - $Fy0) * $frac))
-    [void][MN]::PostMessageW($Wnd, 0x0200, [IntPtr]1, (New-Object IntPtr (($my -shl 16) -bor ($mx -band 0xFFFF))))
+    [void][MN]::PostMessageW($Wnd, 0x0200, [IntPtr]1, (Lparam $mx $my))
     Start-Sleep -Milliseconds 40
   }
-  [void][MN]::PostMessageW($Wnd, 0x0202, [IntPtr]0, (New-Object IntPtr (($py1 -shl 16) -bor ($px1 -band 0xFFFF))))
+  [void][MN]::PostMessageW($Wnd, 0x0202, [IntPtr]0, (Lparam $px1 $py1))
   Start-Sleep -Milliseconds 200
 }
 function HighlightBlock([IntPtr]$Wnd, [double]$Fx0, [double]$Fy0, [double]$Fx1, [double]$Fy1) {
@@ -423,18 +423,25 @@ try {
   # picture after the command: both are conditions of the app, and a fixed
   # sleep is a coin toss on a loaded machine (the capture of a window that has
   # not painted is all black, and black reads as 0 on the signature).
-  AwaitPaintedPage $wnd
-  $before = ColourCount $wnd
-  HighlightBlock $wnd 0.15 0.05 0.80 0.48
-  WaitCount $wnd 'cool' 500
-  $marked = ColourCount $wnd
+  $painted = AwaitPaintedPage $wnd
+  if (-not $painted) { Fail 'the mark on the page really is that colour' 'the page never painted' }
+  $before = if ($painted) { ColourCount $wnd } else { $null }
+  $markedOk = $false
+  if ($painted) {
+    HighlightBlock $wnd 0.15 0.05 0.80 0.48
+    $markedOk = WaitCount $wnd 'cool' 500
+    if (-not $markedOk) { Fail 'the mark on the page really is that colour' 'the mark never reached the picture' }
+  }
+  $marked = if ($painted -and $markedOk) { ColourCount $wnd } else { $null }
   $sc = Get-ChildItem (Join-Path $env:APPDATA 'mnpdf\doc-*.txt') -ErrorAction SilentlyContinue |
         Select-Object -First 1
   $sideColor = if ($sc) { ([regex]::Match((Get-Content $sc.FullName -Raw), 'hl=\d+,\d+,\d+,(\d+)')).Groups[1].Value } else { '' }
-  if ($before.cool -eq 0 -and $marked.cool -gt 500) {
-    Pass 'a highlight painted in that colour reads as that colour on the page'
-  } else {
-    Fail ('a highlight painted in that colour reads as that colour on the page (cool {0} -> {1})' -f $before.cool, $marked.cool)
+  if ($marked) {
+    if ($before.cool -eq 0 -and $marked.cool -gt 500) {
+      Pass 'a highlight painted in that colour reads as that colour on the page'
+    } else {
+      Fail ('a highlight painted in that colour reads as that colour on the page (cool {0} -> {1})' -f $before.cool, $marked.cool)
+    }
   }
   if ($sideColor -eq '6') { Pass 'the sidecar records the custom slot' }
   else { Fail ('the sidecar records the custom slot (got "{0}")' -f $sideColor) }
@@ -450,10 +457,13 @@ try {
   # yellow can already be on the page here. What has to be true is that the
   # preset default paints the preset colour: the count goes up from what it was,
   # and nothing greyscale can move it.
-  WaitCount $wnd 'warm' ($yellowBefore.warm + 500)
-  $yellow = ColourCount $wnd
-  if ($yellow.warm -ge $yellowBefore.warm + 500) { Pass 'a preset default still paints the preset colour' }
-  else { Fail ('a preset default still paints the preset colour (warm {0} -> {1})' -f $yellowBefore.warm, $yellow.warm) }
+  if (-not (WaitCount $wnd 'warm' ($yellowBefore.warm + 500))) {
+    Fail 'a preset default still paints the preset colour' 'the mark never reached the picture'
+  } else {
+    $yellow = ColourCount $wnd
+    if ($yellow.warm -ge $yellowBefore.warm + 500) { Pass 'a preset default still paints the preset colour' }
+    else { Fail ('a preset default still paints the preset colour (warm {0} -> {1})' -f $yellowBefore.warm, $yellow.warm) }
+  }
 
   # ---- case 4: an invalid entry explains itself, and keeps the box -------
   # hex, but five digits: the box takes it, the parse refuses it
@@ -519,15 +529,18 @@ try {
   # The pixel measure is the suite's own: a painted page is a light sheet (lum
   # over 200), the same page inverted is not. Nothing here names a colour or a
   # pixel row, so it holds at any zoom on any screen.
-  AwaitPaintedPage $wnd
-  $dayLum = (ColourCount $wnd).lum
-  [void][MN]::PostMessageW($wnd, 0x0111, [IntPtr]$CMD_NIGHT, [IntPtr]::Zero)
-  [void](Await { (ColourCount $wnd).lum -lt 80 } 10000)
-  $nightLum = (ColourCount $wnd).lum
-  if ($nightLum -lt 80 -and $nightLum -lt ($dayLum / 2)) {
-    Pass ("night mode turns the page dark (lum {0:N0} -> {1:N0})" -f $dayLum, $nightLum)
-  } else {
-    Fail ("night mode turns the page dark (lum {0:N0} -> {1:N0})" -f $dayLum, $nightLum)
+  $dayPainted = AwaitPaintedPage $wnd
+  if (-not $dayPainted) { Fail 'night mode turns the page dark' 'the page never painted' }
+  if ($dayPainted) {
+    $dayLum = (ColourCount $wnd).lum
+    [void][MN]::PostMessageW($wnd, 0x0111, [IntPtr]$CMD_NIGHT, [IntPtr]::Zero)
+    [void](Await { (ColourCount $wnd).lum -lt 80 } 10000)
+    $nightLum = (ColourCount $wnd).lum
+    if ($nightLum -lt 80 -and $nightLum -lt ($dayLum / 2)) {
+      Pass ("night mode turns the page dark (lum {0:N0} -> {1:N0})" -f $dayLum, $nightLum)
+    } else {
+      Fail ("night mode turns the page dark (lum {0:N0} -> {1:N0})" -f $dayLum, $nightLum)
+    }
   }
   if (AwaitPrefRaw '(?m)^night=1\s*$') { Pass 'night mode is remembered in app.txt' }
   else { Fail ('night mode is remembered in app.txt ({0})' -f ((Get-Content $appPref -Raw -ErrorAction SilentlyContinue) -replace "`n", ' | ')) }

@@ -21,6 +21,11 @@ function Read-SuiteRoster {
     if (-not $line) { continue }
     $fg = $line.EndsWith('*')
     $name = $line.TrimEnd('*').Trim()
+    # NOTE: nothing may be written to the pipeline here - this function's output
+    # IS the roster, so a stray Write-Output would be parsed as a suite entry.
+    # The plan is announced by each caller instead, after parsing: test-ci.ps1
+    # prints 'CI: roster N suite(s)...' and gate-test.sh prints
+    # 'GATE: running N suite(s)...'.
     if ($skip -contains $name) { continue }
     [pscustomobject]@{ Name = $name; Foreground = $fg }
   }
@@ -133,6 +138,10 @@ function Invoke-SuiteRun {
     $env:MNPDF_GATE_SUITE = $suitePath
     if ($foreground) { Remove-Item Env:MNPDF_BACKGROUND -ErrorAction SilentlyContinue }
     else { $env:MNPDF_BACKGROUND = '1' }
+    # LOCKSTEP: scripts/test-ci.ps1 makes the same set/remove decision for the CI
+    # runner from the same roster marker, and scripts/gate-test.sh mirrors both
+    # for the WSL path - the app checks existence only, so the rule is one
+    # sentence and must stay identical everywhere it is applied.
     # The suite is invoked directly rather than through Start-Process -Wait:
     # that also waits for the child's inherited output handle, and the app the
     # suite launches holds it open long after the suite itself has finished.

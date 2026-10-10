@@ -22,6 +22,10 @@
 # stale-value read.
 $ErrorActionPreference = 'Stop'
 
+# the per-launch desktop watchers; a plain empty list so Start-DesktopWatcher's
+# append is always safe
+$global:desktopWatchers = @()
+
 # ---- the app's interop surface (one Add-Type per suite process) ----------
 Add-Type -TypeDefinition @"
 using System;
@@ -70,6 +74,10 @@ public static class MN {
 # ---- menu-command ids the app's WM_COMMAND answers (src/main.cpp) --------
 # Named once here so a suite never re-types a bare int with an ad-hoc comment;
 # the ids are the menu protocol and stay exactly what main.cpp dispatches.
+# The table is deliberately complete even where a suite drives a command only
+# through the MNPDF_HOOK seam instead (the modal-dialog commands: signature
+# pick, merge, split - test-pageedit.ps1 explains why the menu path is
+# unreachable for those).
 ${CMD_MENU_FIND}        = 2     # Edit > Find (the search bar's own command id)
 ${CMD_COPY}             = 101
 ${CMD_FIND}             = 103
@@ -110,6 +118,13 @@ ${CMD_SPLIT}            = 206   # export a page range into a new file
 ${CMD_REOPEN_LAST}      = 207   # open the document this one replaced
 ${CMD_NEW_TAB}          = 300   # New Tab: one more document in this window
 ${CMD_CLOSE_TAB}       = 301   # Close Tab: drop the active one
+${CMD_HIDE_TABSTRIP}   = 302   # Hide/Show tab strip (the toggle's both directions)
+
+# posted mouse input: WM_LBUTTONDOWN/UP pack y in the hiword, x in the lowword
+function Lparam([int]$x, [int]$y) { [IntPtr](($y -shl 16) -bor ($x -band 0xFFFF)) }
+
+# the verbose window title: which document, page and zoom the app says it is on
+function Title([IntPtr]$h) { $sb = New-Object System.Text.StringBuilder 256; [void][MN]::GetWindowTextW($h, $sb, 256); $sb.ToString() }
 
 # the arc.pdf fixture's page count, read out of the title assertions it feeds
 ${FixturePages} = 13
@@ -188,24 +203,32 @@ $script:appWaitMs = 20000   # one bound for both launch waits
 #
 # Set MNPDF_WINDOW_DESKTOP (a 0-based desktop number) and MNPDF_VD_DLL (the
 # VirtualDesktopAccessor.dll path) to have every app window moved to that
-# desktop as part of the launch. This is how a local gate keeps test windows off
-# the desktop someone is using: the move happens here, deterministically, before
-# any restore or measurement - not by a watcher racing the suite. Both variables
-# are unset on CI, where the block below never runs and behaviour is unchanged.
+# desktop. This is how a local gate keeps test windows off the desktop someone
+# is using: the main window is moved deterministically as part of the launch,
+# before any restore or measurement, and a watcher then follows the process so
+# the popups it opens later follow too. Both variables are unset on CI, where
+# the block below never runs and behaviour is unchanged.
 $script:vdReady = $false
-function Move-AppWindowToDesktop([IntPtr]$Wnd) {
-  if (-not $env:MNPDF_WINDOW_DESKTOP) { return }
-  if (-not $script:vdReady) {
-    $dll = $env:MNPDF_VD_DLL
-    if (-not $dll -or -not (Test-Path $dll)) { return }
-    try { Add-Type -TypeDefinition @'
+# one binding, shared by the one-shot main-window move and the pid watcher: both
+# need the same bound accessor DLL and both must be a no-op when placement is
+# off (CI, no MNPDF_WINDOW_DESKTOP / MNPDF_VD_DLL)
+function Ensure-VdaReady {
+  if ($script:vdReady) { return $true }
+  if (-not $env:MNPDF_WINDOW_DESKTOP) { return $false }
+  $dll = $env:MNPDF_VD_DLL
+  if (-not $dll -or -not (Test-Path $dll)) { return $false }
+  try { $null = Add-Type -TypeDefinition @'
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 public static class VDM {
   [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
   public static extern IntPtr LoadLibraryW(string p);
   [DllImport("kernel32.dll", CharSet=CharSet.Ansi)]
   public static extern IntPtr GetProcAddress(IntPtr h, string n);
+  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr p);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+  public delegate bool EnumProc(IntPtr h, IntPtr p);
   public delegate int D1(IntPtr h);
   public delegate int D2(IntPtr h, int n);
   public static IntPtr H;
@@ -224,20 +247,113 @@ public static class VDM {
   }
   public static int DesktopOf(IntPtr h) { return pOf(h); }
   public static int MoveTo(IntPtr h, int n) { return pMove(h, n); }
-}
-'@ } catch { if (-not [VDM]::pOf) { return } }   # already loaded: reuse it
-    if (-not [VDM]::Bind($dll)) { return }
-    $script:vdReady = $true
+  // every TOP-LEVEL window owned by one pid, so a single watcher can follow the
+  // app's main window and every popup it opens later (pin tip, pin editor,
+  // update box, colour box, range box, drawers) - they all belong to the same
+  // process, and a popup belongs to the desktop current when it is shown.
+  // Stateless: the pid and its buffer travel through the callback's lparam as a
+  // pinned GCHandle, so overlapping callers never share a list.
+  static bool Pick(IntPtr h, IntPtr l) {
+    object[] box = (object[])GCHandle.FromIntPtr(l).Target;
+    uint pid; GetWindowThreadProcessId(h, out pid);
+    if (pid == (uint)box[0]) ((List<IntPtr>)box[1]).Add(h);
+    return true;
   }
-  # a window created moments ago has no desktop yet (-1): wait out the
-  # assignment, then move and verify, retrying the move itself a few times
-  for ($i = 0; $i -lt 40 -and [VDM]::DesktopOf($Wnd) -lt 0; $i++) { Start-Sleep -Milliseconds 50 }
+  public static IntPtr[] TopLevelOf(uint pid) {
+    List<IntPtr> found = new List<IntPtr>();
+    GCHandle g = GCHandle.Alloc(new object[] { pid, found });
+    try { EnumWindows(Pick, (IntPtr)g); } finally { g.Free(); }
+    return found.ToArray();
+  }
+}
+'@ } catch { if (-not [VDM]::pOf) { return $false } }   # already loaded: reuse it
+  try { if (-not [VDM]::Bind($dll)) { return $false } } catch { return $false }
+  $script:vdReady = $true
+  return $true
+}
+
+function Move-AppWindowToDesktop([IntPtr]$Wnd) {
+  if (-not (Ensure-VdaReady)) { return }
   $target = 0
   if (-not [int]::TryParse($env:MNPDF_WINDOW_DESKTOP, [ref]$target)) { return }
-  for ($i = 0; $i -lt 10 -and [VDM]::DesktopOf($Wnd) -ne $target; $i++) {
+  # -1 is the accessor for DEFAULT_DESKTOP, not a "not assigned yet" state: a
+  # window created moments ago really is already on a desktop, and that desktop
+  # is the one in use. So there is nothing to wait out - move it, then verify
+  # and retry the move itself a few times.
+  #
+  # The sleep between tries is 10ms, not 60ms, and the cap is 100 tries: the
+  # window is visible off-target for as long as this loop has not settled it,
+  # and a placed window is minimised-but-taskbarred on the desktop someone is
+  # using. Measured before this change: the app's window existed at ~750ms on
+  # the working desktop and only landed on the seat at ~1950ms, i.e. ~1.2s of
+  # taskbar button per launch; the roster launches a window per case, so a run
+  # read as continuous flashing. The accessor move itself is cheap (one call),
+  # so a tight poll is the honest way to shrink that window.
+  for ($i = 0; $i -lt 100 -and [VDM]::DesktopOf($Wnd) -ne $target; $i++) {
     [void][VDM]::MoveTo($Wnd, $target)
-    Start-Sleep -Milliseconds 60
+    Start-Sleep -Milliseconds 10
   }
+}
+
+# Follow the launched app's pid and move EVERY top-level window it opens, for as
+# long as that process lives. The one-shot move above only covers the main
+# window that existed at launch; the app also opens popups later (the pin tip,
+# the pin editor, the update box, the colour box, the split-range box and the
+# thumbnail/outline drawers) and a popup is created on whichever desktop is
+# CURRENT when it is shown. So a window already placed by the one-shot move is
+# not enough: without this, a popup opened mid-suite lands on the desktop the
+# person is actually using.
+# The popup's own number is the accessor's DEFAULT_DESKTOP, -1, and that is
+# exactly the case this has to catch: a popup the app never placed is already
+# on the desktop in use, and moving it is the whole point. Treating -1 as "not
+# assigned yet, skip it" left every popup there - measured: a Thumbnails drawer
+# the app opened mid-run still reported -1 after 6s of watching, and the same
+# handle moved to the seat on the first attempt once the skip was gone. A
+# handle that is stale or was never a window also reads -1 and moves nothing;
+# the move's own return value cannot say so (it is -1 both for a refusal and
+# for a success that has not settled yet), so the next pass re-reads instead.
+# Runs on its own runspace so the suite's thread is never blocked, and exits on
+# its own once the app process is gone.
+function Start-DesktopWatcher([int]$ProcId) {
+  if (-not (Ensure-VdaReady)) { return }
+  $target = 0
+  if (-not [int]::TryParse($env:MNPDF_WINDOW_DESKTOP, [ref]$target)) { return }
+  $shell = [runspacefactory]::CreateRunspace()
+  $shell.Open()
+  $rs = [powershell]::Create(); $rs.Runspace = $shell
+  # nothing is read from or written to the pipeline; the watcher only inspects
+  # and moves windows, and swallows its own errors so a transient desktop race
+  # can never abort the suite from a background thread
+  [void]$rs.AddScript({
+    param($pidToWatch, $desktop)
+    $ErrorActionPreference = 'Continue'
+    while ($true) {
+      $p = Get-Process -Id $pidToWatch -ErrorAction SilentlyContinue
+      if (-not $p) { break }                     # the app exited: stop watching
+      $wins = @()
+      try { $wins = [VDM]::TopLevelOf([uint32]$pidToWatch) } catch { }
+      foreach ($h in $wins) {
+        try {
+          $of = [VDM]::DesktopOf($h)
+          if ($of -eq $desktop) { continue }     # already where it belongs
+          [void][VDM]::MoveTo($h, $desktop)      # -1 = DEFAULT_DESKTOP: the one to move
+        } catch { }
+      }
+      Start-Sleep -Milliseconds 25
+    }
+  }).AddArgument($ProcId).AddArgument($target)
+  $handle = $rs.BeginInvoke()
+  # retire watchers whose pipeline already finished: their app exited, so the
+  # runspace is closed and dropped instead of held for the suite's lifetime
+  $alive = @()
+  foreach ($t in $global:desktopWatchers) {
+    if ($t[1].InvocationStateInfo.State -eq 'Running') { $alive += ,$t; continue }
+    try { [void]$t[1].EndInvoke($t[2]) } catch { }
+    $t[1].Dispose(); $t[0].Dispose()
+  }
+  # keep this one referenced so it cannot be collected while it watches; the
+  # next launch retires it through the sweep above
+  $global:desktopWatchers = $alive + ,@($shell, $rs, $handle)
 }
 
 # Start the app and hand back its running process with a shown, owned window,
@@ -282,16 +398,43 @@ function Start-App([string]$Exe, [string]$Doc) {
     $r = $pmc.InvokeMethod('Create', $in, $null)
     if ($r['ReturnValue'] -ne 0) { throw "WMI launch failed ($Exe): $($r['ReturnValue'])" }
     $proc = $null
-    for ($i = 0; $i -lt 20 -and -not $proc; $i++) {
-      try { $proc = Get-Process -Id $r['ProcessId'] -ErrorAction Stop } catch { Start-Sleep -Milliseconds 50 }
+    # 10ms, not 50ms: the process exists within a few milliseconds of the WMI
+    # create returning, and every extra millisecond here is a millisecond the
+    # window is up on the wrong desktop before Move-AppWindowToDesktop runs.
+    for ($i = 0; $i -lt 100 -and -not $proc; $i++) {
+      try { $proc = Get-Process -Id $r['ProcessId'] -ErrorAction Stop } catch { Start-Sleep -Milliseconds 10 }
     }
     if (-not $proc) { throw "app process vanished right after launch ($Exe)" }
   }
   elseif ([string]::IsNullOrEmpty($Doc)) { $proc = Start-Process -FilePath $Exe -PassThru }
   else { $proc = Start-Process -FilePath $Exe -ArgumentList """$Doc""" -PassThru }
+  # move the window the instant it exists, not after Await returns: the app
+  # creates the window early (openPath runs before its own first ShowWindow) and
+  # everything between creation and this move is time the window spends as a
+  # taskbar button on the desktop someone is using. Measured 2026-10-09 with a
+  # 50ms process poll and a 60ms move retry: ~1.2s off-target, which a roster
+  # that launches a window per case reads as continuous flashing. The early
+  # loop below plus the tighter polls take the placed time to ~270-375ms
+  # measured end to end (window already on the seat when Launch returns); the
+  # window style must stay an ordinary top-level window, because the virtual-
+  # desktop API cannot see or move a WS_EX_TOOLWINDOW one.
+  if ($env:MNPDF_WINDOW_DESKTOP -and (Ensure-VdaReady)) {
+    $target = 0
+    if ([int]::TryParse($env:MNPDF_WINDOW_DESKTOP, [ref]$target)) {
+      for ($i = 0; $i -lt 500; $i++) {
+        $w0 = FindAppWindow $proc.Id
+        if ($w0 -ne [IntPtr]::Zero) {
+          if ([VDM]::DesktopOf($w0) -eq $target) { break }
+          [void][VDM]::MoveTo($w0, $target)
+        }
+        Start-Sleep -Milliseconds 10
+      }
+    }
+  }
   if (-not (Await { (FindAppWindow $proc.Id) -ne [IntPtr]::Zero } $script:appWaitMs)) { throw "no mnpdf app window ($Exe $Doc)" }
   $w = FindAppWindow $proc.Id
   Move-AppWindowToDesktop $w
+  Start-DesktopWatcher $proc.Id
   if (-not (Await { [MN]::IsWindowVisible($w) } $script:appWaitMs)) { throw "app window never shown" }
   return $proc
 }
@@ -320,9 +463,10 @@ function Launch([string]$Exe, [string]$Doc) {
 # The suites that exercise the update check forge %APPDATA%\mnpdf\app.txt so the
 # answer is deterministic and offline (a completed check remembered from minutes
 # ago, or a stale clock that must be re-stamped). That file also holds the
-# user's real titlebar / autosave / hlcolor / pincolor / palnext / updcheck /
-# updtag preferences and the frame geometry winx/winy/winw/winh/winmax, so a run
-# must put it back exactly as it found it - on every path, including a hard kill.
+# user's real tab strip / titlebar / autosave / hlcolor / pincolor / palnext /
+# updcheck / updtag preferences and the frame geometry winx/winy/winw/winh/winmax,
+# so a run must put it back exactly as it found it - on every path, including a
+# hard kill.
 
 $script:prefSentinel = 'test-forged=1'
 
@@ -477,10 +621,16 @@ function GetClip {
   $proc = Start-Process powershell -ArgumentList '-NoProfile','-Command',"Get-Clipboard -Raw | Out-File -Encoding unicode '$tmp'" -PassThru -WindowStyle Hidden
   if (-not $proc.WaitForExit(2000)) {
     try { $proc.Kill() } catch {}
+    Remove-Item $tmp -ErrorAction SilentlyContinue
     $script:clipOk = $false   # zombie lock: bail out for good
     return ''
   }
-  return ((Get-Content $tmp -Raw -ErrorAction SilentlyContinue) -replace "\r?\n?$", '')
+  # the temp file must go on EVERY path, including the read below: GetClip is
+  # called in a loop (test-features' drag/word sweeps call it hundreds of times
+  # per run), and the old code leaked one tmp*.tmp per call. Its sibling
+  # Test-ClipboardRoundTrip above has always removed its file in a finally.
+  try { return ((Get-Content $tmp -Raw -ErrorAction SilentlyContinue) -replace "\r?\n?$", '') }
+  finally { Remove-Item $tmp -ErrorAction SilentlyContinue }
 }
 
 # ---- sidecar filename (the app's own hash, in one place) ------------------
