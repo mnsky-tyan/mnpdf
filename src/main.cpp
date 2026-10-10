@@ -1566,10 +1566,11 @@ static void addPinAt(int page, double px, double py) {
     // The invariant every pin consumer relies on: pagePxToPt/pinDrawPos index
     // gPrefixPt/gPageW/gPageH by this value, and those arrays are only as long
     // as gDocPages. Callers pass values derived from the active page or a menu
-    // captured earlier, so the bound is enforced here rather than trusted.
-    if (gDocPages <= 0) return;
-    if (page < 0) page = 0;
-    if (page >= gDocPages) page = gDocPages - 1;
+    // captured earlier, so the bound is enforced here rather than trusted - by
+    // REFUSING an out-of-range index: a stale index means the caller's drop
+    // point no longer applies, so relocating it to the nearest valid page would
+    // silently mark the wrong page.
+    if (gDocPages <= 0 || page < 0 || page >= gDocPages) return;
     gPins.push_back({ page, px, py, L"", gPinDefault, false });
     startPinEdit((int)gPins.size() - 1, true);
 }
@@ -5613,7 +5614,7 @@ static void onCommand(HWND h, WPARAM wp) {
         return;
     }
     case 130:                                   // add pin at the menu drop point
-        if (gMenuPinPtPage >= 0) {
+        if (gDoc && gMenuPinPtPage >= 0 && gMenuPinPtPage < gDocPages) {
             addPinAt(gMenuPinPtPage, gMenuPinPtX, gMenuPinPtY);
         } else if (gDoc && gDocPages > 0) {     // fallback (posted id): center of the active page
             // bounds are explicit here too: gPageIndex is a valid index by
