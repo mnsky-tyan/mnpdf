@@ -3,7 +3,6 @@
 # surface in lib): wheel deltas and MoveWindow then land in real pixels
 [MN]::SetProcessDpiAwarenessContext([IntPtr](-4)) | Out-Null
 
-
 $env:MNPDF_VERBOSE = "1"   # verbose titles for title-based assertions
 # The real print dialog is modal and a posted-message harness cannot click it,
 # so this suite drives the raster path the print dialog feeds and never opens

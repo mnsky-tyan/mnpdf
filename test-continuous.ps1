@@ -23,7 +23,6 @@ $p = $proc
 $h = FindAppWindow $p.Id
 Start-Sleep -Milliseconds 500
 
-
 $t0 = Title $h
 Write-Output "start: '$t0'"
 

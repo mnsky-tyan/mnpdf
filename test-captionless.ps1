@@ -44,7 +44,6 @@ $doc = Join-Path $PSScriptRoot 'tests\arc.pdf'
 $exe = Resolve-AppExe
 $appPref = Join-Path $env:APPDATA 'mnpdf\app.txt'
 
-
 # how much of the window the non-client area still eats, in pixels
 function CaptionGap([IntPtr]$Wnd) {
   $c = New-Object MNRect; $w = New-Object MNRect

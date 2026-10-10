@@ -5051,10 +5051,10 @@ static LRESULT CALLBACK outlineProc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
 
 // ---- test hook ------------------------------------------------------------
 // A posted-message harness cannot click a modal file dialog, so the probe calls
-// the same code the menu calls with the arguments the menu would have collected:
-// MNPDF_HOOK="merge:<pdf>", "sig:<jpeg>:<page>", "split:<range>:<out.pdf>",
-// "delpage:<n>", "movepage:<n>:<m>", "rotatepage:<n>". Every verb runs the real
-// function, then leaves the window up so the suite can measure the result.
+// the same code the menu calls with the arguments the menu would have collected.
+// The spec is "verb|arg1|arg2" (README.md's test-seam table owns the verb list),
+// and "a;;b" chains several in order. Every verb runs the real function, then
+// leaves the window up so the suite can measure the result.
 static void runHook(const std::wstring& spec);
 
 static void runHook(const std::wstring& spec) {
