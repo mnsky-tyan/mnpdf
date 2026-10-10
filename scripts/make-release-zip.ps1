@@ -1,16 +1,22 @@
-# Build the release ZIP, and refuse to do it when the three legs of the version
-# contract disagree.
+# Build the release ZIP, and refuse to do it when the version contract is broken.
 #
-# The contract (all three must name the same version):
+# The contract:
 #   1. src/main.cpp      - kAppVersion, what the app reports over the wire
 #   2. README.txt        - its first line, the file the ZIP ships to the reader
-#   3. the ZIP file name - mnpdf-win-x64-<tag>.zip, which is literally what the
+#   3. the archive name  - mnpdf-win-x64-<tag>.zip, which is literally what the
 #                          running app asks GitHub for when it checks for an
 #                          update (src/main.cpp: kDownloadBaseUrl + tag +
 #                          "/mnpdf-win-x64-" + tag + ".zip"). A ZIP named for a
 #                          version the app does not report is a release no
 #                          reader can ever update to, or one that offers a
 #                          download that 404s.
+#
+# Legs 1 and 2 are compared against each other, so a mismatch refuses the build.
+# Leg 3 cannot be compared against itself - this script derives the name it
+# writes from kAppVersion - so it is checked differently: the app's own URL
+# template must be the naming scheme this script builds. That check can fail
+# (rename the app's pattern and the build refuses), which is what makes the
+# documented third leg real rather than decorative.
 #
 # Only leg 2 was enforced before this script existed (test-release.ps1 checks
 # README.txt against kAppVersion), and this file did not exist at all - the
@@ -53,7 +59,15 @@ if ($appVersion -ne $readmeVersion) {
   Fail ("version contract broken: src\main.cpp says {0}, README.txt says {1}" -f $appVersion, $readmeVersion)
 }
 
-# leg 3: the archive name the updater will request
+# leg 3: the archive name the updater will request. This script builds that
+# name from kAppVersion, so it cannot disagree with itself; the honest check is
+# that the app's own URL template uses this same naming scheme. A rename of the
+# app's pattern (a different prefix or extension) fails here instead of shipping
+# a release the updater can never fetch.
+$m3 = [regex]::Match($mainText, 'mnpdf-win-x64-"\s*\+\s*tag\s*\+\s*L"\.zip"')
+if (-not $m3.Success) {
+  Fail 'src\main.cpp does not build the update URL as "/mnpdf-win-x64-" + tag + ".zip" - the archive this script builds would never be requested'
+}
 $tag = "v$appVersion"
 $zipName = "mnpdf-win-x64-$tag.zip"
 $zipPath = Join-Path $OutDir $zipName
@@ -71,9 +85,8 @@ if ($missing.Count -gt 0) {
   Fail ("missing payload file(s): " + (($missing | ForEach-Object { $_.src }) -join ', ') + ' - run build.bat first')
 }
 
-# a ZIP whose name does not match the app's version is the exact failure this
-# script exists to prevent, so state the agreement it is about to build
-Write-Output ("RELEASE: version contract agreed - kAppVersion={0}, README.txt={1}, archive={2}" -f $appVersion, $readmeVersion, $zipName)
+# state the agreement it is about to build
+Write-Output ("RELEASE: version contract agreed - kAppVersion={0}, README.txt={1}, archive={2} (naming scheme verified against src\main.cpp)" -f $appVersion, $readmeVersion, $zipName)
 
 if (-not (Test-Path -LiteralPath $OutDir)) { New-Item -ItemType Directory -Path $OutDir | Out-Null }
 if (Test-Path -LiteralPath $zipPath) { Remove-Item -LiteralPath $zipPath -Force }

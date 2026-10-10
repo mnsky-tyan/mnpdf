@@ -240,8 +240,8 @@ scripts/make-release-zip.ps1  the release ZIP: it refuses to build when
 
 ## Release contract
 
-Three places must agree on the version, and `scripts/make-release-zip.ps1`
-refuses to build the ZIP if they do not:
+Three places name the version, and `scripts/make-release-zip.ps1` refuses to
+build the ZIP when they disagree:
 
 - `kAppVersion` in `src/main.cpp:55`
 - the first line of `README.txt` - `mnpdf vX.Y.Z` - which is also the file the
@@ -249,6 +249,11 @@ refuses to build the ZIP if they do not:
 - the ZIP's own name, `mnpdf-win-x64-<tag>.zip` - the name the updater
   requests, so an archive labelled for one version and carrying another is a
   release no reader can ever update to
+
+The script compares the first two against each other. The third it cannot
+compare against itself, because it derives the archive name from `kAppVersion`;
+instead it checks that the app's own update-URL template builds that same
+`mnpdf-win-x64-<tag>.zip` name, and refuses if the app's pattern was renamed.
 
 A release is a tag plus a ZIP built from exactly four files: `mnpdf.exe`,
 `pdfium.dll`, `README.txt` and `PDFIUM-LICENSE.txt` - which is the ZIP
