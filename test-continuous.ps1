@@ -1,7 +1,8 @@
 # the fixture lives in tests\ because build\ is all output and can be deleted
 # wholesale; every run works on a fresh copy so a mutating run cannot poison
-# the next one. Copied after the SKIP guard below, so a skipped run leaves
-# the checkout untouched.
+# the next one. The copy runs only when this suite is actually launched: a
+# suite dropped via MNPDF_SKIP_SUITES is filtered out by the caller
+# (scripts/gate-common.ps1) and never starts.
 $Pdf = Join-Path $PSScriptRoot "build\arc.pdf"
 . "$PSScriptRoot\tests\lib.ps1"   # one definition of the window-resolution rule
 [MN]::SetProcessDpiAwarenessContext([IntPtr](-4)) | Out-Null
