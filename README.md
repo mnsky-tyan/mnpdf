@@ -214,8 +214,8 @@ a Windows runner, so every push and pull request carries a real check.
 powershell -ExecutionPolicy Bypass -File scripts\test-ci.ps1
 ```
 
-`test-release.ps1` on its own checks the binary's version against the
-README's first line, the four files a release ZIP must contain, and the
+`test-release.ps1` on its own checks the binary's version against
+`README.txt`'s first line, the four files a release ZIP must contain, and the
 update flow itself - what the dialog answers, a full install against a scratch
 copy, and an update that fails with a reason.
 
@@ -223,7 +223,7 @@ copy, and an update that fails with a reason.
 
 ```
 src/main.cpp          the whole application
-mnpdf.rc              icon and version resources
+mnpdf.rc              the icon resource
 resource.h
 third_party/pdfium/   PDFium headers, import library, DLL and license
 tests/lib.ps1         shared test harness (window lookup, launch, waiting)
