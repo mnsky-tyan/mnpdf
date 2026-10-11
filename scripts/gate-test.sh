@@ -4,14 +4,32 @@
 # Windows, which is what .github/workflows/ci.yml runs. The roster, the build,
 # the per-suite isolation and the verdict all live in scripts/gate-common.ps1
 # and scripts/suites.txt, shared with that runner; what is left here is the
-# WSL-specific glue: the drive-letter guard, the checkout lock, evidence
-# retention, orphan reaping, and the refusal to close an app that is already up.
+# WSL-specific glue: the drive-letter guard, the checkout lock, the placement
+# seat resolution, evidence retention, orphan reaping, and the refusal to close
+# an app that is already up.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 # 9 is never a target of redirection inside this script, so the lock survives
 # every command's cleanup
 SH() { "$@" 9>&-; }
+
+# MNPDF_VD_DLL is a WINDOWS path (the seat prints C:\... from the Windows side,
+# and ~/.local/bin/mnpdf-gate exports the same), because PowerShell is what loads
+# it via Test-Path/LoadLibraryW. A bare -f tests the Linux filesystem, where
+# 'C:\...' never exists, so translate the Windows form before testing and fall
+# back to the raw path for a native Linux path (CI has neither and must not warn
+# spuriously - the caller only warns when the variable is set but unusable).
+dll_exists() {
+  local p="${1:-}" w
+  [[ -n "$p" ]] || return 1
+  if [[ "$p" == [A-Za-z]:[\\/]* ]]; then
+    w=$(wslpath "$p" 2>/dev/null || true)
+    [[ -n "$w" && -f "$w" ]]
+  else
+    [[ -f "$p" ]]
+  fi
+}
 
 PS=/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe
 WINPWD=$(wslpath -w "$PWD")
@@ -31,10 +49,63 @@ flock -n 9 || { printf '%s\n' 'GATE: another runner owns this checkout.' >&2; ex
 
 export MNPDF_GATE_EXE="${WINPWD}\\build\\mnpdf.exe"
 export MNPDF_GATE_STATE='' MNPDF_GATE_SUITE=''
+# The placement seams. The app reads MNPDF_WINDOW_DESKTOP only to start itself
+# minimised and to refuse activation (the placed path starts minimised,
+# whatever MNPDF_BACKGROUND says); it has no virtual-desktop code of its own.
+# tests/lib.ps1 moves the app's windows to that desktop after launch (and
+# follows the popups opened later) using MNPDF_VD_DLL. The windowed wrapper
+# exports both vars already; this resolves them
+# here so a plain 'gate-test.sh' launch is equally safe - a run the pipeline's
+# test agent starts, for instance, with no wrapper involved. A machine without
+# the agent seat (CI) resolves neither var and runs exactly as before: the
+# suite shells then run foreground as they always have on such a machine.
+# Resolved via PATH and a $HOME/.local/bin fallback, because this runs under a
+# plain non-login `bash` that does not source ~/.profile, where ~/.local/bin is
+# not on PATH. If the seat still cannot resolve, warn LOUDLY: the run then
+# places windows on whatever desktop is current (the person's working one), and
+# the log must say so rather than looking identical to a clean run. Both lookups
+# - PATH, then the absolute $HOME/.local/bin - collapse into one variable that
+# is tested once, so no lookup branch can fall through silently: either the seat
+# resolves or exactly one loud line goes to stderr.
+if [[ -n "${MNPDF_WINDOW_DESKTOP:-}" ]]; then
+  # A wrapper may have exported the desktop but not the accessor DLL (the app
+  # only reads MNPDF_WINDOW_DESKTOP itself; tests/lib.ps1 needs MNPDF_VD_DLL to
+  # do the moving). Claiming placement without it would describe a run that
+  # leaves every window on the current desktop, so the DLL is required here too.
+  if dll_exists "${MNPDF_VD_DLL:-}"; then
+    printf 'GATE: window placement already set by the wrapper (desktop %s)\n' "$MNPDF_WINDOW_DESKTOP"
+  else
+    printf 'GATE: no placement seat resolved (MNPDF_VD_DLL is unset or missing); windows will appear on the current desktop\n' >&2
+  fi
+else
+  # PATH first, then the absolute fallback: this runs under a plain non-login
+  # `bash` that never sources ~/.profile, so ~/.local/bin is not on PATH there
+  seat_tool="$(command -v win-desktop-show 2>/dev/null || true)"
+  if [[ -z "$seat_tool" && -x "$HOME/.local/bin/win-desktop-show" ]]; then
+    seat_tool="$HOME/.local/bin/win-desktop-show"
+  fi
+  seat_index=''
+  seat_dll=''
+  if [[ -n "$seat_tool" ]]; then
+    seat="$(timeout 20s "$seat_tool" --seat 2>/dev/null || true)"
+    candidate="$(printf '%s\n' "$seat" | sed -n '1p')"
+    if [[ "$candidate" =~ ^[0-9]+$ ]]; then seat_index="$candidate"; fi
+    seat_dll="$(printf '%s\n' "$seat" | sed -n '2p')"
+  fi
+  if [[ -n "$seat_index" ]] && dll_exists "$seat_dll"; then
+    export MNPDF_WINDOW_DESKTOP="$seat_index"
+    export MNPDF_VD_DLL="$seat_dll"
+    printf 'GATE: windows are placed on desktop %s for this run\n' "$seat_index"
+  else
+    printf '%s\n' 'GATE: no placement seat resolved (the seat did not report a usable accessor DLL); windows will appear on the current desktop' >&2
+  fi
+fi
 export MNPDF_BACKGROUND=1
 export WSLENV="${WSLENV:+${WSLENV}:}MNPDF_GATE_EXE/w:MNPDF_GATE_STATE/w:MNPDF_GATE_SUITE/w:MNPDF_BACKGROUND/w:MNPDF_WINDOW_DESKTOP/w:MNPDF_VD_DLL/w"
 # MNPDF_BACKGROUND: the app starts minimized without activating, so gate runs
 # never steal focus. Suites inherit it through the test shell's environment.
+# MNPDF_WINDOW_DESKTOP + MNPDF_VD_DLL, when the seat resolved above, tell
+# tests/lib.ps1 to move each app window to that desktop after launch instead.
 GATE_COMMON="${WINPWD}\\scripts\\gate-common.ps1"
 
 cleanup_instances() {
@@ -88,20 +159,43 @@ if [[ -n "${MNPDF_SKIP_SUITES:-}" ]]; then
   for k in ${MNPDF_SKIP_SUITES//,/ }; do skip="$skip$k "; done
 fi
 suites=()
+skipped=()
 foreground=' '
+# LOCKSTEP with scripts/gate-common.ps1 Read-SuiteRoster: this bash parser and
+# that PowerShell reader must agree on comments, the trailing-* foreground
+# marker and MNPDF_SKIP_SUITES, or the WSL gate and CI would run different
+# rosters. The parse lives here because it must work before PowerShell is ever
+# invoked; keep the two in step when the rules change.
 while IFS= read -r raw || [[ -n "$raw" ]]; do
-  line=$(printf '%s' "${raw%%#*}" | tr -d ' \t\r')
+  # trim ONLY the ends, matching PowerShell's .Trim(): `tr -d ' \t\r'` also strips
+  # INTERNAL whitespace, so a roster line like "test a" became the suite name
+  # "testa" here while the CI reader kept "test a" - the two gates would then run
+  # different suites. A non-trailing '*' is likewise only a foreground marker when
+  # it is the LAST character, exactly as EndsWith('*') decides it.
+  line=$(printf '%s' "${raw%%#*}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
   [[ -z "$line" ]] && continue
   fg=0
-  if [[ "$line" == *'*' ]]; then
+  # only a TRAILING '*' marks a foreground suite (PowerShell: $line.EndsWith('*'))
+  if [[ "$line" == *'*' && "${line: -1}" == '*' ]]; then
     line="${line%\*}"
+    line=$(printf '%s' "$line" | sed -e 's/[[:space:]]*$//')
     fg=1
   fi
-  [[ "${skip,,}" == *" ${line,,} "* ]] && continue
+  [[ "${skip,,}" == *" ${line,,} "* ]] && { skipped+=("$line"); continue; }
   if (( fg )); then foreground="$foreground$line "; fi
   suites+=("$line")
 done < scripts/suites.txt
 ((${#suites[@]})) || { printf '%s\n' 'GATE: no suites in scripts/suites.txt.' >&2; exit 1; }
+# name the plan and anything MNPDF_SKIP_SUITES dropped. Without this a skipped
+# suite is indistinguishable in the log from one lost to a roster-parse bug, and
+# this wrapper is exactly where the local roster differs from CI's (mnpdf-gate
+# sets MNPDF_SKIP_SUITES=select-msg-test, so a local run covers 8 where CI covers
+# 9) - "all suites OK" must never quietly mean "all but one".
+if ((${#skipped[@]})); then
+  printf 'GATE: running %d suite(s); MNPDF_SKIP_SUITES drops: %s\n' "${#suites[@]}" "${skipped[*]}"
+else
+  printf 'GATE: running %d suite(s); none skipped\n' "${#suites[@]}"
+fi
 
 run_dir=$(mktemp -d "$PWD/build/gate-run.XXXXXX")
 printf 'GATE: logs and isolated preferences: %s\n' "$run_dir"
@@ -113,7 +207,9 @@ for s in "${suites[@]}"; do
   export MNPDF_GATE_STATE="$state_w"
   export MNPDF_GATE_SUITE="${WINPWD}\\${s}.ps1"
   # the app only checks that the variable exists, so a foreground suite needs it
-  # gone, not set to 0
+  # gone, not set to 0. LOCKSTEP: scripts/test-ci.ps1 makes the same decision
+  # for the CI runner from the same roster marker - a change to the rule (the
+  # sentinel, the marker) must land in both.
   if [[ "$foreground" == *" $s "* ]]; then unset MNPDF_BACKGROUND; else export MNPDF_BACKGROUND=1; fi
   printf '=== %s\n' "$s"
   rc=0
@@ -122,6 +218,10 @@ for s in "${suites[@]}"; do
   cleanup_instances
   # the log is written by PowerShell, so its lines end CRLF: the optional CR
   # in the pattern is what keeps the verdict match honest
+  # the grep is a second, independent verdict on purpose: it catches the case
+  # where the suite shell died before Invoke-SuiteRun could append the line at
+  # all. The wording lives in gate-common.ps1 (Get-SuiteVerdict and the verdict
+  # Add-Content); a change there must be mirrored in this pattern.
   if (( rc != 0 )) || ! grep -qE $'^SUITE RESULT: OK\r?$' "$state/output.log"; then
     printf 'GATE: %s FAILED (exit %s); stopping before another suite launches.\n' "$s" "$rc" >&2
     exit 1
