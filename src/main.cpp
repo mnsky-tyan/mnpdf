@@ -2812,12 +2812,12 @@ static void startUpdateInstall(const std::wstring& tag) {
 // a monitor with another dpi re-derives it.
 struct UpdChild { int id; int x, y, w, h; };
 static const UpdChild kUpdChildren[] = {
-    { 100,          18,  16, 404, 128 },     // the text
-    { kUpdAction,   18, 154, 190,  28 },
-    { kUpdRelease, 218, 154, 110,  28 },
-    { kUpdClose,   338, 154,  84,  28 },
+    { 100,          18,  16, 404, 144 },     // the text (144px accommodates 9 lines of Segoe UI 9pt cleanly)
+    { kUpdAction,   18, 170, 190,  28 },
+    { kUpdRelease, 218, 170, 110,  28 },
+    { kUpdClose,   338, 170,  84,  28 },
 };
-static const int kUpdClientW = 440, kUpdClientH = 196;   // the client the layout fills
+static const int kUpdClientW = 440, kUpdClientH = 212;   // the client the layout fills
 
 static HFONT getUpdateFont(int dpi) {
     if (gUpdateFont) return gUpdateFont;
@@ -2860,9 +2860,13 @@ static LRESULT CALLBACK updateProc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
         updateDialogAction();
         return 0;
     }
-    case WM_CTLCOLORDLG: {
+    case WM_ERASEBKGND: {
+        HDC hdc = (HDC)wp;
+        RECT rc;
+        GetClientRect(w, &rc);
         if (!gUpdWhiteBrush) gUpdWhiteBrush = CreateSolidBrush(RGB(255, 255, 255));
-        return (LRESULT)gUpdWhiteBrush;
+        FillRect(hdc, &rc, gUpdWhiteBrush);
+        return 1;
     }
     case WM_CTLCOLORSTATIC: {
         HDC hdc = (HDC)wp;
@@ -2896,13 +2900,6 @@ static LRESULT CALLBACK updateProc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
                 startUpdateInstall(gUpdateTag);  // the dialog stays: it carries the progress and the reason
                 return 0;
             }
-            if (updateCheckCooling()) {
-                reportCachedUpdateResult();
-                return 0;
-            }
-            gUpdateBusy = true;
-            updateDialogAction();
-            updateDialogText(L"Checking GitHub for a newer mnpdf...");
             startUpdateCheck(true);
             return 0;
         }
@@ -2939,7 +2936,8 @@ static void openUpdateDialog() {
         wc.lpfnWndProc = updateProc;
         wc.hInstance = inst;
         wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-        wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+        if (!gUpdWhiteBrush) gUpdWhiteBrush = CreateSolidBrush(RGB(255, 255, 255));
+        wc.hbrBackground = gUpdWhiteBrush;
         wc.lpszClassName = L"MNUpdate";
         RegisterClassExW(&wc);
         reg = true;
@@ -3060,6 +3058,11 @@ static void startUpdateCheck(bool manual) {
         gUpdateCheckRunning.store(false);
         if (manual) reportCachedUpdateResult();
         return;
+    }
+    if (manual) {
+        gUpdateBusy = true;
+        updateDialogAction();
+        updateDialogText(L"Checking GitHub for a newer mnpdf...");
     }
     HWND target = gWnd;
     std::thread([target]() {
@@ -5638,14 +5641,7 @@ static void onCommand(HWND h, WPARAM wp) {
         // the menu runs the same check the dialog's own button runs, so it takes
         // the dialog busy the same way, for the same reason
         openUpdateDialog();
-        if (updateCheckCooling()) {
-            reportCachedUpdateResult();
-        } else {
-            gUpdateBusy = true;
-            updateDialogAction();
-            updateDialogText(L"Checking GitHub for a newer mnpdf...");
-            startUpdateCheck(true);
-        }
+        startUpdateCheck(true);
         return;
     }
     case 130:                                   // add pin at the menu drop point
