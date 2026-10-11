@@ -260,8 +260,12 @@ if (-not (AwaitTitle $wC "mnpdf 1/$pagesA")) {
   [void][MN]::PostMessageW($wC, 0x0111, [IntPtr]$CMD_CLOSE_TAB, [IntPtr]::Zero)   # Close Tab: THIS tab goes
   $took = $false
   if (($pagesB -gt 0) -and (AwaitTitle $wC "mnpdf 1/$pagesB")) { $took = QuitApp $procC }
-  if (-not ($took -and $zClose)) { Fail 'closing a tab keeps its mark in its sidecar' "closed tab: '$(Title $wC)'" }
-  else {
+  if (-not ($took -and $zClose)) {
+    Fail 'closing a tab keeps its mark in its sidecar' "closed tab: '$(Title $wC)'"
+    [void](QuitApp $procC)      # this window outlives the case otherwise: the case
+                                # below then launches on top of it, and a stray
+                                # instance is what the gate has to reap later
+  } else {
     $procC2 = Launch (Resolve-AppExe) $A
     $wC2 = FindAppWindow $procC2.Id
     if (AwaitTitle $wC2 "mnpdf 1/$pagesA\s+$zClose") { Pass 'closing a tab keeps its mark in its sidecar' }
@@ -279,6 +283,8 @@ $procD = Launch (Resolve-AppExe) $A
 $wD = FindAppWindow $procD.Id
 if (-not (AwaitTitle $wD 'mnpdf 1/\d+')) {
   Fail 'a hidden strip stays hidden across a relaunch' "no document window: '$(Title $wD)'"
+  [void](QuitApp $procD)      # the case cannot continue, but the window must not
+                              # survive it - a later case would launch on top
 } else {
   [void][MN]::PostMessageW($wD, 0x0111, [IntPtr]$CMD_HIDE_TABSTRIP, [IntPtr]::Zero)   # Hide tab strip
   Start-Sleep -Milliseconds 400
