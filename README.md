@@ -72,11 +72,6 @@ sidecar until then, exactly like a highlight.
 replaced - the one you had a moment ago - so opening the wrong file by
 mistake costs one click to undo. It spans this session only.
 
-Below those, the same submenu lists the heavy options still to come - OCR,
-Word export, in-place text editing, form creation, encryption, side-by-side
-tabs. They are listed and greyed: they need a different kind of program, and
-this one stays a reader you can copy onto a USB stick.
-
 **Printing.** `Ctrl+P` opens the standard Windows print dialog and prints
 clean pages. Annotations, highlights and pins stay in the file and on screen
 and are simply not printed.

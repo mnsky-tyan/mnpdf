@@ -299,7 +299,7 @@ static std::wstring palLabel(int idx) {
     COLORREF c;
     if (palColor(idx, c)) {
         wchar_t b[16];
-        _snwprintf(b, 16, L"#%02x%02x%02x", GetRValue(c), GetGValue(c), GetBValue(c));
+        _snwprintf_s(b, _countof(b), _TRUNCATE, L"#%02x%02x%02x", GetRValue(c), GetGValue(c), GetBValue(c));
         return b;
     }
     return L"";
@@ -512,8 +512,8 @@ static int gMatchActive = -1;
 static void updateMatchLabel() {
     if (!gMatchLabel) return;
     wchar_t buf[32];
-    if (gMatchCount > 0) _snwprintf(buf, 32, L"%d/%d", gMatchActive + 1, gMatchCount);
-    else wcscpy(buf, gQuery[0] ? L"0/0" : L"");
+    if (gMatchCount > 0) _snwprintf_s(buf, _countof(buf), _TRUNCATE, L"%d/%d", gMatchActive + 1, gMatchCount);
+    else wcscpy_s(buf, _countof(buf), gQuery[0] ? L"0/0" : L"");
     SetWindowTextW(gMatchLabel, buf);
 }
 
@@ -726,7 +726,7 @@ static int snapIndexNear(int page, int cx, int cy) {
     double ppy = cy - docTop() - yTopPx(page);
     double px, py;
     pagePxToPt(page, ppx, ppy, &px, &py);
-    double W = gPageW[page], H = gPageH[page];
+    double H = gPageH[page];
     int rot = gRot[page] & 3;
     if (rot == 0) {                                  // upright: y=H is visual top
         if (py >= H) return 0;                       // above the top line
@@ -2373,6 +2373,7 @@ static std::wstring fetchLatestReleaseTag() {
 }
 
 static std::wstring checkedAgoNote(int minutesAgo) {
+    if (minutesAgo == 0) return L"\n\n(Checked just now.)";
     if (minutesAgo < 0) return L"";
     wchar_t b[64];
     swprintf_s(b, L"\n\n(Last checked %d minute%s ago.)", minutesAgo, minutesAgo == 1 ? L"" : L"s");
@@ -2384,6 +2385,8 @@ static std::wstring checkedAgoNote(int minutesAgo) {
 // check finds a newer release, then "Update to vX.Y.Z", and installing is the
 // same button. A MessageBox could not do that - its buttons are a fixed Yes/No.
 static HWND gUpdateWnd = nullptr;
+static HFONT gUpdateFont = nullptr;
+static HBRUSH gUpdWhiteBrush = nullptr;
 static std::wstring gUpdateTag;                  // newer tag the last check found
 static bool gUpdateAvailable = false;            // ...and it really is newer
 static bool gUpdateBusy = false;                 // a check or an install is in flight
@@ -2393,9 +2396,16 @@ enum { kUpdAction = 1, kUpdRelease = 2, kUpdClose = 3 };
 static LRESULT CALLBACK updateProc(HWND w, UINT m, WPARAM wp, LPARAM lp);
 static void openUpdateDialog();
 static void startUpdateCheck(bool manual);       // the Check button runs the same check
+static void reportCachedUpdateResult();
 
 static void closeUpdateDialog() {
-    if (gUpdateWnd) { HWND w = gUpdateWnd; gUpdateWnd = nullptr; DestroyWindow(w); }
+    if (gUpdateWnd) {
+        HWND w = gUpdateWnd;
+        gUpdateWnd = nullptr;
+        DestroyWindow(w);
+    }
+    if (gUpdateFont) { DeleteObject(gUpdateFont); gUpdateFont = nullptr; }
+    if (gUpdWhiteBrush) { DeleteObject(gUpdWhiteBrush); gUpdWhiteBrush = nullptr; }
 }
 
 static void updateDialogText(const std::wstring& text) {
@@ -2802,19 +2812,33 @@ static void startUpdateInstall(const std::wstring& tag) {
 // a monitor with another dpi re-derives it.
 struct UpdChild { int id; int x, y, w, h; };
 static const UpdChild kUpdChildren[] = {
-    { 100,          14,  12, 372, 130 },     // the text
-    { kUpdAction,   14, 152, 176,  26 },
-    { kUpdRelease, 198, 152,  88,  26 },
-    { kUpdClose,   294, 152,  92,  26 },
+    { 100,          18,  16, 404, 128 },     // the text
+    { kUpdAction,   18, 154, 190,  28 },
+    { kUpdRelease, 218, 154, 110,  28 },
+    { kUpdClose,   338, 154,  84,  28 },
 };
-static const int kUpdClientW = 400, kUpdClientH = 184;   // the client the layout fills
+static const int kUpdClientW = 440, kUpdClientH = 196;   // the client the layout fills
+
+static HFONT getUpdateFont(int dpi) {
+    if (gUpdateFont) return gUpdateFont;
+    int h = -MulDiv(9, dpi, 72);                     // clean 9pt Segoe UI
+    gUpdateFont = CreateFontW(h, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                              CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+    return gUpdateFont;
+}
 
 static void layoutUpdateDialog(HWND w) {
-    const double k = GetDpiForWindow(w) / 96.0;
+    const UINT dpi = GetDpiForWindow(w);
+    const double k = dpi / 96.0;
+    HFONT font = getUpdateFont(dpi);
     for (const UpdChild& c : kUpdChildren) {
         HWND child = GetDlgItem(w, c.id);
-        if (child) SetWindowPos(child, nullptr, (int)(c.x * k), (int)(c.y * k),
-                                (int)(c.w * k), (int)(c.h * k), SWP_NOZORDER | SWP_NOACTIVATE);
+        if (child) {
+            SetWindowPos(child, nullptr, (int)(c.x * k), (int)(c.y * k),
+                         (int)(c.w * k), (int)(c.h * k), SWP_NOZORDER | SWP_NOACTIVATE);
+            SendMessageW(child, WM_SETFONT, (WPARAM)font, TRUE);
+        }
     }
 }
 
@@ -2833,13 +2857,24 @@ static LRESULT CALLBACK updateProc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
                             w, (HMENU)(INT_PTR)c.id, inst, nullptr);
         }
         layoutUpdateDialog(w);                        // the one place a child rect is derived
-        updateDialogText(L"Checking GitHub for a newer mnpdf...");
         updateDialogAction();
         return 0;
+    }
+    case WM_CTLCOLORDLG: {
+        if (!gUpdWhiteBrush) gUpdWhiteBrush = CreateSolidBrush(RGB(255, 255, 255));
+        return (LRESULT)gUpdWhiteBrush;
+    }
+    case WM_CTLCOLORSTATIC: {
+        HDC hdc = (HDC)wp;
+        SetTextColor(hdc, RGB(32, 32, 32));
+        SetBkColor(hdc, RGB(255, 255, 255));
+        if (!gUpdWhiteBrush) gUpdWhiteBrush = CreateSolidBrush(RGB(255, 255, 255));
+        return (LRESULT)gUpdWhiteBrush;
     }
     case WM_DPICHANGED: {
         // the reader was dragged to another monitor: take the system's suggested
         // rect and re-derive the child rects for the new dpi
+        if (gUpdateFont) { DeleteObject(gUpdateFont); gUpdateFont = nullptr; }
         RECT* sug = (RECT*)lp;
         SetWindowPos(w, nullptr, sug->left, sug->top,
                      sug->right - sug->left, sug->bottom - sug->top,
@@ -2859,6 +2894,10 @@ static LRESULT CALLBACK updateProc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
                     return 0;
                 }
                 startUpdateInstall(gUpdateTag);  // the dialog stays: it carries the progress and the reason
+                return 0;
+            }
+            if (updateCheckCooling()) {
+                reportCachedUpdateResult();
                 return 0;
             }
             gUpdateBusy = true;
@@ -2884,6 +2923,8 @@ static LRESULT CALLBACK updateProc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_DESTROY:
         if (gUpdateWnd == w) gUpdateWnd = nullptr;
+        if (gUpdateFont) { DeleteObject(gUpdateFont); gUpdateFont = nullptr; }
+        if (gUpdWhiteBrush) { DeleteObject(gUpdWhiteBrush); gUpdWhiteBrush = nullptr; }
         return 0;
     }
     return DefWindowProcW(w, m, wp, lp);
@@ -2985,7 +3026,7 @@ static void showPendingUpdateResult() {
     }
 }
 
-// a click inside the cooldown window is answered from what the last attempt
+// a click inside the cooldown window (or when reaching GitHub fails) is answered from what the last attempt
 // learned, so the user still gets a true answer and no request is spent
 static void reportCachedUpdateResult() {
     if (updateDialogIsInstallChannel()) return;
@@ -3060,7 +3101,7 @@ static std::wstring sidecarPathFor(const std::wstring& path) {
     }
     wchar_t dir[MAX_PATH], name[64];
     appDirW(dir, MAX_PATH);
-    _snwprintf(name, 64, L"\\doc-%016llx.txt", (unsigned long long)h);
+    _snwprintf_s(name, _countof(name), _TRUNCATE, L"\\doc-%016llx.txt", (unsigned long long)h);
     return std::wstring(dir) + name;
 }
 
@@ -3701,7 +3742,7 @@ static bool bakeAndWrite(const std::wstring& target) {
                     FPDFAnnot_SetColor(a, FPDFANNOT_COLORTYPE_Color,
                                        GetRValue(bc), GetGValue(bc), GetBValue(bc), 255);
                     wchar_t src[48];
-                    _snwprintf(src, 48, L"mnpdf %d %d", hl.start, hl.count);
+                    _snwprintf_s(src, _countof(src), _TRUNCATE, L"mnpdf %d %d", hl.start, hl.count);
                     FPDFAnnot_SetStringValue(a, "Source", (FPDF_WIDESTRING)src);
                     FPDFPage_CloseAnnot(a);
                 }
@@ -5317,12 +5358,8 @@ static void drawEmptyTabHint() {
 }
 
 // ---- the Advanced cascade --------------------------------------------------
-// Everything past plain reading lives here. Two groups: the document tools and
-// view modes that shipped in the first feature pass (they are reached far less
-// often than open/save/find/zoom, and they were crowding the top level of the
-// menu), and the greyed placeholders for what is still planned. The ids are the
-// protocol the test suites post, so they keep their numbers wherever the rows
-// sit; only the menu tree changed.
+// Everything past plain reading lives here: the document tools and view modes.
+// The ids are the protocol the test suites post, so they keep their numbers.
 static HMENU advancedMenu() {
     HMENU m = CreatePopupMenu();
     AppendMenuW(m, gDoc ? MF_STRING | (gThumbsOn ? MF_CHECKED : 0) : MF_GRAYED,
@@ -5336,13 +5373,6 @@ static HMENU advancedMenu() {
     AppendMenuW(m, gDoc ? MF_STRING : MF_GRAYED, 203, L"Insert signature...");
     AppendMenuW(m, gSigs.empty() ? MF_GRAYED : MF_STRING, 204, L"Clear signatures");
     AppendMenuW(m, gDoc ? MF_STRING : MF_GRAYED, 207, L"Reopen last document");
-    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(m, MF_STRING | MF_GRAYED, 250, L"OCR text layer  (planned)");
-    AppendMenuW(m, MF_STRING | MF_GRAYED, 251, L"Export as Word  (planned)");
-    AppendMenuW(m, MF_STRING | MF_GRAYED, 252, L"Edit text in place  (planned)");
-    AppendMenuW(m, MF_STRING | MF_GRAYED, 253, L"Create forms  (planned)");
-    AppendMenuW(m, MF_STRING | MF_GRAYED, 254, L"Encrypt / password on save  (planned)");
-    AppendMenuW(m, MF_STRING | MF_GRAYED, 255, L"Side-by-side tabs  (planned)");
     return m;
 }
 static void onKeyDown(HWND h, WPARAM wp) {
@@ -5608,9 +5638,14 @@ static void onCommand(HWND h, WPARAM wp) {
         // the menu runs the same check the dialog's own button runs, so it takes
         // the dialog busy the same way, for the same reason
         openUpdateDialog();
-        gUpdateBusy = true;
-        updateDialogAction();
-        startUpdateCheck(true);
+        if (updateCheckCooling()) {
+            reportCachedUpdateResult();
+        } else {
+            gUpdateBusy = true;
+            updateDialogAction();
+            updateDialogText(L"Checking GitHub for a newer mnpdf...");
+            startUpdateCheck(true);
+        }
         return;
     }
     case 130:                                   // add pin at the menu drop point

@@ -48,11 +48,6 @@ Reopen last document goes back to the document the current one replaced, so
 opening the wrong file by mistake costs one click to undo. It spans this
 session only.
 
-Below those, the same menu lists what is still to come - OCR, Word export,
-editing text in place, form creation, encryption, side-by-side tabs - greyed on
-purpose: they need a different kind of program, and this one stays a reader you
-can copy onto a USB stick.
-
 SAVING
 With autosave on (the default) every change is written to a sidecar file
 under %APPDATA%\mnpdf named doc-<hash>.txt, and the PDF on disk is left
