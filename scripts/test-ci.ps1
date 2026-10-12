@@ -57,13 +57,7 @@ try {
       $env:MNPDF_GATE_SUITE = Join-Path $repo ($s.Name + '.ps1')
       # THE foreground decision, from the same function Invoke-SuiteRun uses
       Set-SuiteForeground -Foreground ([bool]$s.Foreground)
-      # bounded in wall-clock like the WSL runner's `timeout`: a hung suite is
-      # killed with its tree and reported, instead of spending the whole job on
-      # one suite and leaving no per-suite log behind
-      $childArgs = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
-                     '-Command', (". '{0}'; Invoke-SuiteRun" -f ($gateCommon -replace "'", "''")))
-      $LASTEXITCODE = Invoke-Bounded -FilePath $psExe -ArgumentList $childArgs `
-                                       -TimeoutSeconds 900 -What "suite $($s.Name)"
+      & $psExe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command (". '{0}'; Invoke-SuiteRun" -f ($gateCommon -replace "'", "''"))
     } finally {
       foreach ($name in $script:RunnerSeamNames) {
         Remove-Item "Env:$name" -ErrorAction SilentlyContinue

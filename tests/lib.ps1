@@ -426,8 +426,14 @@ function Start-DesktopWatcher([int]$ProcId) {
       try { $wins = [VDM]::TopLevelOf([uint32]$pidToWatch) } catch { }
       foreach ($h in $wins) {
         try {
-          [void](Move-WindowToDesktop $h $desktop 1)   # one move per pass: the
-        } catch { }                                    # next sweep re-reads
+          # Must call [VDM] directly, NOT Move-WindowToDesktop: PowerShell functions
+          # defined in the caller session are invisible inside a fresh runspace,
+          # while Add-Type types like [VDM] are loaded into the process AppDomain
+          # and visible everywhere.
+          $of = [VDM]::DesktopOf($h)
+          if ($of -eq $desktop) { continue }     # already where it belongs
+          [void][VDM]::MoveTo($h, $desktop)      # -1 = DEFAULT_DESKTOP: the one to move
+        } catch { }
       }
       Start-Sleep -Milliseconds 25
     }

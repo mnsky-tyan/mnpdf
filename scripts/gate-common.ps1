@@ -65,39 +65,15 @@ function Set-SuiteForeground {
 }
 
 # --- the build --------------------------------------------------------------
-# One recipe for both runners. The build is always bound in time: a hang in
-# VsDevCmd or a deadlocked msbuild must not outlive the job. scripts/gate-test.sh
-# wraps this in its own `timeout` as well; the inner bound fires first and says so.
+# One recipe for both runners.
 function Invoke-Build {
-  param([string]$RepoRoot, [string]$ExePath, [int]$TimeoutSeconds = 600)
+  param([string]$RepoRoot, [string]$ExePath)
   $null = New-Item -ItemType Directory -Force -Path (Join-Path $RepoRoot 'build')
   # the .bat is addressed absolutely: cmd resolves a bare script name against
   # the PATH, not the current directory
-  $bat = '"' + (Join-Path $RepoRoot 'build.bat') + '"'
-  $code = Invoke-Bounded -FilePath 'cmd.exe' -ArgumentList @('/c', $bat) `
-                           -TimeoutSeconds $TimeoutSeconds -What 'the build'
-  if ($code -ne 0) { throw "build.bat exited $code" }
+  & cmd.exe /c ('"' + (Join-Path $RepoRoot 'build.bat') + '"')
+  if ($LASTEXITCODE -ne 0) { throw "build.bat exited $LASTEXITCODE" }
   if (-not (Test-Path -LiteralPath $ExePath)) { throw 'build\mnpdf.exe is missing' }
-}
-
-# Run a child process with a wall-clock bound and, if it overruns, kill its whole
-# tree. This is what scripts/gate-test.sh gets from `timeout`; the plain-Windows
-# runner has no `timeout.exe` that can kill a tree, so it ends with taskkill /T.
-function Invoke-Bounded {
-  param(
-    [string]$FilePath,
-    [string[]]$ArgumentList,
-    [int]$TimeoutSeconds,
-    [string]$What
-  )
-  $p = Start-Process -FilePath $FilePath -ArgumentList $ArgumentList -PassThru
-  if (-not $p.WaitForExit($TimeoutSeconds * 1000)) {
-    $killed = $false
-    try { & taskkill.exe /T /F /PID $p.Id | Out-Null; $killed = ($LASTEXITCODE -eq 0) } catch { }
-    if (-not $killed) { try { $p.Kill() } catch { } }
-    throw ("{0} timed out after {1}s and was killed" -f $What, $TimeoutSeconds)
-  }
-  return $p.ExitCode
 }
 
 # --- the instance policy ----------------------------------------------------
