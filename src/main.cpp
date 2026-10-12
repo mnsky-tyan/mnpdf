@@ -81,14 +81,12 @@ static const DWORD kBoxFocusGraceMs = 400;
 // matching a stamp back to the page object that was stamped: this one is a bounds
 // equality, not "the same spot", and it is deliberately the tightest of the four
 static const double kStampBoundsTol = 0.25;
-// one caption per feature: the update dialog, its refusal box and the tray title
+// one caption per feature: the update dialog, its refusal box and its offer box
 // used to spell the same feature three ways, and test-release.ps1 finds the
 // refusal by title - so a caption is a test contract, not cosmetics
 static const wchar_t* const kCaptionUpdate      = L"mnpdf updates";
 static const wchar_t* const kCaptionUpdateRefuse = L"mnpdf update";
 static const wchar_t* const kCaptionUpdateOffer  = L"mnpdf update available";
-static const wchar_t* const kCaptionSignature   = L"Place signature";
-static const wchar_t* const kCaptionSplit       = L"Split pages";
 static HWND gWnd = nullptr;
 static std::atomic<bool> gUpdateCheckRunning = false;
 static std::atomic<bool> gManualUpdateRequested = false;
@@ -609,8 +607,11 @@ static int docLeft() {
     return slack > 0 ? slack / 2 : -gScrollX;
 }
 
-// the app's only dpi rule, in one place: a 96-dpi design px on this window
-// (every chrome size below used to spell the MulDiv out by hand)
+// the one rule that turns a 96-dpi design px into device px for the main
+// window's chrome: tab strip, tabs, their font and the caption band all used to
+// spell the same MulDiv out by hand. Font point sizes are not design px (they
+// scale from 72), and the update dialog scales its whole layout table from the
+// dialog's own dpi, so neither goes through here.
 static int dpiPx(int px) { return MulDiv(px, GetDpiForWindow(gWnd), USER_DEFAULT_SCREEN_DPI); }
 
 static int tabStripH() {
@@ -641,17 +642,6 @@ static void registerOnce(bool* done, const wchar_t* cls, WNDPROC proc, HINSTANCE
     wc.lpszClassName = cls;
     RegisterClassExW(&wc);
     *done = true;                       // a repeat registration only fails the class name
-}
-
-// the same, for the one class registered through RegisterClassW
-static void registerOncePlain(const wchar_t* cls, WNDPROC proc, HINSTANCE inst, HBRUSH bg) {
-    WNDCLASSW tc = { 0 };
-    tc.lpfnWndProc = proc;
-    tc.hInstance = inst;
-    tc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    tc.hbrBackground = bg;
-    tc.lpszClassName = cls;
-    RegisterClassW(&tc);
 }
 
 // the strip band is chrome above the document, so the document's viewport is the
@@ -3969,12 +3959,11 @@ static void closeColorBox() {
 
 // read what is in a colour/note box: clamp the length, then WM_GETTEXT. Both
 // entries used to spell these four lines out separately.
-static bool readColorBox(HWND box, wchar_t* buf, size_t cap) {
+static void readColorBox(HWND box, wchar_t* buf, size_t cap) {
     int n = GetWindowTextLengthW(box);
     if (n < 0) n = 0;
     if (n > (int)cap - 1) n = (int)cap - 1;
     GetWindowTextW(box, buf, n + 1);
-    return true;
 }
 
 // read what is in the box and, if it names a colour, keep it: a reader who typed
@@ -5340,7 +5329,7 @@ static std::wstring tabLabel(int i) {
 static const int kTabX0 = 4;
 static const int kTabGap = 8;
 static int tabW() {
-    int tw = MulDiv(160, GetDpiForWindow(gWnd), USER_DEFAULT_SCREEN_DPI);
+    int tw = dpiPx(160);
     int avail = gClientW - tabStripH() - kTabGap - kTabX0;
     if (tw * gDocCount > avail) {
         tw = avail / gDocCount;
@@ -5365,7 +5354,7 @@ static int tabAt(int x, int y) {
 static HFONT gStripFont = nullptr;
 static int gStripFontPx = 0;                     // px height the strip font was built at
 static HFONT stripFont() {
-    int px = MulDiv(13, GetDpiForWindow(gWnd), USER_DEFAULT_SCREEN_DPI);
+    int px = dpiPx(13);
     if (gStripFont && px == gStripFontPx) return gStripFont;
     if (gStripFont) DeleteObject(gStripFont);
     LOGFONTW lf = {};
@@ -5403,8 +5392,8 @@ static void drawTabStrip() {
         DrawTextW(dc, t.c_str(), -1, &tx, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     }
     int plus = gClientW - h;
-    int cx = plus + h / 2, cy = h / 2, arm = MulDiv(5, GetDpiForWindow(gWnd), USER_DEFAULT_SCREEN_DPI);
-    HPEN pen = CreatePen(PS_SOLID, MulDiv(1, GetDpiForWindow(gWnd), USER_DEFAULT_SCREEN_DPI), RGB(190, 190, 190));
+    int cx = plus + h / 2, cy = h / 2, arm = dpiPx(5);
+    HPEN pen = CreatePen(PS_SOLID, dpiPx(1), RGB(190, 190, 190));
     HPEN oldp = (HPEN)SelectObject(dc, pen);
     MoveToEx(dc, cx - arm, cy, nullptr);
     LineTo(dc, cx + arm, cy);
@@ -6016,7 +6005,7 @@ static LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
             // which is at least as thick as the corrected frame band, so the
             // whole top edge is caption and resize comes from the other three
             // edges and the four corners.
-            int capStrip = MulDiv(8, dpi, USER_DEFAULT_SCREEN_DPI);
+            int capStrip = dpiPx(8);
             if (capStrip < 4) capStrip = 4;
             if (pt.y < capStrip) return HTCAPTION;
             RECT cr;
@@ -6140,7 +6129,13 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int show) {
     wc.hbrBackground = nullptr;
     RegisterClassExW(&wc);
 
-    registerOncePlain(L"mnpdfPinTip", DefWindowProcW, hInst, (HBRUSH)GetStockObject(WHITE_BRUSH));
+    WNDCLASSW tc = { 0 };
+    tc.lpfnWndProc = DefWindowProcW;
+    tc.hInstance = hInst;
+    tc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    tc.lpszClassName = L"mnpdfPinTip";
+    tc.hbrBackground = (HBRUSH)GetStockObject(WHITE_BRUSH);
+    RegisterClassW(&tc);
 
     // include the engine dll dir in the search path so the exe runs anywhere
     const std::wstring exeDir = moduleDirectory();

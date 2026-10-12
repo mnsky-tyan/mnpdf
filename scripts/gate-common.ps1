@@ -8,14 +8,25 @@ $ErrorActionPreference = 'Stop'
 # scripts/suites.txt: one suite per line, '#' opens a comment, and a trailing
 # '*' marks a foreground suite (the app starts without MNPDF_BACKGROUND so its
 # popup can take the keyboard).
-function Read-SuiteRoster {
-  param([string]$RosterPath)
-  # MNPDF_SKIP_SUITES (comma-separated names) drops suites from the roster for
-  # this run: a suite can be environmentally broken on one machine (the
-  # clipboard suites fail when some other program holds the clipboard) while
-  # staying green on CI, which never sets the variable.
+# THE parsed MNPDF_SKIP_SUITES list: the comma-separated names a run drops from
+# its roster. One owner for the parse, because the plan a runner announces and
+# the roster it actually runs must come from the same split: test-ci.ps1 used to
+# split the same string a second time for its plan line, and the plan count went
+# wrong the moment the two copies disagreed.
+function Get-SkipList {
   $skip = @()
   if ($env:MNPDF_SKIP_SUITES) { $skip = $env:MNPDF_SKIP_SUITES.Split(',') | ForEach-Object { $_.Trim() } }
+  return @($skip | Where-Object { $_ })
+}
+
+# THE roster Get-SkipList drops its names from.
+function Read-SuiteRoster {
+  param([string]$RosterPath)
+  # A suite can be environmentally broken on one machine (the clipboard suites
+  # fail when some other program holds the clipboard) while staying green on CI,
+  # which never sets the variable. The skip list comes from Get-SkipList, so the
+  # dropped names and the announced plan can never be two different parses.
+  $skip = Get-SkipList
   foreach ($raw in (Get-Content -LiteralPath $RosterPath)) {
     $line = ("$raw" -replace '#.*$', '').Trim()
     if (-not $line) { continue }
@@ -29,16 +40,6 @@ function Read-SuiteRoster {
     if ($skip -contains $name) { continue }
     [pscustomobject]@{ Name = $name; Foreground = $fg }
   }
-}
-
-# THE parsed MNPDF_SKIP_SUITES list, trimmed the way Read-SuiteRoster trims it.
-# One owner for the parse: test-ci.ps1 used to split and trim the same string a
-# second time for its plan line, and the plan count went wrong the moment the two
-# copies disagreed.
-function Get-SkipList {
-  $skip = @()
-  if ($env:MNPDF_SKIP_SUITES) { $skip = $env:MNPDF_SKIP_SUITES.Split(',') | ForEach-Object { $_.Trim() } }
-  return @($skip | Where-Object { $_ })
 }
 
 # THE environment a suite run owes its caller back. The suite's child shell
