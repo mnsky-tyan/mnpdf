@@ -34,7 +34,7 @@ try {
   # "all suites OK" must never quietly mean "all but one".
   $plan = @(Read-SuiteRoster (Join-Path $PSScriptRoot 'suites.txt'))
   if ($env:MNPDF_SKIP_SUITES) {
-    $skipped = @($env:MNPDF_SKIP_SUITES.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    $skipped = Get-SkipList
     Write-Output ("CI: roster {0} suite(s); MNPDF_SKIP_SUITES drops: {1}" -f $plan.Count, ($skipped -join ', '))
   } else {
     Write-Output ("CI: roster {0} suite(s); none skipped" -f $plan.Count)
@@ -55,11 +55,17 @@ try {
       $env:MNPDF_GATE_EXE = $exe
       $env:MNPDF_GATE_STATE = $state
       $env:MNPDF_GATE_SUITE = Join-Path $repo ($s.Name + '.ps1')
-      if ($s.Foreground) { Remove-Item Env:MNPDF_BACKGROUND -ErrorAction SilentlyContinue }
-      else { $env:MNPDF_BACKGROUND = '1' }
-      & $psExe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command (". '{0}'; Invoke-SuiteRun" -f ($gateCommon -replace "'", "''"))
+      # THE foreground decision, from the same function Invoke-SuiteRun uses
+      Set-SuiteForeground -Foreground ([bool]$s.Foreground)
+      # bounded in wall-clock like the WSL runner's `timeout`: a hung suite is
+      # killed with its tree and reported, instead of spending the whole job on
+      # one suite and leaving no per-suite log behind
+      $childArgs = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+                     '-Command', (". '{0}'; Invoke-SuiteRun" -f ($gateCommon -replace "'", "''")))
+      $LASTEXITCODE = Invoke-Bounded -FilePath $psExe -ArgumentList $childArgs `
+                                       -TimeoutSeconds 900 -What "suite $($s.Name)"
     } finally {
-      foreach ($name in 'MNPDF_GATE_EXE', 'MNPDF_GATE_STATE', 'MNPDF_GATE_SUITE') {
+      foreach ($name in $script:RunnerSeamNames) {
         Remove-Item "Env:$name" -ErrorAction SilentlyContinue
       }
       if ($null -ne $restoreBg) { $env:MNPDF_BACKGROUND = $restoreBg }

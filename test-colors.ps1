@@ -40,22 +40,16 @@ $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot\tests\lib.ps1"
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, System.Drawing
 [MN]::SetProcessDpiAwarenessContext([IntPtr](-4)) | Out-Null   # PER_MONITOR_AWARE_V2
-Add-Type -TypeDefinition @"
-using System;
-using System.Text;
-using System.Runtime.InteropServices;
-public delegate bool EnumWindowsProcCol(IntPtr h, IntPtr l);
-public static class CL {
-  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassNameW(IntPtr h, StringBuilder s, int n);
-  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProcCol cb, IntPtr l);
-  [DllImport("user32.dll")] public static extern IntPtr GetParent(IntPtr h);
-  [DllImport("user32.dll")] public static extern int GetWindowLongW(IntPtr h, int i);
-  [DllImport("user32.dll")] public static extern IntPtr GetDlgItem(IntPtr h, int id);
-  [DllImport("user32.dll")] public static extern bool IsWindowEnabled(IntPtr h);
-  [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr hdc, uint f);
-  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);
-}
-"@
+# Interop NOTE: no Add-Type block of its own. This suite once imported a SECOND,
+# identical [CL] type (user32 EnumWindows/GetParent/GetClassLongW and a
+# GetDlgItem that takes an IntPtr dialog, not an int id) while this file still
+# called [CL]::EnumWindows everywhere. Add-Type is lexical-scoped to the file
+# that created it, so a load order where lib.ps1 came first and someone pasted
+# that block back in would either shadow the shared type or abort the suite with
+# "The type name 'CL' already exists". Everything the shared [MN]/[CL] surface
+# already has - EnumWindows, GetClassNameW, GetParent, GetDlgItem,
+# IsWindowEnabled, SendText - comes from there. Nothing else is imported here:
+# the shared GetDlgItem takes an int, which is what a real dialog always gets.
 
 $doc = Join-Path $PSScriptRoot 'tests\arc.pdf'
 $exe = Resolve-AppExe
@@ -73,7 +67,7 @@ $appPref = Join-Path $env:APPDATA 'mnpdf\app.txt'
 function FindColorBox([int]$ProcId, [IntPtr]$Owner) {
   $script:hit = [IntPtr]::Zero
   $script:found = $false
-  $cb = [EnumWindowsProcCol]{
+  $cb = [EnumWinProc]{
     param($h, $l)
     $wpId = 0
     [void][MN]::GetWindowThreadProcessId($h, [ref]$wpId)
@@ -93,7 +87,7 @@ function FindColorBox([int]$ProcId, [IntPtr]$Owner) {
 function FindDlgCol([int]$ProcId) {
   $script:hit = [IntPtr]::Zero
   $script:found = $false
-  $cb = [EnumWindowsProcCol]{
+  $cb = [EnumWinProc]{
     param($h, $l)
     $wpId = 0
     [void][MN]::GetWindowThreadProcessId($h, [ref]$wpId)
@@ -110,37 +104,24 @@ function FindDlgCol([int]$ProcId) {
 }
 # WM_GETTEXT, not GetWindowTextW: the title call is blind on a control owned by
 # another process and answers with whatever text the control was created with,
-# not what the reader typed into it
-function BoxText([IntPtr]$Box) {
-  if ($Box -eq [IntPtr]::Zero) { return '' }
-  $b = [char[]]::new(64)
-  [void][MN]::SendText($Box, 0x000D, [IntPtr]64, $b)
-  # WM_GETTEXT fills the text and one NUL and writes nothing further, so the
-  # rest of the buffer is whatever the CLR had in it there. A raw join keeps
-  # that garbage attached to the text ("#e", "#d") or in front of it (""),
-  # which reads as a broken box when the box was right all along; the text is
-  # everything before the first NUL, so cut there.
-  $s = -join $b
-  $z = $s.IndexOf([char]0)
-  if ($z -ge 0) { $s = $s.Substring(0, $z) }
-  return $s
-}
+# not what the reader typed into it. The shared Control-Text (tests\lib.ps1) is
+# that rule, written once.
+function BoxText([IntPtr]$Box) { return (Control-Text $Box) }
 # every visible string inside a dialog body, for the same reason
 function DlgBody([IntPtr]$Dlg) {
   if ($Dlg -eq [IntPtr]::Zero) { return '' }
-  # The dialog's STATIC texts, read with WM_GETTEXT via [MN]::SendText. This
-  # used to go through UI Automation, which returned an empty tree for a dialog
-  # sitting on another virtual desktop (the gate runs every window on 'second');
-  # raw messages do not care which desktop a window lives on.
+  # The dialog's STATIC texts, read with WM_GETTEXT via [MN]::SendText (the shared
+  # Control-Text rule, not a second copy of it: the text is everything before the
+  # first NUL). This used to go through UI Automation, which returned an empty
+  # tree for a dialog sitting on another virtual desktop (the gate runs every
+  # window on 'second'); raw messages do not care which desktop a window lives on.
   try {
     $parts = @()
     $prev = [IntPtr]::Zero
     while ($true) {
       $prev = [MN]::FindWindowExW($Dlg, $prev, 'Static', [IntPtr]::Zero)
       if ($prev -eq [IntPtr]::Zero) { break }
-      $b = New-Object char[] 4096
-      [void][MN]::SendText($prev, 0x000D, [IntPtr]4095, $b)
-      $t = (-join $b).TrimEnd([char]0)
+      $t = Control-Text $prev
       if ($t) { $parts += $t }
     }
     return ($parts -join "`n")
@@ -150,24 +131,16 @@ function PrefLines {
   (Get-Content $appPref -ErrorAction SilentlyContinue) |
     Where-Object { $_ -match '^(hlcolor|pincolor|pal[0-9]+|palnext)=' }
 }
-# the app flushes its prefs on a debounce, not at the instant of the click
+# the app flushes its prefs on a debounce, not at the instant of the click.
+# Await (tests\lib.ps1) is that poller; these two wrappers used to re-implement
+# its deadline loop verbatim for one different condition.
 function AwaitPref([string]$Pattern, [int]$TimeoutMs = 5000) {
-  $deadline = (Get-Date).AddMilliseconds($TimeoutMs)
-  do {
-    if (((PrefLines) -join ' ') -match $Pattern) { return $true }
-    Start-Sleep -Milliseconds 100
-  } while ((Get-Date) -lt $deadline)
-  return $false
+  return (Await { ((PrefLines) -join ' ') -match $Pattern } $TimeoutMs)
 }
 # PrefLines keeps only the palette keys, so a preference outside that set
 # (night mode) is polled against the whole file
 function AwaitPrefRaw([string]$Pattern, [int]$TimeoutMs = 5000) {
-  $deadline = (Get-Date).AddMilliseconds($TimeoutMs)
-  do {
-    if ((Get-Content $appPref -Raw -ErrorAction SilentlyContinue) -match $Pattern) { return $true }
-    Start-Sleep -Milliseconds 100
-  } while ((Get-Date) -lt $deadline)
-  return $false
+  return (Await { (Get-Content $appPref -Raw -ErrorAction SilentlyContinue) -match $Pattern } $TimeoutMs)
 }
 # type the six hex digits the way a reader does, one keystroke at a time
 # Open the box, replace what is in it with a typed entry, and commit it with
@@ -203,12 +176,18 @@ function TypeHex([IntPtr]$Box, [string]$Hex) {
   }
 }
 function AwaitBox([int]$ProcId, [IntPtr]$Owner, [int]$TimeoutMs = 4000) {
-  for ($i = 0; $i -lt ($TimeoutMs / 20); $i++) {
-    $b = FindColorBox $ProcId $Owner
-    if ($b -ne [IntPtr]::Zero -and [MN]::IsWindowVisible($b)) { return $b }
-    Start-Sleep -Milliseconds 20
-  }
-  return [IntPtr]::Zero
+  # The HANDLE, not just "it appeared": OpenColorBox reads the box's own text from
+  # this return value. The shared Await answers true/false, so the handle is
+  # carried in a script-scope slot the same way FindColorBox already carries its
+  # hit, and answering true here once silently handed OpenColorBox $true - which
+  # then read the text of a handle that is not a window, and every colour case
+  # failed from there on.
+  $script:boxHit = [IntPtr]::Zero
+  $null = Await {
+    $script:boxHit = FindColorBox $ProcId $Owner
+    $script:boxHit -ne [IntPtr]::Zero
+  } $TimeoutMs
+  return $script:boxHit
 }
 # the app's own menu opens the entry box: CMD_CUSTOM_HL_COLOR = Custom... on the
 # default highlight colour, CMD_CUSTOM_PIN_COLOR = the same on the default pin
@@ -236,34 +215,56 @@ function OpenColorBox([int]$ProcId, [IntPtr]$Wnd, [int]$Cmd, [int]$Attempts = 6)
 # Dismiss a dialog. The command is SENT to the dialog itself: a posted command
 # is not seen this way (measured: a posted IDYES left the confirmation up and
 # the app thread modal), and a click on the button is dropped while the dialog
-# is still being built. It does not come back while a dialog is still on
-# screen, because the next case would then read this one's buttons.
+# is still being built. It answers $true only when no dialog is left on screen.
+#
+# The id passed in is the FIRST try, not the only one. An MB_OK box's button is
+# not necessarily id 1 on this OS: measured 2026-10-12, the colour-error message
+# box (built with MB_OK | MB_ICONWARNING in src/main.cpp showColorError) carries
+# its single "OK" button at control id 2 - GetDlgItem(dlg, 1) answers 0 while
+# GetDlgItem(dlg, 2) answers the button - so a WM_COMMAND with id 1 is simply
+# ignored and the box never closes. The clear-confirmation boxes do answer their
+# declared ids (IDNO 7, IDYES 6), so the declared id goes first and the standard
+# message-box ids follow. Each try is bounded, then the real control is clicked
+# for a dialog that wants a click rather than a command.
+#
+# The verdict is the CALLER's, not this function's: every call site takes the
+# return value into an if-condition, and anything a function prints into a
+# pipeline is swallowed by it - a Fail written in here would count the failure
+# and never reach the log.
 function DismissDlg([int]$ProcId, [int]$Button, [int]$TimeoutMs = 8000) {
-  $deadline = (Get-Date).AddMilliseconds($TimeoutMs)
-  do {
+  # wait for a dialog to be on screen at all: the command that raised it was
+  # posted a moment ago, and a dismissal sent before it exists is sent to nothing
+  $script:dlgHit = [IntPtr]::Zero
+  if (-not (Await { $script:dlgHit = FindDlgCol $ProcId; $script:dlgHit -ne [IntPtr]::Zero } $TimeoutMs)) {
+    return $true              # nothing ever appeared: nothing was left on screen
+  }
+  foreach ($id in (@($Button, 1, 2) | Select-Object -Unique)) {
     $d = FindDlgCol $ProcId
-    if ($d -ne [IntPtr]::Zero) {
-      [void][MN]::SendMessageW($d, 0x0111, [IntPtr]$Button, [IntPtr]::Zero)   # WM_COMMAND, the button id
+    if ($d -eq [IntPtr]::Zero) { return $true }
+    [void][MN]::SendMessageW($d, 0x0111, [IntPtr]$id, [IntPtr]::Zero)     # WM_COMMAND
+    $gone = (Get-Date).AddMilliseconds(2000)
+    while ((Get-Date) -lt $gone -and (FindDlgCol $ProcId) -ne [IntPtr]::Zero) {
+      Start-Sleep -Milliseconds 75
+    }
+    if ((FindDlgCol $ProcId) -eq [IntPtr]::Zero) { return $true }
+    $btn = [CL]::GetDlgItem($d, $id)
+    if ($btn -ne [IntPtr]::Zero -and [CL]::IsWindowEnabled($btn)) {
+      Start-Sleep -Milliseconds 150
+      [void][MN]::SendMessageW($btn, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)   # BM_CLICK
       $gone = (Get-Date).AddMilliseconds(2000)
       while ((Get-Date) -lt $gone -and (FindDlgCol $ProcId) -ne [IntPtr]::Zero) {
         Start-Sleep -Milliseconds 75
       }
-      if ((FindDlgCol $ProcId) -eq [IntPtr]::Zero) { return $d }
-      # fall back to clicking the real control, for a dialog that wants it
-      $btn = [CL]::GetDlgItem($d, $Button)
-      if ($btn -ne [IntPtr]::Zero -and [CL]::IsWindowEnabled($btn)) {
-        Start-Sleep -Milliseconds 150
-        [void][MN]::SendMessageW($btn, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)   # BM_CLICK
-        $gone = (Get-Date).AddMilliseconds(2000)
-        while ((Get-Date) -lt $gone -and (FindDlgCol $ProcId) -ne [IntPtr]::Zero) {
-          Start-Sleep -Milliseconds 75
-        }
-      }
-      return $d
+      if ((FindDlgCol $ProcId) -eq [IntPtr]::Zero) { return $true }
     }
-    Start-Sleep -Milliseconds 50
-  } while ((Get-Date) -lt $deadline)
-  return [IntPtr]::Zero
+  }
+  # a box can still be appearing while the ids are being tried
+  $deadline = (Get-Date).AddMilliseconds(1000)
+  while ((Get-Date) -lt $deadline) {
+    if ((FindDlgCol $ProcId) -eq [IntPtr]::Zero) { return $true }
+    Start-Sleep -Milliseconds 100
+  }
+  return $false
 }
 # A minimised window reports a 0x0 client, so a capture taken from one reads a
 # sentinel and nothing else. An unexplained SC_MINIMIZE arrives at this app from
@@ -433,9 +434,13 @@ try {
     if (-not $markedOk) { Fail 'the mark on the page really is that colour' 'the mark never reached the picture' }
   }
   $marked = if ($painted -and $markedOk) { ColourCount $wnd } else { $null }
-  $sc = Get-ChildItem (Join-Path $env:APPDATA 'mnpdf\doc-*.txt') -ErrorAction SilentlyContinue |
-        Select-Object -First 1
-  $sideColor = if ($sc) { ([regex]::Match((Get-Content $sc.FullName -Raw), 'hl=\d+,\d+,\d+,(\d+)')).Groups[1].Value } else { '' }
+  # the sidecar is located by the app's own filename hash (SidecarFor), not by
+  # a glob taking the first doc-*.txt: a suite run against a %APPDATA% that holds
+  # another document's sidecar would read THAT file and answer "no custom slot"
+  # for a colour it had just stored - which is exactly what this case measured
+  # locally, and exactly how an isolated run stays honest.
+  $sc = SidecarFor $doc
+  $sideColor = if (Test-Path -LiteralPath $sc) { ([regex]::Match((Get-Content -LiteralPath $sc -Raw), 'hl=\d+,\d+,\d+,(\d+)')).Groups[1].Value } else { '' }
   if ($marked) {
     if ($before.cool -eq 0 -and $marked.cool -gt 500) {
       Pass 'a highlight painted in that colour reads as that colour on the page'
@@ -482,7 +487,8 @@ try {
       Fail ('an invalid colour is explained at once and leaves the box open (box open {0}, body {1})' -f
             [MN]::IsWindowVisible($box), ($body -replace "`r?`n", ' | '))
     }
-    DismissDlg $proc.Id 2 | Out-Null                                        # OK
+    # the box is MB_OK | MB_ICONWARNING, so its one button is IDOK (1)
+    if (-not (DismissDlg $proc.Id 1)) { Fail 'an invalid colour is explained at once' 'a dialog stayed on screen after IDOK and BM_CLICK' }
   }
 
   # ---- case 5: typed then clicked away keeps the colour ------------------
@@ -503,13 +509,13 @@ try {
   # With only three slots, a reader who wants a different set has to be able to
   # start from empty, and it asks first and says what happens to the marks.
   [void][MN]::PostMessageW($wnd, 0x0111, [IntPtr]$CMD_CLEAR_CUSTOM, [IntPtr]::Zero)
-  DismissDlg $proc.Id 7 | Out-Null                                          # No, first
+  if (-not (DismissDlg $proc.Id 7)) { Fail 'clearing asks first' 'the confirmation stayed up after No, so the next case would read its buttons' }
   $pf = (PrefLines) -join ' '
   if ($pf -match 'pal[0-9]+=') {
     Pass 'clearing asks first, and No keeps the colours'
   } else { Fail ('clearing asks first, and No keeps the colours ({0})' -f $pf) }
   [void][MN]::PostMessageW($wnd, 0x0111, [IntPtr]$CMD_CLEAR_CUSTOM, [IntPtr]::Zero)
-  DismissDlg $proc.Id 6 | Out-Null                                          # Yes
+  if (-not (DismissDlg $proc.Id 6)) { Fail 'clearing empties the slots' 'the confirmation stayed up after Yes' }
   $keep = $null
   for ($w = 0; $w -lt 40; $w++) {
     $keep = (PrefLines) -join ' '

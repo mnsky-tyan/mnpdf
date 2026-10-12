@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [main]
 
+# a push and the PR it opens must not double-run the same suites
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   windows-suite:
     runs-on: windows-latest
@@ -20,3 +25,18 @@ jobs:
       - name: Build and run the nine suites
         shell: cmd
         run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test-ci.ps1
+
+      # A failure has to leave its evidence behind: test-ci.ps1 deletes a
+      # suite's isolated state dir only on success, so on a failure the log that
+      # says WHICH case failed is still there - and a cancelled run keeps it for
+      # the same reason. Without this step a red check gives a reader nothing to
+      # look at (the same asymmetry that once made one local failure unreadable).
+      - name: Upload the suite logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: suite-logs
+          path: |
+            ${{ runner.temp }}\mnpdf-ci-*\**
+          if-no-files-found: ignore
+          retention-days: 7

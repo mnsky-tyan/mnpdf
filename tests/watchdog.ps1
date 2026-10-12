@@ -9,7 +9,10 @@
 # generated code once did.
 #
 # Invoked positionally (powershell.exe -File does not bind named parameters):
-#   ParentPid LibPath AppPref Marker Backup Missing [Sentinel]
+#   ParentPid LibPath AppPref Marker Backup Missing Sentinel
+# The sentinel is Mandatory, with no local default: Init-PrefForge is its only
+# owner, and a stale default here would let the watchdog stop recognising a
+# forged app.txt while still deleting the backup and missing markers.
 param(
   [Parameter(Mandatory=$true)][int]$ParentPid,
   [Parameter(Mandatory=$true)][string]$LibPath,
@@ -17,7 +20,7 @@ param(
   [Parameter(Mandatory=$true)][string]$Marker,
   [Parameter(Mandatory=$true)][string]$Backup,
   [Parameter(Mandatory=$true)][string]$Missing,
-  [string]$Sentinel = 'test-forged=1'
+  [Parameter(Mandatory=$true)][string]$Sentinel
 )
 $ErrorActionPreference = 'Stop'
 . $LibPath

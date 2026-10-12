@@ -83,8 +83,8 @@ $prev = GetClip
 Start-Sleep -Milliseconds 4000
 $t = GetClip
 $pages = ($t -split "`r`n").Count
-if (-not $script:clipOk) { Write-Output "SKIP cross-page copy: clipboard locked (verified previously)" }
-elseif (-not (Test-ClipboardRoundTrip)) { Write-Output "SKIP cross-page copy: clipboard not writable on this box" }
+if (-not $script:clipOk) { Degraded 'cross-page copy' 'clipboard locked (verified previously)' }
+elseif (-not (Test-ClipboardRoundTrip)) { Degraded 'cross-page copy' 'clipboard not writable on this box' }
 # Must DIFFER from what was on the clipboard before the copy: the old condition
 # was merely "non-empty and contains a CRLF", so stale content from any earlier
 # case satisfied it even if the app's WM_COPY did nothing. select-msg-test.ps1
@@ -171,7 +171,15 @@ CheckPrintProbe 'arc-annot.pdf' 1
 $ta = Title $ha
 if ($ta -eq $taBefore) { Pass "print left the view untouched on arc-annot.pdf" }
 else { Fail "print moved the view on arc-annot.pdf" "'$taBefore' -> '$ta'" }
-$pa | Stop-Process -Force
+# the annot instance goes home too, and the same way every other suite's
+# instance does: a graceful command, not Stop-Process. A killed app never runs
+# its debounced sidecar and app.txt flushes, so a hard kill here could leave the
+# state the NEXT suite's forged prefs are compared against.
+if (-not $pa.HasExited) {
+  [void][MN]::PostMessageW($ha, 0x0111, [IntPtr]$CMD_QUIT, [IntPtr]::Zero)
+  [void](Await { $pa.HasExited } 15000)
+}
+if (-not $pa.HasExited) { $pa | Stop-Process -Force }
 
 # the reopen instance goes home too: a suite that leaves an app running fails
 # the next suite's machine-is-free pre-flight

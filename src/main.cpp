@@ -65,6 +65,30 @@ static const std::wstring kDownloadBaseUrl =
     std::wstring(kGitHubRoot) + L"/" + kRepoPath + L"/releases/download/";
 static std::atomic<bool> gUpdateInstallRunning = false;
 static const int kUpdateCheckIntervalMin = 60;    // self-imposed: one request per hour
+// One answer to "is this the same spot on the page?", used by the pin/sidecar
+// identity test, the tomb match and the baked-annotation comparison. It used to be
+// a bare 2.0 in four places and 1.5 in a fifth, and the one that disagreed let a
+// baked annotation survive a save beside a brand-new pin.
+static const double kSpotTolPt = 2.0;
+// the baked-annotation comparison runs against FS_RECTF values that survived a
+// save round trip, so it may hold a tighter bound than the sidecar identity test
+static const double kSpotTolBakePt = 1.5;
+// one bound for the "the box commits on focus loss, but not inside its first
+// moments" rule. It is a three-way contract (the pin editor, the colour box and
+// test-colors.ps1, which waits the same number before it clicks away), so it lives
+// here instead of as a bare 400 in four comparisons.
+static const DWORD kBoxFocusGraceMs = 400;
+// matching a stamp back to the page object that was stamped: this one is a bounds
+// equality, not "the same spot", and it is deliberately the tightest of the four
+static const double kStampBoundsTol = 0.25;
+// one caption per feature: the update dialog, its refusal box and the tray title
+// used to spell the same feature three ways, and test-release.ps1 finds the
+// refusal by title - so a caption is a test contract, not cosmetics
+static const wchar_t* const kCaptionUpdate      = L"mnpdf updates";
+static const wchar_t* const kCaptionUpdateRefuse = L"mnpdf update";
+static const wchar_t* const kCaptionUpdateOffer  = L"mnpdf update available";
+static const wchar_t* const kCaptionSignature   = L"Place signature";
+static const wchar_t* const kCaptionSplit       = L"Split pages";
 static HWND gWnd = nullptr;
 static std::atomic<bool> gUpdateCheckRunning = false;
 static std::atomic<bool> gManualUpdateRequested = false;
@@ -379,7 +403,8 @@ static int hlIndexOf(const Hl& v) {
 
 // a pin carries no id, so a value-based op addresses one by page/point/text
 static bool pinSame(const Pin& a, const Pin& b) {
-    return a.page == b.page && fabs(a.x - b.x) < 2.0 && fabs(a.y - b.y) < 2.0 && a.text == b.text;
+    return a.page == b.page && fabs(a.x - b.x) < kSpotTolPt && fabs(a.y - b.y) < kSpotTolPt
+           && a.text == b.text;
 }
 
 // every pinadd/pindel undo shifts the vector, and two notes can share a spot and
@@ -584,10 +609,49 @@ static int docLeft() {
     return slack > 0 ? slack / 2 : -gScrollX;
 }
 
+// the app's only dpi rule, in one place: a 96-dpi design px on this window
+// (every chrome size below used to spell the MulDiv out by hand)
+static int dpiPx(int px) { return MulDiv(px, GetDpiForWindow(gWnd), USER_DEFAULT_SCREEN_DPI); }
+
 static int tabStripH() {
     if (!gTabStrip) return 0;                   // toggled away: the document takes the whole client
-    int h = MulDiv(30, GetDpiForWindow(gWnd), USER_DEFAULT_SCREEN_DPI);
+    int h = dpiPx(30);
     return h < 26 ? 26 : h;
+}
+
+// close a popup window exactly once: the window's own WM_DESTROY may already have
+// nulled its slot, so the handle is snapshotted first and the slot cleared before
+// DestroyWindow runs. Written out eight times before it lived here.
+static void destroyPopup(HWND& slot) {
+    if (!slot) return;
+    HWND dead = slot;
+    slot = nullptr;
+    DestroyWindow(dead);
+}
+
+// register a window class once, on first use: the five popups used to carry this
+// block inline with their own static flag, so a rename was five edits
+static void registerOnce(bool* done, const wchar_t* cls, WNDPROC proc, HINSTANCE inst, HBRUSH bg) {
+    if (*done) return;
+    WNDCLASSEXW wc = { sizeof(wc) };
+    wc.lpfnWndProc = proc;
+    wc.hInstance = inst;
+    wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    wc.hbrBackground = bg;
+    wc.lpszClassName = cls;
+    RegisterClassExW(&wc);
+    *done = true;                       // a repeat registration only fails the class name
+}
+
+// the same, for the one class registered through RegisterClassW
+static void registerOncePlain(const wchar_t* cls, WNDPROC proc, HINSTANCE inst, HBRUSH bg) {
+    WNDCLASSW tc = { 0 };
+    tc.lpfnWndProc = proc;
+    tc.hInstance = inst;
+    tc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    tc.hbrBackground = bg;
+    tc.lpszClassName = cls;
+    RegisterClassW(&tc);
 }
 
 // the strip band is chrome above the document, so the document's viewport is the
@@ -605,6 +669,29 @@ static int docTop() {
 
 static int pageVx(int i) { return docLeft() + pageLeftPx(i); }   // viewport x
 static int pageVy(int i) { return docTop() + yTopPx(i); }        // viewport y
+
+// is any part of this page on screen? Written out identically in three draw
+// paths before it lived here.
+static bool pageInView(int page) {
+    int vy = pageVy(page), vh = pageHpx(page);
+    return !(vy + vh < 0 || vy > gClientH);
+}
+
+// the page rect clipped to the client, in client coords. The clip was computed
+// by hand (with two different local names) inside renderPage's paper pass and
+// again inside its night pass.
+static bool clipPageRect(int page, int* x0, int* y0, int* x1, int* y1) {
+    int vx = pageVx(page), vy = pageVy(page);
+    int w = pageWpx(page), h = pageHpx(page);
+    int lx = vx > 0 ? vx : 0, ly = vy > 0 ? vy : 0;
+    int hx = vx + w < gClientW ? vx + w : gClientW;
+    int hy = vy + h < gClientH ? vy + h : gClientH;
+    if (x0) *x0 = lx;
+    if (y0) *y0 = ly;
+    if (x1) *x1 = hx;
+    if (y1) *y1 = hy;
+    return hx > lx && hy > ly;
+}
 
 static void clampScroll() {
     if (!gPrefixPt || !gDocPages) { gScrollX = gScrollY = 0; return; }   // no doc yet
@@ -927,9 +1014,11 @@ static void copyTextRange(int p0, int i0, int p1, int i1) {
     CloseClipboard();
 }
 
-// create the 1x1 highlight source for a slot on first use; BGRA byte order
-// (writing a COLORREF here would swap R and B)
-static HDC highlightDC(HDC* slot, BYTE bb, BYTE gg, BYTE rr) {
+// create the 1x1 highlight source for a slot on first use; BGRA byte order.
+// The parameters are R, G, B like every other colour API in this file (a COLORREF
+// or RGB order), NOT the byte order written into the DIB - three call sites used
+// to have to remember to reverse the pair.
+static HDC highlightDC(HDC* slot, BYTE rr, BYTE gg, BYTE bb) {
     if (*slot) return *slot;
     HDC screen = GetDC(nullptr);
     *slot = CreateCompatibleDC(screen);
@@ -1011,7 +1100,7 @@ static void drawSelection() {
     if (!gMemDC || !hasSelection()) return;
     int p0, i0, p1, i1;
     selRange(&p0, &i0, &p1, &i1);
-    HDC src = highlightDC(&gHiSelection, 215, 120, 0);
+    HDC src = highlightDC(&gHiSelection, 0, 120, 215);   // the selection blue
     for (int p = p0; p <= p1; p++) {
         FPDF_TEXTPAGE tp; int s, e;
         if (!pageSlice(p, p0, i0, p1, i1, &tp, &s, &e)) continue;
@@ -1110,9 +1199,10 @@ static void deleteHighlight(int idx) {
 // ---- pins ----
 
 // pin dot radius: grows with zoom so it reads as part of the page, but stays
-// hittable when zoomed far out and modest when zoomed far in
-static int pinRadius(double zoom) {
-    int r = (int)(3.0 * zoom);                     // a shade smaller than before
+// hittable when zoomed far out and modest when zoomed far in. It reads gZoom
+// directly: both call sites passed it, so the parameter bought nothing.
+static int pinRadius() {
+    int r = (int)(3.0 * gZoom);                    // a shade smaller than before
     if (r < 3) r = 3;
     if (r > 14) r = 14;
     return r;
@@ -1123,13 +1213,12 @@ static int pinRadius(double zoom) {
 struct PinDraw { int x, y, r; COLORREF color; };
 
 static bool pinDrawPos(const Pin& pn, PinDraw* out) {
-    int vy = pageVy(pn.page), vh = pageHpx(pn.page);
-    if (vy + vh < 0 || vy > gClientH) return false;      // page not in view
+    if (!pageInView(pn.page)) return false;      // page not in view
     double ax, ay;
     pagePtToPx(pn.page, pn.x, pn.y, &ax, &ay);
     out->x = pageVx(pn.page) + (int)ax;
     out->y = pageVy(pn.page) + (int)ay;
-    out->r = pinRadius(gZoom);
+    out->r = pinRadius();
     if (!palColor(pn.color, out->color)) out->color = gPalPreset[kPalPreset - 1];
     return true;
 }
@@ -1173,7 +1262,7 @@ static int pinAt(int cx, int cy) {
     pagePxToPt(i, cx - docLeft() - pageLeftPx(i), docY - yTopPx(i), &px, &py);
     // the hover target stays a comfortable 8px even when the dot itself
     // has shrunk, so a small pin is still easy to hover
-    double hr = (double)pinRadius(gZoom) / gZoom;
+    double hr = (double)pinRadius() / gZoom;
     double minHr = 8.0 / gZoom;
     if (hr < minHr) hr = minHr;
     for (int k = 0; k < (int)gPins.size(); k++) {
@@ -1186,7 +1275,7 @@ static int pinAt(int cx, int cy) {
 static void commitPinEdit();                       // fwd
 
 static void destroyPinBox() {
-    if (gPinBox) { HWND b = gPinBox; gPinBox = nullptr; DestroyWindow(b); }
+    destroyPopup(gPinBox);
     // gPinBoxFont is the shared note font: freed once at shutdown, not here
 }
 
@@ -1431,14 +1520,14 @@ static LRESULT CALLBACK pinBoxProc(HWND b, UINT m, WPARAM wp, LPARAM lp) {
     }
     case WM_KILLFOCUS:
         // a transient activation (a closing menu re-activating us) must not
-        // commit a box that only just opened. The 400 ms is a contract with the
-        // colour box and its suite: test-colors.ps1 waits out the same grace
-        // before it clicks away, because both boxes must ignore a focus loss
-        // they did not ask for (src/main.cpp colorBoxProc says the same).
-        if (GetTickCount() - gPinBoxBorn > 400) commitPinEdit();
+        // commit a box that only just opened. The kBoxFocusGraceMs grace is a
+        // contract with the colour box and its suite: test-colors.ps1 waits out
+        // the same bound before it clicks away, because both boxes must ignore a
+        // focus loss they did not ask for (colorBoxProc says the same).
+        if (GetTickCount() - gPinBoxBorn > kBoxFocusGraceMs) commitPinEdit();
         return 0;
     case WM_ACTIVATE:
-        if (LOWORD(wp) == WA_INACTIVE && GetTickCount() - gPinBoxBorn > 400) {
+        if (LOWORD(wp) == WA_INACTIVE && GetTickCount() - gPinBoxBorn > kBoxFocusGraceMs) {
             commitPinEdit(); return 0;
         }
         break;
@@ -1622,14 +1711,13 @@ static void rotatePage(int page, int dir) {              // dir: +1 CW, -1 CCW
 static void drawHighlights() {
     if (!gMemDC || gHls.empty()) return;
     for (const Hl& h : gHls) {
-        int vy = pageVy(h.page), vh = pageHpx(h.page);
-        if (vy + vh < 0 || vy > gClientH) continue;      // page not in view
+        if (!pageInView(h.page)) continue;        // page not in view
         FPDF_TEXTPAGE tp = textPageOf(h.page);
         if (!tp) continue;
         COLORREF hc;
         if (!palColor(h.color, hc)) hc = gPalPreset[0];
         blendCharRects(h.page, tp, h.start, h.count,
-                       highlightDC(&gHiHl[h.color], GetBValue(hc), GetGValue(hc), GetRValue(hc)));
+                       highlightDC(&gHiHl[h.color], GetRValue(hc), GetGValue(hc), GetBValue(hc)));
     }
 }
 
@@ -1640,7 +1728,7 @@ static void drawMatches() {
         bool active = m == gMatchActive;
         blendCharRects(gPageIndex, textPageOf(gPageIndex), gMatches[m].start, gMatches[m].count,
                        highlightDC(active ? &gHiActive : &gHiMatch,
-                                   0, active ? 150 : 208, 255));
+                                   255, active ? 150 : 208, 0));
     }
 }
 
@@ -1897,11 +1985,9 @@ static void renderPage() {
         // the letterbox. Paint the visible part of the page rect white first;
         // a PDF that draws its own background simply overdraws it.
         {
-            int x0 = vx > 0 ? vx : 0, yy0 = vy > 0 ? vy : 0;
-            int x1 = vx + w < gClientW ? vx + w : gClientW;
-            int y1 = vy + h < gClientH ? vy + h : gClientH;
-            if (x1 > x0 && y1 > yy0)
-                FPDFBitmap_FillRect(gPdfBitmap, x0, yy0, x1 - x0, y1 - yy0, 0xFFFFFFFF);
+            int px0 = 0, py0 = 0, px1 = 0, py1 = 0;
+            if (clipPageRect(i, &px0, &py0, &px1, &py1))
+                FPDFBitmap_FillRect(gPdfBitmap, px0, py0, px1 - px0, py1 - py0, 0xFFFFFFFF);
         }
         FPDF_RenderPageBitmap(gPdfBitmap, p, vx, vy, w, h, gRot[i], FPDF_ANNOT | FPDF_LCD_TEXT);
     }
@@ -1920,10 +2006,8 @@ static void renderPage() {
             if (ty >= bottom) break;                 // pages are in order
             int th = pageHpx(i);
             if (ty + th <= top) continue;
-            int vx = pageVx(i), vy = pageVy(i), vw = pageWpx(i);
-            int x0 = vx > 0 ? vx : 0, ny0 = vy > 0 ? vy : 0;
-            int x1 = vx + vw < gClientW ? vx + vw : gClientW;
-            int ny1 = vy + th < gClientH ? vy + th : gClientH;
+            int x0 = 0, ny0 = 0, x1 = 0, ny1 = 0;
+            clipPageRect(i, &x0, &ny0, &x1, &ny1);   // same clip as the paper pass above
             for (int y = ny0; y < ny1; y++) {
                 BYTE* row = inv + y * istr;
                 for (int x = x0; x < x1; x++) {
@@ -2362,6 +2446,21 @@ static std::wstring fetchLatestReleaseTag() {
                 const std::wstring marker = L"/releases/tag/";
                 size_t tag = target.rfind(marker);
                 result = tag == std::wstring::npos ? L"" : target.substr(tag + marker.size());
+                // the tag becomes a URL path component and a %TEMP% file/folder name,
+                // so the substring the redirect happens to carry is not taken on
+                // trust: only digits, letters, dot, dash and underscore pass.
+                // parseVersion already defines what a legitimate tag looks like, and
+                // anything else is refused here rather than turned into a path
+                int a = 0, b = 0, c = 0;
+                if (!result.empty()) {
+                    bool clean = true;
+                    for (wchar_t ch : result) {
+                        bool ok = (ch >= L'0' && ch <= L'9') || (ch >= L'a' && ch <= L'z')
+                               || (ch >= L'A' && ch <= L'Z') || ch == L'.' || ch == L'-' || ch == L'_';
+                        if (!ok) { clean = false; break; }
+                    }
+                    if (!clean || !parseVersion(result, a, b, c)) result.clear();
+                }
             }
         }
         good = haveLocation && !result.empty();
@@ -2399,11 +2498,7 @@ static void startUpdateCheck(bool manual);       // the Check button runs the sa
 static void reportCachedUpdateResult();
 
 static void closeUpdateDialog() {
-    if (gUpdateWnd) {
-        HWND w = gUpdateWnd;
-        gUpdateWnd = nullptr;
-        DestroyWindow(w);
-    }
+    destroyPopup(gUpdateWnd);
     if (gUpdateFont) { DeleteObject(gUpdateFont); gUpdateFont = nullptr; }
     if (gUpdWhiteBrush) { DeleteObject(gUpdWhiteBrush); gUpdWhiteBrush = nullptr; }
 }
@@ -2593,7 +2688,13 @@ static const wchar_t* const kUpdateFiles[] = { L"mnpdf.exe", L"pdfium.dll" };
 // is asynchronous, so the wait is on the file the app actually needs, held until
 // its size stops growing.
 static bool extractZip(const std::wstring& zip, const std::wstring& dir, std::wstring& error) {
-    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    // balance the initialization: a call that fails (RPC_E_CHANGED_MODE on a thread
+    // already in another apartment) must not be undone by a real CoUninitialize
+    HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    if (FAILED(hr)) {
+        error = L"Windows could not prepare the update installer";
+        return false;
+    }
     IShellDispatch* shell = nullptr;
     bool ok = false;
     if (SUCCEEDED(CoCreateInstance(__uuidof(Shell), nullptr, CLSCTX_INPROC_SERVER,
@@ -2894,7 +2995,7 @@ static LRESULT CALLBACK updateProc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
                 if (gDirty) {
                     messageBox(w, L"This document has unsaved changes.\n\n"
                                    L"Save it (or close mnpdf) before installing an update.",
-                                L"mnpdf update", MB_OK | MB_ICONWARNING);
+                                kCaptionUpdateRefuse, MB_OK | MB_ICONWARNING);
                     return 0;
                 }
                 startUpdateInstall(gUpdateTag);  // the dialog stays: it carries the progress and the reason
@@ -2929,19 +3030,10 @@ static LRESULT CALLBACK updateProc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
 
 static void openUpdateDialog() {
     if (gUpdateWnd) { if (mayTakeForeground()) SetForegroundWindow(gUpdateWnd); return; }
-    HINSTANCE inst = (HINSTANCE)GetWindowLongPtrW(gWnd, GWLP_HINSTANCE);
     static bool reg = false;
-    if (!reg) {
-        WNDCLASSEXW wc = { sizeof(wc) };
-        wc.lpfnWndProc = updateProc;
-        wc.hInstance = inst;
-        wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-        if (!gUpdWhiteBrush) gUpdWhiteBrush = CreateSolidBrush(RGB(255, 255, 255));
-        wc.hbrBackground = gUpdWhiteBrush;
-        wc.lpszClassName = L"MNUpdate";
-        RegisterClassExW(&wc);
-        reg = true;
-    }
+    HINSTANCE inst = (HINSTANCE)GetWindowLongPtrW(gWnd, GWLP_HINSTANCE);
+    if (!gUpdWhiteBrush) gUpdWhiteBrush = CreateSolidBrush(RGB(255, 255, 255));
+    registerOnce(&reg, L"MNUpdate", updateProc, inst, gUpdWhiteBrush);
     // The layout is client-side and dpi-derived, so the window is sized from the
     // client rectangle at the reader's dpi - the monitor the dialog will appear
     // on - with the caption and borders added around it.
@@ -2951,7 +3043,7 @@ static void openUpdateDialog() {
     AdjustWindowRectExForDpi(&want, WS_POPUP | WS_CAPTION | WS_SYSMENU, FALSE,
                              WS_EX_TOOLWINDOW, dpi);
     int w = want.right - want.left, h = want.bottom - want.top;
-    gUpdateWnd = CreateWindowExW(WS_EX_TOOLWINDOW, L"MNUpdate", L"mnpdf updates",
+    gUpdateWnd = CreateWindowExW(WS_EX_TOOLWINDOW, L"MNUpdate", kCaptionUpdate,
                                  WS_POPUP | WS_CAPTION | WS_SYSMENU, 0, 0, w, h,
                                  gWnd, nullptr, inst, nullptr);
     if (!gUpdateWnd) return;
@@ -3003,12 +3095,12 @@ static void showUpdateResult(const UpdateResult& result, int minutesAgo = -1) {
         if (result.ok && result.newer) {
             std::wstring text = L"mnpdf " + std::wstring(kAppVersion) + L" -> " + result.tag
                 + L" is available.\n\nOpen the official release page now?";
-            if (messageBox(gWnd, text.c_str(), L"mnpdf update available",
+            if (messageBox(gWnd, text.c_str(), kCaptionUpdateOffer,
                             MB_YESNO | MB_ICONINFORMATION) == IDYES)
                 ShellExecuteW(gWnd, L"open", kLatestReleaseUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
         } else if (result.manual) {
             messageBox(gWnd, L"mnpdf could not check GitHub for updates. Try again later.",
-                        L"mnpdf updates", MB_OK | MB_ICONWARNING);
+                        kCaptionUpdate, MB_OK | MB_ICONWARNING);
         }
         return;
     }
@@ -3412,10 +3504,12 @@ static void restoreSidecar(const std::wstring& path) {
                 Sig sg;
                 sg.page = pg; sg.cx = cx; sg.cy = cy;
                 sg.w = ww > 4 ? ww : 150; sg.h = hh > 4 ? hh : 60;
-                int wn = MultiByteToWideChar(CP_UTF8, 0, un.c_str(), -1, nullptr, 0);
-                std::vector<wchar_t> wt(wn);
-                MultiByteToWideChar(CP_UTF8, 0, un.c_str(), -1, wt.data(), wn);
-                sg.path = wt.data();
+                // the shared converter, not a hand-rolled MultiByteToWideChar pair:
+                // that pair built a std::wstring from a null wt.data() whenever the
+                // conversion answered 0, which is undefined behaviour on a
+                // corrupted sidecar
+                std::wstring wtxt = utf8ToWide(un);
+                sg.path = wtxt;
                 gSigs.push_back(sg);
             }
         } else if (strncmp(line, "pin=", 4) == 0) {
@@ -3451,25 +3545,23 @@ static void restoreSidecar(const std::wstring& path) {
                     }
                     un += esc[q];
                 }
-                int wn = MultiByteToWideChar(CP_UTF8, 0, un.c_str(), -1, nullptr, 0);
-                std::vector<wchar_t> wt(wn);
-                MultiByteToWideChar(CP_UTF8, 0, un.c_str(), -1, wt.data(), wn);
+                std::wstring wtxt = utf8ToWide(un);
                 // already held from the file itself? same rule as the highlights:
                 // identity is page/point, and a note or colour the sidecar knows
                 // and the file does not yet is the newer state - it wins
                 bool have = false;
                 for (int k = (int)gPins.size() - 1; k >= 0; k--) {
                     const Pin& p = gPins[k];
-                    if (p.baked && p.page == pp && fabs(p.x - xx) < 2.0 && fabs(p.y - yy) < 2.0) {
+                    if (p.baked && p.page == pp && fabs(p.x - xx) < kSpotTolPt && fabs(p.y - yy) < kSpotTolPt) {
                         have = true;
-                        if (p.color != pcol || p.text != wt.data()) {
+                        if (p.color != pcol || p.text != wtxt) {
                             gPins.erase(gPins.begin() + k);
                             have = false;
                         }
                         break;
                     }
                 }
-                if (!have) gPins.push_back({ pp, xx, yy, wt.data(), pcol, false });
+                if (!have) gPins.push_back({ pp, xx, yy, wtxt, pcol, false });
             }
         }
     }
@@ -3487,7 +3579,7 @@ static void restoreSidecar(const std::wstring& path) {
             // sidecar records only where the stamp sat), so text cannot join
             // the match
             for (int k = (int)gPins.size() - 1; k >= 0; k--)
-                if (gPins[k].page == tb.page && fabs(gPins[k].x - tb.x) < 2.0 && fabs(gPins[k].y - tb.y) < 2.0)
+                if (gPins[k].page == tb.page && fabs(gPins[k].x - tb.x) < kSpotTolPt && fabs(gPins[k].y - tb.y) < kSpotTolPt)
                     { gPins.erase(gPins.begin() + k); break; }
         }
     }
@@ -3513,6 +3605,9 @@ static void annotColor(FPDF_ANNOTATION a, unsigned& r, unsigned& g, unsigned& b)
 // nearest palette entry for a colour, the custom slots beside the presets (an
 // unused slot never matches, since palColor rejects it)
 static int nearestPalColor(unsigned r, unsigned g, unsigned b) {
+    // the presets are always valid, so palColor succeeds at least once and color
+    // is always overwritten: the -1 initialiser is unreachable, and callers never
+    // have to handle a sentinel that cannot be returned
     int color = -1, best = 1 << 30;
     for (int c = 0; c < kPalCount; c++) {
         COLORREF pc;
@@ -3523,6 +3618,15 @@ static int nearestPalColor(unsigned r, unsigned g, unsigned b) {
         if (d < best) { best = d; color = c; }
     }
     return color;
+}
+
+static void allocPageTables(int pages) {
+    delete[] gPageW; delete[] gPageH; delete[] gPrefixPt; delete[] gRot;
+    gDocPages = pages;
+    gPageW = new double[gDocPages ? gDocPages : 1];
+    gPageH = new double[gDocPages ? gDocPages : 1];
+    gPrefixPt = new double[gDocPages + 1];
+    gRot = new int[gDocPages ? gDocPages : 1];
 }
 
 static bool openPath(const std::wstring& path) {
@@ -3553,12 +3657,7 @@ static bool openPath(const std::wstring& path) {
     gDirty = false;
     gPageTextPt.assign(gPageCount > 0 ? gPageCount : 1, 0.0);   // body text pt, measured lazily
     // gather per-page sizes + rotation once; everything else derives from them
-    delete[] gPageW; delete[] gPageH; delete[] gPrefixPt; delete[] gRot;
-    gDocPages = gPageCount;
-    gPageW = new double[gDocPages ? gDocPages : 1];
-    gPageH = new double[gDocPages ? gDocPages : 1];
-    gPrefixPt = new double[gDocPages + 1];
-    gRot = new int[gDocPages ? gDocPages : 1];
+    allocPageTables(gPageCount);
     for (int i = 0; i < gDocPages; i++) {
         FPDF_PAGE p = FPDF_LoadPage(gDoc, i);
         double w = p ? FPDF_GetPageWidthF(p) : 612;
@@ -3650,7 +3749,7 @@ static bool openPath(const std::wstring& path) {
         for (const Pin& p : gPins) {                // and pins (note or colour) beyond it?
             bool found = false;
             for (const Pin& f : pinFile)
-                if (f.page == p.page && fabs(f.x - p.x) < 2.0 && fabs(f.y - p.y) < 2.0
+                if (f.page == p.page && fabs(f.x - p.x) < kSpotTolPt && fabs(f.y - p.y) < kSpotTolPt
                     && f.text == p.text && f.color == p.color) found = true;
             if (!found) markDirty();
         }
@@ -3687,6 +3786,16 @@ static int WriteBlockCb(FPDF_FILEWRITE* pThis, const void* data, unsigned long l
     return 1;
 }
 
+// the two FPDF_FILEWRITE fields pdfium calls; a third writer that forgot
+// either one would silently produce an empty file
+static SaveFW makeSaveFW(std::vector<unsigned char>& out) {
+    SaveFW fw = {};
+    fw.version = 1;
+    fw.WriteBlock = WriteBlockCb;
+    fw.out = &out;
+    return fw;
+}
+
 static bool bakeAndWrite(const std::wstring& target) {
     if (!gDoc || !gDocPages) return false;
     gTextPage = nullptr;
@@ -3719,8 +3828,8 @@ static bool bakeAndWrite(const std::wstring& target) {
                 if (FPDFAnnot_GetRect(a, &arc))
                     for (const Pin& pn : gPins)
                         if (pn.page == i && !pn.text.empty()
-                            && fabs(((double)arc.left + arc.right) / 2 - pn.x) < 1.5
-                            && fabs(((double)arc.top + arc.bottom) / 2 - pn.y) < 1.5) { replaced = true; break; }
+                            && fabs(((double)arc.left + arc.right) / 2 - pn.x) < kSpotTolBakePt
+                            && fabs(((double)arc.top + arc.bottom) / 2 - pn.y) < kSpotTolBakePt) { replaced = true; break; }
             }
             FPDFPage_CloseAnnot(a);
             if (replaced) FPDFPage_RemoveAnnot(p, k);       // re-baked below from gHls/gPins
@@ -3771,10 +3880,7 @@ static bool bakeAndWrite(const std::wstring& target) {
     }
     if (!ok) return false;
     std::vector<unsigned char> out;
-    SaveFW fw = {};
-    fw.version = 1;
-    fw.WriteBlock = WriteBlockCb;
-    fw.out = &out;
+    SaveFW fw = makeSaveFW(out);
     if (!FPDF_SaveAsCopy(gDoc, &fw, 0) || out.empty()) return false;
     FILE* fp = _wfopen(target.c_str(), L"wb");
     if (!fp) return false;
@@ -3858,7 +3964,17 @@ static bool parseHexColor(const std::wstring& in, COLORREF& out);
 static void applyCustomColor(COLORREF c);
 
 static void closeColorBox() {
-    if (gColorBox) { HWND b = gColorBox; gColorBox = nullptr; DestroyWindow(b); }
+    destroyPopup(gColorBox);
+}
+
+// read what is in a colour/note box: clamp the length, then WM_GETTEXT. Both
+// entries used to spell these four lines out separately.
+static bool readColorBox(HWND box, wchar_t* buf, size_t cap) {
+    int n = GetWindowTextLengthW(box);
+    if (n < 0) n = 0;
+    if (n > (int)cap - 1) n = (int)cap - 1;
+    GetWindowTextW(box, buf, n + 1);
+    return true;
 }
 
 // read what is in the box and, if it names a colour, keep it: a reader who typed
@@ -3866,10 +3982,8 @@ static void closeColorBox() {
 // mean the app silently refusing to provide it
 static void commitColorBox() {
     if (!gColorBox) return;
-    wchar_t buf[16];
-    int n = GetWindowTextLengthW(gColorBox);
-    if (n > 15) n = 15;
-    GetWindowTextW(gColorBox, buf, n + 1);
+    wchar_t buf[16] = L"";
+    readColorBox(gColorBox, buf, _countof(buf));
     COLORREF c;
     bool keep = parseHexColor(buf, c);
     closeColorBox();
@@ -3886,7 +4000,7 @@ static void showColorError(HWND box, const wchar_t* text) {
     wmemcpy(shown, text, (size_t)n);
     shown[n] = 0;
     wchar_t msg[220];
-    _snwprintf_s(msg, _TRUNCATE,
+    _snwprintf_s(msg, _countof(msg), _TRUNCATE,
                  L"\"%s\" is not a colour.\n\n"
                  L"Type six hex digits, with or without the #:\n\n"
                  L"    #ff4d00\n    ff4d00\n    FF4D00",
@@ -3968,7 +4082,8 @@ static void applyCustomColor(COLORREF c) {
         gHlDefault = idx;
         if (hasSelection()) applyHighlightFromSelection(idx);
         break;
-    default: gPinDefault = idx; break;
+    case 3: gPinDefault = idx; break;         // all four targets are assigned above
+    default: break;                           // an unknown target does nothing
     }
     writeAppPref();
 }
@@ -4015,10 +4130,8 @@ static LRESULT CALLBACK colorBoxProc(HWND b, UINT m, WPARAM wp, LPARAM lp) {
     case WM_KEYDOWN:
         if (wp == VK_ESCAPE) { closeColorBox(); return 0; }
         if (wp == VK_RETURN) {
-            wchar_t buf[16];
-            int n = GetWindowTextLengthW(b);
-            if (n > 15) n = 15;
-            GetWindowTextW(b, buf, n + 1);
+            wchar_t buf[16] = L"";
+            readColorBox(b, buf, _countof(buf));
             COLORREF c;
             if (parseHexColor(buf, c)) {
                 closeColorBox();                   // gone before the mark repaints
@@ -4056,16 +4169,15 @@ static LRESULT CALLBACK colorBoxProc(HWND b, UINT m, WPARAM wp, LPARAM lp) {
     }
     case WM_KILLFOCUS:
         if (gColorErrBusy) return 0;
-        // 400 ms grace: the box ignores a focus loss it did not ask for, so a
-        // stray keystroke cannot become a colour. The pin editor holds the
-        // same grace and test-colors.ps1 waits out the same 400 ms before it
-        // clicks away - the three agree by design.
-        if (GetTickCount() - gColorBoxBorn > 400) commitColorBox();
+        // kBoxFocusGraceMs grace: the box ignores a focus loss it did not ask for,
+        // so a stray keystroke cannot become a colour. The pin editor holds the
+        // same grace and test-colors.ps1 waits it out before it clicks away.
+        if (GetTickCount() - gColorBoxBorn > kBoxFocusGraceMs) commitColorBox();
         return 0;
     case WM_ACTIVATE:
         if (LOWORD(wp) == WA_INACTIVE) {
             if (gColorErrBusy) return 0;
-            if (GetTickCount() - gColorBoxBorn > 400) commitColorBox();
+            if (GetTickCount() - gColorBoxBorn > kBoxFocusGraceMs) commitColorBox();
         }
         break;
     }
@@ -4301,10 +4413,10 @@ static void clearSignatures() {
             for (size_t n = 0; n < stamps.size(); n++) {
                 const Sig& s = stamps[n];
                 if (s.page != i) continue;
-                if (fabs((double)bl - (s.cx - s.w / 2)) < 0.25
-                    && fabs((double)bb - (s.cy - s.h / 2)) < 0.25
-                    && fabs((double)br - (s.cx + s.w / 2)) < 0.25
-                    && fabs((double)bt - (s.cy + s.h / 2)) < 0.25) {
+                if (fabs((double)bl - (s.cx - s.w / 2)) < kStampBoundsTol
+                    && fabs((double)bb - (s.cy - s.h / 2)) < kStampBoundsTol
+                    && fabs((double)br - (s.cx + s.w / 2)) < kStampBoundsTol
+                    && fabs((double)bt - (s.cy + s.h / 2)) < kStampBoundsTol) {
                     // ownership of a removed object comes back to the caller, so
                     // what was taken off the page has to be freed here
                     if (FPDFPage_RemoveObject(pg, obj)) FPDFPageObj_Destroy(obj);
@@ -4371,11 +4483,7 @@ static void adoptDoc(FPDF_DOCUMENT nd, int oldCount) {
     gPageCount = gDocPages;          // the title reads this one
     int* oldRot = new int[oldCount ? oldCount : 1];
     for (int i = 0; i < oldCount; i++) oldRot[i] = (i < gDocPages) ? gRot[i] : 0;
-    delete[] gPageW; delete[] gPageH; delete[] gPrefixPt; delete[] gRot;
-    gPageW = new double[gDocPages ? gDocPages : 1];
-    gPageH = new double[gDocPages ? gDocPages : 1];
-    gPrefixPt = new double[gDocPages + 1];
-    gRot = new int[gDocPages ? gDocPages : 1];
+    allocPageTables(gDocPages);
     for (int i = 0; i < gDocPages; i++) {
         FPDF_PAGE p = FPDF_LoadPage(gDoc, i);
         double w = p ? FPDF_GetPageWidthF(p) : 612;
@@ -4463,6 +4571,9 @@ static void replaceDocByOrder(const std::vector<int>& order) {
     gMatchCount = w;
     if (!hitKept) gMatchActive = gMatchCount ? 0 : -1;
     updateMatchLabel();                  // a dropped hit changes the counter the find bar shows
+    // only the rotations survive the craft: the sizes, the running offsets and the
+    // rotation vector itself are all owned and re-measured by adoptDoc below
+    // (allocPageTables), which this path calls with the reordered document
     delete[] gRot;
     gRot = new int[gDocPages ? gDocPages : 1];
     for (int j = 0; j < n; j++) gRot[j] = rot[j];
@@ -4577,10 +4688,7 @@ static void splitExport(const std::wstring& target, const std::string& range, bo
         return;
     }
     std::vector<unsigned char> bytes;
-    SaveFW fw = {};
-    fw.version = 1;                       // the two FPDF_FILEWRITE fields pdfium calls
-    fw.WriteBlock = WriteBlockCb;
-    fw.out = &bytes;
+    SaveFW fw = makeSaveFW(bytes);
     bool wrote = FPDF_SaveAsCopy(nd, &fw, 0) && !bytes.empty();
     if (wrote) {
         FILE* f = _wfopen(target.c_str(), L"wb");
@@ -4602,25 +4710,16 @@ static HWND gRangeWnd = nullptr;
 static std::wstring gRangeText = L"1-1";
 
 static void closeRangePrompt() {
-    if (gRangeWnd) { HWND w = gRangeWnd; gRangeWnd = nullptr; DestroyWindow(w); }
+    destroyPopup(gRangeWnd);
 }
 
 static LRESULT CALLBACK rangeProc(HWND w, UINT m, WPARAM wp, LPARAM lp);
 
 static void openRangePrompt() {
     if (gRangeWnd) { if (mayTakeForeground()) SetForegroundWindow(gRangeWnd); return; }
-    HINSTANCE inst = (HINSTANCE)GetWindowLongPtrW(gWnd, GWLP_HINSTANCE);
     static bool reg = false;
-    if (!reg) {
-        WNDCLASSEXW wc = { sizeof(wc) };
-        wc.lpfnWndProc = rangeProc;
-        wc.hInstance = inst;
-        wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-        wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
-        wc.lpszClassName = L"MNRange";
-        RegisterClassExW(&wc);
-        reg = true;
-    }
+    HINSTANCE inst = (HINSTANCE)GetWindowLongPtrW(gWnd, GWLP_HINSTANCE);
+    registerOnce(&reg, L"MNRange", rangeProc, inst, (HBRUSH)(COLOR_BTNFACE + 1));
     RECT wr;
     GetWindowRect(gWnd, &wr);
     int w = 300, h = 110;
@@ -4815,24 +4914,13 @@ static void toggleThumbDrawer() {
     if (!gDoc) return;
     gThumbsOn = !gThumbsOn;
     if (gThumbWnd) {
-        HWND dead = gThumbWnd;
-        gThumbWnd = nullptr;
-        DestroyWindow(dead);
+        destroyPopup(gThumbWnd);
         gThumbScroll = 0;
         return;
     }
     HINSTANCE inst = (HINSTANCE)GetWindowLongPtrW(gWnd, GWLP_HINSTANCE);
     static bool reg = false;
-    if (!reg) {
-        WNDCLASSEXW wc = { sizeof(wc) };
-        wc.lpfnWndProc = thumbProc;
-        wc.hInstance = inst;
-        wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-        wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
-        wc.lpszClassName = L"MNThumbs";
-        RegisterClassExW(&wc);
-        reg = true;
-    }
+    registerOnce(&reg, L"MNThumbs", thumbProc, inst, (HBRUSH)(COLOR_BTNFACE + 1));
     gThumbSel = gPageIndex;
     gThumbWnd = CreateWindowExW(WS_EX_TOOLWINDOW, L"MNThumbs", L"Thumbnails",
                                 WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME,
@@ -4852,10 +4940,8 @@ static void invalidateThumbDrawer() {
 static void refreshThumbDrawer() {
     if (!gThumbWnd) return;
     if (!gDoc) {
-        HWND dead = gThumbWnd;
         gThumbsOn = false;
-        gThumbWnd = nullptr;
-        DestroyWindow(dead);
+        destroyPopup(gThumbWnd);
         gThumbScroll = 0;
         return;
     }
@@ -4995,23 +5081,12 @@ static void toggleOutlineDrawer() {
     if (!gDoc) return;
     gOutlineOn = !gOutlineOn;
     if (gOutlineWnd) {
-        HWND dead = gOutlineWnd;
-        gOutlineWnd = nullptr;
-        DestroyWindow(dead);
+        destroyPopup(gOutlineWnd);
         return;
     }
     HINSTANCE inst = (HINSTANCE)GetWindowLongPtrW(gWnd, GWLP_HINSTANCE);
     static bool reg = false;
-    if (!reg) {
-        WNDCLASSEXW wc = { sizeof(wc) };
-        wc.lpfnWndProc = outlineProc;
-        wc.hInstance = inst;
-        wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-        wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
-        wc.lpszClassName = L"MNOutline";
-        RegisterClassExW(&wc);
-        reg = true;
-    }
+    registerOnce(&reg, L"MNOutline", outlineProc, inst, (HBRUSH)(COLOR_WINDOW + 1));
     buildBmList();
     gOutlineWnd = CreateWindowExW(WS_EX_TOOLWINDOW, L"MNOutline", L"Outline",
                                   WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME,
@@ -5030,10 +5105,8 @@ static void invalidateOutlineDrawer() {
 static void refreshOutlineDrawer() {
     if (!gOutlineWnd) return;
     if (!gDoc) {
-        HWND dead = gOutlineWnd;
         gOutlineOn = false;
-        gOutlineWnd = nullptr;
-        DestroyWindow(dead);
+        destroyPopup(gOutlineWnd);
         return;
     }
     buildBmList();
@@ -5197,18 +5270,23 @@ static void settleActiveDoc() {
     clearSelection();                            // the incoming one owns its own
 }
 
-static void switchToDoc(int idx) {
-    if (idx < 0 || idx >= gDocCount || idx == gActiveDoc) return;
-    settleActiveDoc();
-    flushPageCache();                            // the outgoing bundle takes its pages with it
-    gActiveDoc = idx;
+static void afterTabChange(bool relayout) {
     loadPage(gPageIndex);                        // re-derive the incoming bundle's aliases
-    refitWidthAndAnchor();
+    if (relayout) relayoutPages();               // a brand-new bundle has never been laid out
+    else refitWidthAndAnchor();
     clampScroll();
     updateTitle();
     refreshDrawers();
     placeDrawers();
     renderPage();
+}
+
+static void switchToDoc(int idx) {
+    if (idx < 0 || idx >= gDocCount || idx == gActiveDoc) return;
+    settleActiveDoc();
+    flushPageCache();                            // the outgoing bundle takes its pages with it
+    gActiveDoc = idx;
+    afterTabChange(false);
 }
 
 // one enabled-state answer for the New Tab row, its keyboard binding and the
@@ -5222,13 +5300,7 @@ static void newTab() {
     gDocs[gDocCount] = new Doc();
     gDocCount++;
     gActiveDoc = gDocCount - 1;                  // appended at the end
-    loadPage(gPageIndex);
-    relayoutPages();
-    clampScroll();
-    updateTitle();
-    refreshDrawers();
-    placeDrawers();
-    renderPage();
+    afterTabChange(true);
 }
 
 static void closeTab() {
@@ -5245,13 +5317,7 @@ static void closeTab() {
     if (gActiveDoc >= gDocCount) gActiveDoc = gDocCount - 1;
     if (doomed->doc) FPDF_CloseDocument(doomed->doc);
     delete doomed;                             // ~Doc frees the arrays AND the mark heaps
-    loadPage(gPageIndex);                        // re-derive the survivor's aliases
-    refitWidthAndAnchor();
-    clampScroll();
-    updateTitle();
-    refreshDrawers();
-    placeDrawers();
-    renderPage();
+    afterTabChange(false);
 }
 
 // ---- the strip: labels, hit-testing, painting --------------------------------
@@ -5901,7 +5967,7 @@ static LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         if (wp & MK_CONTROL) {
             zoomAt(delta > 0 ? 1.1 : 1 / 1.1, pt.x, pt.y);
         } else {
-            scrollByDy(-(int)(delta / 120.0 * 3 * 40.0));   // pure scroll; pages are stacked
+            scrollByDy(-(int)(delta / (double)WHEEL_DELTA * 3 * 40.0));   // pure scroll; pages are stacked
             markSave();
             renderPage();
         }
@@ -6074,13 +6140,7 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int show) {
     wc.hbrBackground = nullptr;
     RegisterClassExW(&wc);
 
-    WNDCLASSW tc = { 0 };
-    tc.lpfnWndProc = DefWindowProcW;
-    tc.hInstance = hInst;
-    tc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-    tc.lpszClassName = L"mnpdfPinTip";
-    tc.hbrBackground = (HBRUSH)GetStockObject(WHITE_BRUSH);
-    RegisterClassW(&tc);
+    registerOncePlain(L"mnpdfPinTip", DefWindowProcW, hInst, (HBRUSH)GetStockObject(WHITE_BRUSH));
 
     // include the engine dll dir in the search path so the exe runs anywhere
     const std::wstring exeDir = moduleDirectory();
