@@ -193,8 +193,10 @@ function ShowNoActivate([IntPtr]$Wnd) {
 # The app binary a suite drives: the runner's explicit choice, else the tree's
 # own build output (lib.ps1 lives in tests\, so the repo root is one level up).
 function Resolve-AppExe {
-  if ($env:MNPDF_GATE_EXE) { return $env:MNPDF_GATE_EXE }
-  return Join-Path $PSScriptRoot "..\build\mnpdf.exe"
+  if ($env:MNPDF_GATE_EXE) { return (Resolve-Path $env:MNPDF_GATE_EXE).Path }
+  $built = Join-Path $PSScriptRoot "..\build\mnpdf.exe"
+  if (Test-Path -LiteralPath $built) { return (Resolve-Path $built).Path }
+  return $built
 }
 
 $script:appWaitMs = 20000   # one bound for both launch waits

@@ -2812,12 +2812,12 @@ static void startUpdateInstall(const std::wstring& tag) {
 // a monitor with another dpi re-derives it.
 struct UpdChild { int id; int x, y, w, h; };
 static const UpdChild kUpdChildren[] = {
-    { 100,          18,  16, 404, 144 },     // the text (144px accommodates 9 lines of Segoe UI 9pt cleanly)
-    { kUpdAction,   18, 170, 190,  28 },
-    { kUpdRelease, 218, 170, 110,  28 },
-    { kUpdClose,   338, 170,  84,  28 },
+    { 100,          18,  16, 404, 210 },     // the text (210px accommodates 14 lines of Segoe UI 9pt cleanly)
+    { kUpdAction,   18, 236, 190,  28 },
+    { kUpdRelease, 218, 236, 110,  28 },
+    { kUpdClose,   338, 236,  84,  28 },
 };
-static const int kUpdClientW = 440, kUpdClientH = 212;   // the client the layout fills
+static const int kUpdClientW = 440, kUpdClientH = 278;   // the client the layout fills
 
 static HFONT getUpdateFont(int dpi) {
     if (gUpdateFont) return gUpdateFont;
@@ -3051,18 +3051,18 @@ static void reportCachedUpdateResult() {
 }
 
 static void startUpdateCheck(bool manual) {
-    if (manual) gManualUpdateRequested.store(true);
+    if (manual) {
+        gManualUpdateRequested.store(true);
+        gUpdateBusy = true;
+        updateDialogAction();
+        updateDialogText(L"Checking GitHub for a newer mnpdf...");
+    }
     if (gUpdateCheckRunning.exchange(true)) return;
     if (updateCheckCooling()) {                       // rate limit ourselves before GitHub does
         gManualUpdateRequested.store(false);           // this click is answered from cache
         gUpdateCheckRunning.store(false);
         if (manual) reportCachedUpdateResult();
         return;
-    }
-    if (manual) {
-        gUpdateBusy = true;
-        updateDialogAction();
-        updateDialogText(L"Checking GitHub for a newer mnpdf...");
     }
     HWND target = gWnd;
     std::thread([target]() {
