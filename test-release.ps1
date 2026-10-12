@@ -235,8 +235,9 @@ try {
           Fail 'an unsaved document is not updated under the user' ("the refusal says: '{0}'" -f $warnBody)
           Write-Output ("  warning text: " + ($warnBody -replace [string][char]10, ' / '))
         }
-        # the refusal is MB_OK, so it has exactly one button
-        [void][MN]::SendMessageW([CL]::GetDlgItem($warn, 1), 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)    # IDOK
+        # measured: an MB_OK | MB_ICONWARNING box carries its one OK button at
+        # control id 2, so a click on id 1 goes to no window at all
+        [void][MN]::SendMessageW([CL]::GetDlgItem($warn, 2), 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)
       }
       if ((FindDialog $p.Id 'mnpdf updates') -eq [IntPtr]::Zero) {
         Fail 'an unsaved document is not updated under the user' 'the update dialog closed anyway'

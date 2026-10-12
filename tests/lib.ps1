@@ -377,16 +377,6 @@ function Move-AppWindowToDesktop([IntPtr]$Wnd) {
   }
 }
 
-# move a window until the accessor confirms it is on target, then stop. The same
-# retry rule Move-AppWindowToDesktop applies, behind one signature, for the
-# callers that already hold the window (Start-App's early loop and the watcher).
-function Move-WindowToDesktop([IntPtr]$Wnd, $Target, [int]$Tries = 500) {
-  for ($i = 0; $i -lt $Tries -and $Target -ne $null -and [VDM]::DesktopOf($Wnd) -ne $Target; $i++) {
-    [void][VDM]::MoveTo($Wnd, $Target)
-    Start-Sleep -Milliseconds 10
-  }
-}
-
 # Follow the launched app's pid and move EVERY top-level window it opens, for as
 # long as that process lives. The one-shot move above only covers the main
 # window that existed at launch; the app also opens popups later (the pin tip,
@@ -426,7 +416,7 @@ function Start-DesktopWatcher([int]$ProcId) {
       try { $wins = [VDM]::TopLevelOf([uint32]$pidToWatch) } catch { }
       foreach ($h in $wins) {
         try {
-          # Must call [VDM] directly, NOT Move-WindowToDesktop: PowerShell functions
+          # Must call [VDM] directly, NOT a placement helper: PowerShell functions
           # defined in the caller session are invisible inside a fresh runspace,
           # while Add-Type types like [VDM] are loaded into the process AppDomain
           # and visible everywhere.
@@ -515,17 +505,14 @@ function Start-App([string]$Exe, [string]$Doc) {
   # window style must stay an ordinary top-level window, because the virtual-
   # desktop API cannot see or move a WS_EX_TOOLWINDOW one.
   if ($env:MNPDF_WINDOW_DESKTOP -and (Ensure-VdaReady)) {
-    $target = Get-DesktopTarget
-    if ($null -ne $target) {
-      $w0 = [IntPtr]::Zero
-      for ($i = 0; $i -lt 500 -and $w0 -eq [IntPtr]::Zero; $i++) {
-        $w0 = FindAppWindow $proc.Id
-        if ($w0 -eq [IntPtr]::Zero) { Start-Sleep -Milliseconds 10 }
-      }
-      # the same retry rule Move-AppWindowToDesktop applies, through the shared
-      # helper: move, verify with the accessor, retry the move itself
-      if ($w0 -ne [IntPtr]::Zero) { Move-WindowToDesktop $w0 $target }
+    $w0 = [IntPtr]::Zero
+    for ($i = 0; $i -lt 500 -and $w0 -eq [IntPtr]::Zero; $i++) {
+      $w0 = FindAppWindow $proc.Id
+      if ($w0 -eq [IntPtr]::Zero) { Start-Sleep -Milliseconds 10 }
     }
+    # the same retry rule the one-shot move applies, through its one owner:
+    # move, verify with the accessor, retry the move itself
+    if ($w0 -ne [IntPtr]::Zero) { Move-AppWindowToDesktop $w0 }
   }
   if (-not (Await { (FindAppWindow $proc.Id) -ne [IntPtr]::Zero } $script:appWaitMs)) { throw "no mnpdf app window ($Exe $Doc)" }
   $w = FindAppWindow $proc.Id

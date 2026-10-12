@@ -487,8 +487,8 @@ try {
       Fail ('an invalid colour is explained at once and leaves the box open (box open {0}, body {1})' -f
             [MN]::IsWindowVisible($box), ($body -replace "`r?`n", ' | '))
     }
-    # the box is MB_OK | MB_ICONWARNING, so its one button is IDOK (1)
-    if (-not (DismissDlg $proc.Id 1)) { Fail 'an invalid colour is explained at once' 'a dialog stayed on screen after IDOK and BM_CLICK' }
+    # measured: this box's single OK button is control id 2, not IDOK (1)
+    if (-not (DismissDlg $proc.Id 2)) { Fail 'an invalid colour is explained at once' 'a dialog stayed on screen after the button id and BM_CLICK' }
   }
 
   # ---- case 5: typed then clicked away keeps the colour ------------------
