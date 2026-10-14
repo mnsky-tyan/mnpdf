@@ -3022,8 +3022,14 @@ static void openUpdateDialog() {
     if (gUpdateWnd) { if (mayTakeForeground()) SetForegroundWindow(gUpdateWnd); return; }
     static bool reg = false;
     HINSTANCE inst = (HINSTANCE)GetWindowLongPtrW(gWnd, GWLP_HINSTANCE);
-    if (!gUpdWhiteBrush) gUpdWhiteBrush = CreateSolidBrush(RGB(255, 255, 255));
-    registerOnce(&reg, L"MNUpdate", updateProc, inst, gUpdWhiteBrush);
+    // A stock brush, not a created one: this handle is stored in the class's
+    // wc.hbrBackground, and a class outlives the dialog it was registered for.
+    // A CreateSolidBrush handle deleted on close would leave the class holding a
+    // freed brush, so the next dialog erases through a dangling handle. Stock
+    // objects are process-lifetime and are never deleted - the same reason
+    // mnpdfPinTip uses WHITE_BRUSH. WM_CTLCOLORSTATIC below still returns the
+    // app's own brush so a themed static control keeps the same background.
+    registerOnce(&reg, L"MNUpdate", updateProc, inst, (HBRUSH)GetStockObject(WHITE_BRUSH));
     // The layout is client-side and dpi-derived, so the window is sized from the
     // client rectangle at the reader's dpi - the monitor the dialog will appear
     // on - with the caption and borders added around it.
