@@ -6,9 +6,15 @@ on:
   pull_request:
     branches: [main]
 
-# a push and the PR it opens must not double-run the same suites
+# a push and the PR it opens must not double-run the same suites.
+# The head repo has to be part of the key: github.head_ref is only the BRANCH
+# name, so a fork PR from a branch called main (GitHub's own default, so the
+# common fork flow) would otherwise produce the same group as a push to main
+# and cancel-in-progress would silently kill one of the two runs. Qualifying by
+# the head repository keeps every case distinct. On push there is no
+# pull_request payload, so the fallback is this repository.
 concurrency:
-  group: ci-${{ github.head_ref || github.ref_name }}
+  group: ci-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
