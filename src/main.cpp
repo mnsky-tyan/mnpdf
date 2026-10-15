@@ -2366,14 +2366,17 @@ static std::string wideToUtf8(const std::wstring& text) {
 }
 
 // Sidecar field escape/unescape, table-driven so the writer and reader for a
-// field cannot drift. Each field names its own escape pair: `src` is the raw
-// byte that must be escaped, `dst` the two-char sequence written in its place
-// ('\' is always escaped first so a literal backslash never reads as a code).
-// The pin text escapes '\n' so multiline notes stay one line; the sig path
-// escapes ',' so a Windows path does not eat the field split. This replaced
-// four hand-rolled loops whose escape sets had already diverged (one dropped
-// '\r', the sig reader and pin reader shared nothing but the backslash case).
-struct SidecarEsc { char src; char d0; char d1; };
+// field cannot drift. Each field names the single raw byte it escapes and the
+// one code letter written after a backslash ('\' is always escaped first so a
+// literal backslash never reads as a code). The pin note escapes '\n' so a
+// multiline note stays one line; the stamp path escapes ',' so a Windows path
+// does not eat the field split. This replaced four hand-rolled loops whose
+// escape sets had already diverged. The tables are file-scope so a field's
+// writer and reader share ONE declaration - a per-call-site copy is how the
+// two sides drift apart again.
+struct SidecarEsc { char src; char code; };
+static const SidecarEsc kPinEsc[] = { { '\n', 'n' } };   // pin note text
+static const SidecarEsc kSigEsc[] = { { ',', 'c' } };    // stamp path ('\r' kept, not escaped)
 static std::string escapeField(const std::string& raw, const SidecarEsc* table, size_t n) {
     std::string esc;
     esc.reserve(raw.size());
@@ -2381,7 +2384,7 @@ static std::string escapeField(const std::string& raw, const SidecarEsc* table, 
         if (p == '\\') { esc += "\\\\"; continue; }
         bool hit = false;
         for (size_t i = 0; i < n; i++)
-            if (p == table[i].src) { esc += '\\'; esc += table[i].d0; esc += table[i].d1; hit = true; break; }
+            if (p == table[i].src) { esc += '\\'; esc += table[i].code; hit = true; break; }
         if (!hit) esc += p;
     }
     return esc;
@@ -2394,9 +2397,7 @@ static std::string unescapeField(const std::string& esc, const SidecarEsc* table
             if (esc[q + 1] == '\\') { un += '\\'; q++; continue; }
             bool hit = false;
             for (size_t i = 0; i < n; i++)
-                if (esc[q + 1] == table[i].d0 && q + 2 < esc.size() && esc[q + 2] == table[i].d1) {
-                    un += table[i].src; q += 2; hit = true; break;
-                }
+                if (esc[q + 1] == table[i].code) { un += table[i].src; q++; hit = true; break; }
             if (hit) continue;
         }
         un += esc[q];
@@ -3254,14 +3255,12 @@ static void writeSidecarFor(Doc* d) {
         }
         for (const Pin& pn : d->pins) {
             if (pn.text.empty()) continue;
-            static const SidecarEsc kPinEsc[] = { { '\n', 'n', '\0' } };   // d1 unused: single-char code
             // '\r' is dropped (was implicit in the old loop): pin text is one line
             std::string esc = escapeField(wideToUtf8(pn.text), kPinEsc, 1);
             for (size_t r = esc.find('\r'); r != std::string::npos; r = esc.find('\r')) esc.erase(r, 1);
             fprintf(fp, "pin=%d,%.2f,%.2f,c%d,%s\n", pn.page, pn.x, pn.y, pn.color, esc.c_str());
         }
         for (const Sig& sg : d->sigs) {
-            static const SidecarEsc kSigEsc[] = { { ',', 'c', '\0' } };   // the first comma ends the fields
             std::string esc = escapeField(wideToUtf8(sg.path), kSigEsc, 1);
             fprintf(fp, "sig=%d,%.2f,%.2f,%.2f,%.2f,%s\n",
                     sg.page, sg.cx, sg.cy, sg.w, sg.h, esc.c_str());
@@ -3521,7 +3520,6 @@ static void restoreSidecar(const std::wstring& path) {
             if (sscanf(line + 4, "%d,%lf,%lf,%lf,%lf,%n", &pg, &cx, &cy, &ww, &hh, &after) == 5
                 && after > 0 && pg >= 0 && pg < gDocPages) {
                 std::string esc(line + 4 + after);
-                static const SidecarEsc kSigEsc[] = { { ',', 'c', '\0' } };
                 std::string un = unescapeField(esc, kSigEsc, 1);
                 Sig sg;
                 sg.page = pg; sg.cx = cx; sg.cy = cy;
@@ -3559,7 +3557,6 @@ static void restoreSidecar(const std::wstring& path) {
                     }
                 }
                 std::string esc(txt);                  // \n escapes -> real newlines
-                static const SidecarEsc kPinEsc[] = { { '\n', 'n', '\0' } };
                 std::string un = unescapeField(esc, kPinEsc, 1);
                 std::wstring wtxt = utf8ToWide(un);
                 // already held from the file itself? same rule as the highlights:
