@@ -196,10 +196,20 @@ function AutosaveOff([IntPtr]$Wnd) {
   $pref = Join-Path $env:APPDATA 'mnpdf\app.txt'
   return (Await { (Get-Content $pref -Raw -ErrorAction SilentlyContinue) -match 'autosave=0' } 8000)
 }
+# QuitApp always reaps the instance it is given: a graceful quit is tried
+# first, but if the window ignores it the process is force-killed. Every case
+# here launches its own instance, and a leaked one would land the next case on
+# top of a stray - which this suite's own case header forbids (the Assert-
+# NoRunningApp in lib.ps1 then refuses every later suite). Returning false
+# without killing would hand that stray to the caller.
 function QuitApp($P) {
   $w = FindAppWindow $P.Id
   if ($w -ne [IntPtr]::Zero) { [void][MN]::PostMessageW($w, 0x0111, [IntPtr]$CMD_QUIT, [IntPtr]::Zero) }
   for ($i = 0; $i -lt 60 -and -not $P.HasExited; $i++) { Start-Sleep -Milliseconds 200 }
+  if (-not $P.HasExited) {
+    try { Stop-Process -Id $P.Id -Force -ErrorAction Stop } catch { }
+    for ($i = 0; $i -lt 20 -and -not $P.HasExited; $i++) { Start-Sleep -Milliseconds 100 }
+  }
   return $P.HasExited
 }
 function ZoomTo([IntPtr]$Wnd, [int]$Times, [int]$CmdId) {

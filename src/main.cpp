@@ -2365,6 +2365,45 @@ static std::string wideToUtf8(const std::wstring& text) {
     return out;
 }
 
+// Sidecar field escape/unescape, table-driven so the writer and reader for a
+// field cannot drift. Each field names its own escape pair: `src` is the raw
+// byte that must be escaped, `dst` the two-char sequence written in its place
+// ('\' is always escaped first so a literal backslash never reads as a code).
+// The pin text escapes '\n' so multiline notes stay one line; the sig path
+// escapes ',' so a Windows path does not eat the field split. This replaced
+// four hand-rolled loops whose escape sets had already diverged (one dropped
+// '\r', the sig reader and pin reader shared nothing but the backslash case).
+struct SidecarEsc { char src; char d0; char d1; };
+static std::string escapeField(const std::string& raw, const SidecarEsc* table, size_t n) {
+    std::string esc;
+    esc.reserve(raw.size());
+    for (char p : raw) {
+        if (p == '\\') { esc += "\\\\"; continue; }
+        bool hit = false;
+        for (size_t i = 0; i < n; i++)
+            if (p == table[i].src) { esc += '\\'; esc += table[i].d0; esc += table[i].d1; hit = true; break; }
+        if (!hit) esc += p;
+    }
+    return esc;
+}
+static std::string unescapeField(const std::string& esc, const SidecarEsc* table, size_t n) {
+    std::string un;
+    un.reserve(esc.size());
+    for (size_t q = 0; q < esc.size(); q++) {
+        if (esc[q] == '\\' && q + 1 < esc.size()) {
+            if (esc[q + 1] == '\\') { un += '\\'; q++; continue; }
+            bool hit = false;
+            for (size_t i = 0; i < n; i++)
+                if (esc[q + 1] == table[i].d0 && q + 2 < esc.size() && esc[q + 2] == table[i].d1) {
+                    un += table[i].src; q += 2; hit = true; break;
+                }
+            if (hit) continue;
+        }
+        un += esc[q];
+    }
+    return un;
+}
+
 static long long nowSeconds() { return (long long)time(nullptr); }
 
 // minutes since the last attempt, or -1 when there was none (or the clock moved back)
@@ -3215,22 +3254,15 @@ static void writeSidecarFor(Doc* d) {
         }
         for (const Pin& pn : d->pins) {
             if (pn.text.empty()) continue;
-            std::string esc;                       // multiline-safe: \n stays one line
-            for (char p : wideToUtf8(pn.text)) {
-                if (p == '\\') esc += "\\\\";
-                else if (p == '\n') esc += "\\n";
-                else if (p == '\r') continue;
-                else esc += p;
-            }
+            static const SidecarEsc kPinEsc[] = { { '\n', 'n', '\0' } };   // d1 unused: single-char code
+            // '\r' is dropped (was implicit in the old loop): pin text is one line
+            std::string esc = escapeField(wideToUtf8(pn.text), kPinEsc, 1);
+            for (size_t r = esc.find('\r'); r != std::string::npos; r = esc.find('\r')) esc.erase(r, 1);
             fprintf(fp, "pin=%d,%.2f,%.2f,c%d,%s\n", pn.page, pn.x, pn.y, pn.color, esc.c_str());
         }
         for (const Sig& sg : d->sigs) {
-            std::string esc;                       // the path carries backslashes
-            for (char p : wideToUtf8(sg.path)) {
-                if (p == '\\') esc += "\\\\";
-                else if (p == ',') esc += "\\c";    // the first comma ends the fields
-                else esc += p;
-            }
+            static const SidecarEsc kSigEsc[] = { { ',', 'c', '\0' } };   // the first comma ends the fields
+            std::string esc = escapeField(wideToUtf8(sg.path), kSigEsc, 1);
             fprintf(fp, "sig=%d,%.2f,%.2f,%.2f,%.2f,%s\n",
                     sg.page, sg.cx, sg.cy, sg.w, sg.h, esc.c_str());
         }
@@ -3489,14 +3521,8 @@ static void restoreSidecar(const std::wstring& path) {
             if (sscanf(line + 4, "%d,%lf,%lf,%lf,%lf,%n", &pg, &cx, &cy, &ww, &hh, &after) == 5
                 && after > 0 && pg >= 0 && pg < gDocPages) {
                 std::string esc(line + 4 + after);
-                std::string un;
-                for (size_t q = 0; q < esc.size(); q++) {
-                    if (esc[q] == '\\' && q + 1 < esc.size()) {
-                        if (esc[q + 1] == 'c') { un += ','; q++; continue; }
-                        if (esc[q + 1] == '\\') { un += '\\'; q++; continue; }
-                    }
-                    un += esc[q];
-                }
+                static const SidecarEsc kSigEsc[] = { { ',', 'c', '\0' } };
+                std::string un = unescapeField(esc, kSigEsc, 1);
                 Sig sg;
                 sg.page = pg; sg.cx = cx; sg.cy = cy;
                 sg.w = ww > 4 ? ww : 150; sg.h = hh > 4 ? hh : 60;
@@ -3533,14 +3559,8 @@ static void restoreSidecar(const std::wstring& path) {
                     }
                 }
                 std::string esc(txt);                  // \n escapes -> real newlines
-                std::string un;
-                for (size_t q = 0; q < esc.size(); q++) {
-                    if (esc[q] == '\\' && q + 1 < esc.size()) {
-                        if (esc[q + 1] == 'n') { un += '\n'; q++; continue; }
-                        if (esc[q + 1] == '\\') { un += '\\'; q++; continue; }
-                    }
-                    un += esc[q];
-                }
+                static const SidecarEsc kPinEsc[] = { { '\n', 'n', '\0' } };
+                std::string un = unescapeField(esc, kPinEsc, 1);
                 std::wstring wtxt = utf8ToWide(un);
                 // already held from the file itself? same rule as the highlights:
                 // identity is page/point, and a note or colour the sidecar knows
@@ -3797,10 +3817,15 @@ static bool bakeAndWrite(const std::wstring& target) {
     gTextPage = nullptr;
     gPage = nullptr;
     flushPageCache();
+    // ok exists to catch a page that will not load: silently skipping it
+    // would write a file missing every mark and rotation from that page on,
+    // and doSaveImpl then clears the in-memory marks to match - so the user's
+    // highlights and pins would vanish with a success reported. A save that
+    // cannot read a page must fail, not half-bake.
     bool ok = true;
     for (int i = 0; i < gDocPages && ok; i++) {
         FPDF_PAGE p = FPDF_LoadPage(gDoc, i);
-        if (!p) break;
+        if (!p) { ok = false; break; }
         // strip what an earlier Save baked: a replaced highlight must vanish
         // from the file, not pile up beside its replacement (overlapping
         // annotations render twice wherever no sidecar can normalize them).

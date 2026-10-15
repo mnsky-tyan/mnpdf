@@ -26,14 +26,19 @@
 # The rule lives on the shared Control-Text (tests\lib.ps1); this suite adds the
 # buffer-print that reads exactly like a GetClip failure: WM_GETTEXT fills the
 # text and one NUL and writes nothing further, so the rest of a char[] buffer
-# stays whatever the CLR had there. A raw join keeps that garbage attached to
-# the text ("#0", "#1") or in front of it (""), which looks like a broken box
-# when the box was right all along - the text is everything before the first NUL.
+# stays whatever the CLR had there. The text is everything before the first NUL,
+# and a TrimEnd would leave CLR garbage that is not trailing-null ("#0", "#1")
+# attached to a correct read. This mirrors Control-Text in tests\lib.ps1 so both
+# spellings strip the same way; kept local so this suite's own Add-Type bindings
+# are the only Win32 surface it touches.
 function ControlText([IntPtr]$h) {
   if ($h -eq [IntPtr]::Zero) { return '' }
   $b = New-Object char[] 4096
   [void][MN]::SendText($h, 0x000D, [IntPtr]4095, $b)
-  return (-join $b).TrimEnd([char]0)
+  $s = -join $b
+  $z = $s.IndexOf([char]0)
+  if ($z -ge 0) { $s = $s.Substring(0, $z) }
+  return $s
 }
 
 # top-level window of this process whose title matches (dialog titles only -

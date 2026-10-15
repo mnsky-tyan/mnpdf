@@ -33,6 +33,14 @@ try {
   # skipped suite is indistinguishable in the log from one lost to a parse bug -
   # "all suites OK" must never quietly mean "all but one".
   $plan = @(Read-SuiteRoster (Join-Path $PSScriptRoot 'suites.txt'))
+  # A parse that yields nothing is a broken roster, not a clean run. Without
+  # this guard the loop below runs zero suites, $suiteFailed stays $null and
+  # this prints ALL SUITES OK - a green CI check that executed nothing.
+  # gate-test.sh:191 has the matching guard; keep the two predicates identical.
+  if ($plan.Count -eq 0) {
+    Write-Output 'CI: no suites in scripts/suites.txt.'
+    exit 1
+  }
   if ($env:MNPDF_SKIP_SUITES) {
     $skipped = Get-SkipList
     Write-Output ("CI: roster {0} suite(s); MNPDF_SKIP_SUITES drops: {1}" -f $plan.Count, ($skipped -join ', '))
