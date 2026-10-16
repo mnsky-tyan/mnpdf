@@ -3256,12 +3256,12 @@ static void writeSidecarFor(Doc* d) {
         for (const Pin& pn : d->pins) {
             if (pn.text.empty()) continue;
             // '\r' is dropped (was implicit in the old loop): pin text is one line
-            std::string esc = escapeField(wideToUtf8(pn.text), kPinEsc, 1);
+            std::string esc = escapeField(wideToUtf8(pn.text), kPinEsc, _countof(kPinEsc));
             for (size_t r = esc.find('\r'); r != std::string::npos; r = esc.find('\r')) esc.erase(r, 1);
             fprintf(fp, "pin=%d,%.2f,%.2f,c%d,%s\n", pn.page, pn.x, pn.y, pn.color, esc.c_str());
         }
         for (const Sig& sg : d->sigs) {
-            std::string esc = escapeField(wideToUtf8(sg.path), kSigEsc, 1);
+            std::string esc = escapeField(wideToUtf8(sg.path), kSigEsc, _countof(kSigEsc));
             fprintf(fp, "sig=%d,%.2f,%.2f,%.2f,%.2f,%s\n",
                     sg.page, sg.cx, sg.cy, sg.w, sg.h, esc.c_str());
         }
@@ -3520,7 +3520,7 @@ static void restoreSidecar(const std::wstring& path) {
             if (sscanf(line + 4, "%d,%lf,%lf,%lf,%lf,%n", &pg, &cx, &cy, &ww, &hh, &after) == 5
                 && after > 0 && pg >= 0 && pg < gDocPages) {
                 std::string esc(line + 4 + after);
-                std::string un = unescapeField(esc, kSigEsc, 1);
+                std::string un = unescapeField(esc, kSigEsc, _countof(kSigEsc));
                 Sig sg;
                 sg.page = pg; sg.cx = cx; sg.cy = cy;
                 sg.w = ww > 4 ? ww : 150; sg.h = hh > 4 ? hh : 60;
@@ -3557,7 +3557,7 @@ static void restoreSidecar(const std::wstring& path) {
                     }
                 }
                 std::string esc(txt);                  // \n escapes -> real newlines
-                std::string un = unescapeField(esc, kPinEsc, 1);
+                std::string un = unescapeField(esc, kPinEsc, _countof(kPinEsc));
                 std::wstring wtxt = utf8ToWide(un);
                 // already held from the file itself? same rule as the highlights:
                 // identity is page/point, and a note or colour the sidecar knows
@@ -4588,9 +4588,9 @@ static void replaceDocByOrder(const std::vector<int>& order) {
     gMatchCount = w;
     if (!hitKept) gMatchActive = gMatchCount ? 0 : -1;
     updateMatchLabel();                  // a dropped hit changes the counter the find bar shows
-    // only the rotations survive the craft: the sizes, the running offsets and the
-    // rotation vector itself are all owned and re-measured by adoptDoc below
-    // (allocPageTables), which this path calls with the reordered document
+    // the rotation vector is BUILT here from the permutation and adopted (not
+    // re-measured) by adoptDoc below, which reads gRot for the surviving
+    // rotations; adoptDoc re-measures only the sizes and the running offsets
     delete[] gRot;
     gRot = new int[gDocPages ? gDocPages : 1];
     for (int j = 0; j < n; j++) gRot[j] = rot[j];

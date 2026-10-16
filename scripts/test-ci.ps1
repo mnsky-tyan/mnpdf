@@ -65,7 +65,20 @@ try {
       $env:MNPDF_GATE_SUITE = Join-Path $repo ($s.Name + '.ps1')
       # THE foreground decision, from the same function Invoke-SuiteRun uses
       Set-SuiteForeground -Foreground ([bool]$s.Foreground)
-      & $psExe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command (". '{0}'; Invoke-SuiteRun" -f ($gateCommon -replace "'", "''"))
+      # bounded exactly like the WSL runner (scripts/gate-test.sh: a suite that
+      # deadlocks is killed as a tree, so a leak cannot sit on the next suite).
+      # The helper throws on a timed-out or nonzero-exit suite, so a failure is
+      # reported through the same path as before rather than escaping the loop.
+      $suiteOk = $true
+      try {
+        Invoke-BoundedRun -FilePath $psExe `
+          -ArgumentList @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command',
+                          (". '{0}'; Invoke-SuiteRun" -f ($gateCommon -replace "'", "''"))) `
+          -TimeoutSeconds 900 -What "suite $($s.Name)"
+      } catch {
+        $suiteOk = $false
+        Write-Output "CI: $($s.Name): $($_.Exception.Message)"
+      }
     } finally {
       foreach ($name in $script:RunnerSeamNames) {
         Remove-Item "Env:$name" -ErrorAction SilentlyContinue
@@ -74,7 +87,7 @@ try {
       else { Remove-Item Env:MNPDF_BACKGROUND -ErrorAction SilentlyContinue }
     }
     Stop-TestInstances -ExePath $exe -Before $before
-    if ($LASTEXITCODE -ne 0) {
+    if (-not $suiteOk) {
       $log = Join-Path $state 'output.log'
       if (Test-Path $log) {
         Get-Content $log | Where-Object { $_ -match '^(PASS|FAIL|SKIP|RESULT)' } |

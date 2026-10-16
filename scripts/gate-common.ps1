@@ -65,6 +65,40 @@ function Set-SuiteForeground {
   else { $env:MNPDF_BACKGROUND = '1' }
 }
 
+# --- the bounded launch ------------------------------------------------------
+# Run a child with a wall-clock bound, streaming its stdio to the console. A
+# child that ignores the bound is killed as a process TREE (taskkill /T), so a
+# deadlocked suite cannot leave the app it launched behind either. Deliberately
+# NOT Start-Process -Wait or Wait-Process: waiting also waits for the child's
+# inherited output handle, and the app a suite launches holds that handle open
+# long after the suite itself has finished - which is why the plain '&' form
+# was restored once before. The child is started directly through
+# ProcessStartInfo with UseShellExecute false, which inherits this console (so
+# stdio still streams) and keeps a real process handle: Start-Process -PassThru
+# returns an object whose ExitCode is always null, so a nonzero exit could not
+# be told from a clean one. The bounds match scripts/gate-test.sh: build 600 s,
+# each suite 900 s.
+function Invoke-BoundedRun {
+  param([string]$FilePath, [string[]]$ArgumentList, [int]$TimeoutSeconds, [string]$What)
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  $psi.FileName = $FilePath
+  $psi.Arguments = ($ArgumentList | ForEach-Object {
+    if ($_ -match '\s') { '"' + $_ + '"' } else { $_ }
+  }) -join ' '
+  $psi.UseShellExecute = $false
+  $p = [System.Diagnostics.Process]::Start($psi)
+  $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+  while (-not $p.HasExited) {
+    if ((Get-Date) -ge $deadline) {
+      taskkill.exe /T /F /PID $p.Id | Out-Null
+      throw "$What timed out after $TimeoutSeconds s (killed)"
+    }
+    Start-Sleep -Milliseconds 500
+  }
+  $p.WaitForExit()
+  if ($p.ExitCode -ne 0) { throw "$What exited $($p.ExitCode)" }
+}
+
 # --- the build --------------------------------------------------------------
 # One recipe for both runners.
 function Invoke-Build {
@@ -72,8 +106,8 @@ function Invoke-Build {
   $null = New-Item -ItemType Directory -Force -Path (Join-Path $RepoRoot 'build')
   # the .bat is addressed absolutely: cmd resolves a bare script name against
   # the PATH, not the current directory
-  & cmd.exe /c ('"' + (Join-Path $RepoRoot 'build.bat') + '"')
-  if ($LASTEXITCODE -ne 0) { throw "build.bat exited $LASTEXITCODE" }
+  Invoke-BoundedRun -FilePath 'cmd.exe' -ArgumentList @('/c', (Join-Path $RepoRoot 'build.bat')) `
+    -TimeoutSeconds 600 -What 'build.bat'
   if (-not (Test-Path -LiteralPath $ExePath)) { throw 'build\mnpdf.exe is missing' }
 }
 
