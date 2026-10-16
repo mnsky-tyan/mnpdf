@@ -185,7 +185,7 @@ function AwaitBox([int]$ProcId, [IntPtr]$Owner, [int]$TimeoutMs = 4000) {
   $script:boxHit = [IntPtr]::Zero
   $null = Await {
     $script:boxHit = FindColorBox $ProcId $Owner
-    $script:boxHit -ne [IntPtr]::Zero
+    $script:boxHit -ne [IntPtr]::Zero -and [MN]::IsWindowVisible($script:boxHit)
   } $TimeoutMs
   return $script:boxHit
 }

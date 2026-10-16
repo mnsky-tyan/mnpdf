@@ -31,6 +31,9 @@ jobs:
       - name: Build and run the nine suites
         shell: cmd
         run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test-ci.ps1
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
 
       # A failure has to leave its evidence behind: test-ci.ps1 deletes a
       # suite's isolated state dir only on success, so on a failure the log that
