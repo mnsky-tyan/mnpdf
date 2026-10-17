@@ -246,10 +246,7 @@ if ($edit -eq [IntPtr]::Zero -or -not [MN]::IsWindowVisible($edit)) {
 
   $lbl = [MN]::FindWindowExW($h, [IntPtr]::Zero, "Static", [IntPtr]::Zero)
   # the label is a control whose text the app rewrites at runtime, so it is read
-  # with WM_GETTEXT (Control-Text). Title is GetWindowTextW, which the harness
-  # documents as blind on a control: it answers with the creation text, so these
-  # three assertions could only ever pass on a label that happened to be born
-  # with the right text in it
+  # with the shared Control-Text rule (WM_GETTEXT + first-NUL cut)
   $lt0 = Control-Text $lbl
   if ($lt0 -match '^(\d+)/(\d+)$' -and [int]$Matches[1] -eq 1 -and [int]$Matches[2] -ge 2) {
     Pass "counter label: '$lt0' (document-wide total)"

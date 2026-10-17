@@ -103,10 +103,8 @@ function FindDlgCol([int]$ProcId) {
   [void][CL]::EnumWindows($cb, [IntPtr]::Zero)
   return $script:hit
 }
-# WM_GETTEXT, not GetWindowTextW: the title call is blind on a control owned by
-# another process and answers with whatever text the control was created with,
-# not what the reader typed into it. The shared Control-Text (tests\lib.ps1) is
-# that rule, written once.
+# BoxText is the shared Control-Text (tests\lib.ps1), the one copy of the
+# WM_GETTEXT rule for reading a control's live text.
 function BoxText([IntPtr]$Box) { return (Control-Text $Box) }
 # every visible string inside a dialog body, for the same reason
 function DlgBody([IntPtr]$Dlg) {

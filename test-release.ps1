@@ -13,17 +13,16 @@
 # Everything is observed through the app's own update dialog, driven by posted
 # messages. README.txt is the exact file the release ZIP ships, so it is the
 # version contract: bump one without the other and this fails.
-# Control text is read with WM_GETTEXT: cross-process GetWindowTextW answers
-# with the creation text, and both the static and the button change at runtime
+# Control text is read with WM_GETTEXT, and both the static and the button
+# change at runtime
 . "$PSScriptRoot\tests\lib.ps1"   # one definition of the app.txt forge/restore rule
 # The window walk and the dialog-button lookup the remaining two cases need both
 # live on the shared [CL] surface in tests\lib.ps1 now. This suite carried its
 # own copy of the SAME two signatures in a class named [R] - the same duplicate
 # that made test-colors.ps1 a tree-wide breakage on a load-order change.
 
-# WM_GETTEXT, not GetWindowTextW: the title call is blind across processes on a
-# control and answers with the creation text; the message reads what is really there.
-# The rule lives on the shared Control-Text (tests\lib.ps1); this suite adds the
+# WM_GETTEXT reads what is really there. The rule lives on the shared
+# Control-Text (tests\lib.ps1); this suite adds the
 # buffer-print that reads exactly like a GetClip failure: WM_GETTEXT fills the
 # text and one NUL and writes nothing further, so the rest of a char[] buffer
 # stays whatever the CLR had there. The text is everything before the first NUL,
@@ -110,8 +109,9 @@ Assert-NoRunningApp
 # this test FORGES update state in the user's real app.txt. Save it once, before
 # anything is written, and put it back on EVERY exit path: the try/finally around
 # the body covers exceptions, early returns and Ctrl-C, and a watchdog child
-# process (tests\watchdog.ps1, spawned by Init-PrefForge) that outlives this
-# shell guarantees it even against a timeout kill or a Stop-Process - so a
+# process (tests\watchdog.ps1, spawned by Init-PrefForge) guards the
+# timeout-kill and Stop-Process paths - tests\lib.ps1 owns what it survives and
+# what it does not, and the Windows runner's tree kill is one it does not - so a
 # crashed run can never leave updtag=v9.9.9 behind and make the next manual
 # check announce a version that does not exist.
 #

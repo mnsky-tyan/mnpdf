@@ -58,9 +58,10 @@ public static class MN {
   [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr c);
   [DllImport("user32.dll")] public static extern bool PostMessageW(IntPtr h, uint m, IntPtr w, IntPtr l);
   [DllImport("user32.dll")] public static extern IntPtr SendMessageW(IntPtr h, uint m, IntPtr w, IntPtr l);
-  // WM_GETTEXT into a char[]: cross-process GetWindowTextW is blind on
-  // controls and answers with the creation text, so the suites that read a
-  // control's real content send the message instead
+  // WM_GETTEXT into a char[]: the message writes the text and one NUL and
+  // nothing further, so the caller's buffer keeps whatever it already held
+  // after the text - the text is everything before the first NUL. The suites
+  // that read a control's real content send the message for that reason.
   [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "SendMessageW")]
   public static extern IntPtr SendText(IntPtr h, uint m, IntPtr cap, [Out] char[] buf);
   [DllImport("user32.dll")] public static extern int GetWindowTextW(IntPtr h, [MarshalAs(UnmanagedType.LPWStr)] StringBuilder s, int n);
@@ -155,10 +156,11 @@ function Lparam([int]$x, [int]$y) { [IntPtr](($y -shl 16) -bor ($x -band 0xFFFF)
 
 # the verbose window title: which document, page and zoom the app says it is on
 # read a control's real text with WM_GETTEXT into a char[], and cut at the first
-# NUL. THE one copy of that rule: cross-process GetWindowTextW is blind on a
-# control and answers with whatever text it was created with, and the buffer can
-# also carry CLR garbage before or after the text, so the text is everything up
-# to the first NUL. Top-level windows keep using Title (GetWindowTextW).
+# NUL. THE one copy of that rule: the message writes the text and one NUL and
+# nothing further, so the caller's buffer keeps whatever it already held AFTER
+# the text as CLR garbage, and the text is everything up to the first NUL. A
+# TrimEnd would leave that garbage attached to an otherwise correct read.
+# Top-level windows keep using Title (GetWindowTextW).
 function Control-Text([IntPtr]$h) {
   if ($h -eq [IntPtr]::Zero) { return '' }
   $b = [char[]]::new(4096)
@@ -632,9 +634,20 @@ function Init-PrefForge([string]$AppPref, [string]$Label) {
   } else {
     Set-Content -LiteralPath $script:prefMissing -Value ''
   }
-  # a watchdog child that outlives this shell by any means (timeout, tree kill,
-  # hard crash) is the only thing that restores the prefs on those paths. The
-  # paths go as ARGUMENTS to a static script file, never interpolated into
+  # a watchdog child is the only thing that restores the prefs on those paths.
+  # It survives a normal exit, a hard crash and the WSL runner's direct-child
+  # kill, but NOT the Windows runner's `taskkill /T` tree kill (scripts\
+  # gate-common.ps1, Invoke-BoundedRun), which takes the watchdog down with the
+  # suite.
+  #
+  # RECORDED FOLLOW-UP (not implemented here): on that tree-kill path a forged
+  # app.txt is left behind with no watchdog to restore it. It has not fired in
+  # practice - the 900 s suite bound is roughly 29x the slowest recorded suite
+  # runtime - but if that margin ever shrinks, spawn the watchdog OUTSIDE the
+  # kill tree so it is not a descendant of this shell, or have the bounded
+  # runner trigger the suite's pref restore after a kill.
+  #
+  # The paths go as ARGUMENTS to a static script file, never interpolated into
   # generated code: an apostrophe in a profile path cannot break the restore
   # (pre-quoted for Start-Process's raw command line, which does not add quotes).
   $wdPath = Join-Path $PSScriptRoot 'watchdog.ps1'

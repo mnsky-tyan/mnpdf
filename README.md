@@ -48,7 +48,7 @@ operation rather than a loss of information.
 right-click menu; the rotation persists with the document.
 
 **Advanced.** The *Advanced* submenu in the right-click menu holds everything
-past plain reading. The tools that shipped live there, in two groups.
+past plain reading.
 
 *Page drawer.* *Thumbnails* opens a strip of page previews beside the reader.
 Click one to jump to that page, `Ctrl+Up` / `Ctrl+Down` to move the selected

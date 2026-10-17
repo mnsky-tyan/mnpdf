@@ -78,6 +78,14 @@ function Set-SuiteForeground {
 # returns an object whose ExitCode is always null, so a nonzero exit could not
 # be told from a clean one. The bounds match scripts/gate-test.sh: build 600 s,
 # each suite 900 s.
+#
+# RECORDED FOLLOW-UP (not implemented here): the kill is the whole TREE, so a
+# suite killed while it has a forged app.txt in place also loses the preference
+# watchdog (tests/watchdog.ps1, a Start-Process child of that suite) and the
+# user's real prefs would not be restored on this path. It is not reached in
+# practice: 900 s is roughly 29x the slowest recorded suite runtime. If that
+# margin shrinks, spawn the watchdog outside the kill tree or trigger the
+# suite's pref restore after a kill.
 function Invoke-BoundedRun {
   param([string]$FilePath, [string[]]$ArgumentList, [int]$TimeoutSeconds, [string]$What)
   $psi = New-Object System.Diagnostics.ProcessStartInfo
