@@ -48,7 +48,7 @@ operation rather than a loss of information.
 right-click menu; the rotation persists with the document.
 
 **Advanced.** The *Advanced* submenu in the right-click menu holds everything
-past plain reading. The tools that shipped live there, in two groups.
+past plain reading.
 
 *Page drawer.* *Thumbnails* opens a strip of page previews beside the reader.
 Click one to jump to that page, `Ctrl+Up` / `Ctrl+Down` to move the selected
@@ -71,11 +71,6 @@ sidecar until then, exactly like a highlight.
 *Coming back.* *Reopen last document* opens the document the current one
 replaced - the one you had a moment ago - so opening the wrong file by
 mistake costs one click to undo. It spans this session only.
-
-Below those, the same submenu lists the heavy options still to come - OCR,
-Word export, in-place text editing, form creation, encryption, side-by-side
-tabs. They are listed and greyed: they need a different kind of program, and
-this one stays a reader you can copy onto a USB stick.
 
 **Printing.** `Ctrl+P` opens the standard Windows print dialog and prints
 clean pages. Annotations, highlights and pins stay in the file and on screen

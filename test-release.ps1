@@ -13,27 +13,31 @@
 # Everything is observed through the app's own update dialog, driven by posted
 # messages. README.txt is the exact file the release ZIP ships, so it is the
 # version contract: bump one without the other and this fails.
-# Control text is read with WM_GETTEXT: cross-process GetWindowTextW answers
-# with the creation text, and both the static and the button change at runtime
+# Control text is read with WM_GETTEXT, and both the static and the button
+# change at runtime
 . "$PSScriptRoot\tests\lib.ps1"   # one definition of the app.txt forge/restore rule
-Add-Type -TypeDefinition @"
-using System;
-using System.Text;
-using System.Runtime.InteropServices;
-public delegate bool EnumWindowsProcRel(IntPtr h, IntPtr l);
-public static class R {
-  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProcRel cb, IntPtr l);
-  [DllImport("user32.dll")] public static extern IntPtr GetDlgItem(IntPtr h, int id);
-}
-"@
+# The window walk and the dialog-button lookup the remaining two cases need both
+# live on the shared [CL] surface in tests\lib.ps1 now. This suite carried its
+# own copy of the SAME two signatures in a class named [R] - the same duplicate
+# that made test-colors.ps1 a tree-wide breakage on a load-order change.
 
-# WM_GETTEXT, not GetWindowTextW: the title call is blind across processes on a
-# control and answers with the creation text; the message reads what is really there
+# WM_GETTEXT reads what is really there. The rule lives on the shared
+# Control-Text (tests\lib.ps1); this suite adds the
+# buffer-print that reads exactly like a GetClip failure: WM_GETTEXT fills the
+# text and one NUL and writes nothing further, so the rest of a char[] buffer
+# stays whatever the CLR had there. The text is everything before the first NUL,
+# and a TrimEnd would leave CLR garbage that is not trailing-null ("#0", "#1")
+# attached to a correct read. This mirrors Control-Text in tests\lib.ps1 so both
+# spellings strip the same way; kept local so this suite's own Add-Type bindings
+# are the only Win32 surface it touches.
 function ControlText([IntPtr]$h) {
   if ($h -eq [IntPtr]::Zero) { return '' }
   $b = New-Object char[] 4096
   [void][MN]::SendText($h, 0x000D, [IntPtr]4095, $b)
-  return (-join $b).TrimEnd([char]0)
+  $s = -join $b
+  $z = $s.IndexOf([char]0)
+  if ($z -ge 0) { $s = $s.Substring(0, $z) }
+  return $s
 }
 
 # top-level window of this process whose title matches (dialog titles only -
@@ -42,12 +46,12 @@ function FindDialog([int]$ProcId, [string]$TitlePat) {
   $script:fdPid = $ProcId
   $script:fdPat = $TitlePat
   $script:hit = [IntPtr]::Zero
-  $cb = [EnumWindowsProcRel]{ param($w, $n)
+  $cb = [EnumWinProc]{ param($w, $n)
     $owner = 0
     [void][MN]::GetWindowThreadProcessId($w, [ref]$owner)
     if ($owner -eq $script:fdPid -and (ControlText $w) -like ('*' + $script:fdPat + '*')) { $script:hit = $w }
     $true }
-  [void][R]::EnumWindows($cb, [IntPtr]::Zero)
+  [void][CL]::EnumWindows($cb, [IntPtr]::Zero)
   return $script:hit
 }
 
@@ -57,7 +61,7 @@ function FindDialogExact([int]$ProcId, [string]$Title) {
   $script:fxPid = $ProcId
   $script:fxTitle = $Title
   $script:fxHit = [IntPtr]::Zero
-  $cb = [EnumWindowsProcRel]{ param($w, $n)
+  $cb = [EnumWinProc]{ param($w, $n)
     $owner = 0
     [void][MN]::GetWindowThreadProcessId($w, [ref]$owner)
     if ($owner -eq $script:fxPid) {
@@ -66,7 +70,7 @@ function FindDialogExact([int]$ProcId, [string]$Title) {
       if ($t.ToString() -eq $script:fxTitle) { $script:fxHit = $w; return $false }
     }
     $true }
-  [void][R]::EnumWindows($cb, [IntPtr]::Zero)
+  [void][CL]::EnumWindows($cb, [IntPtr]::Zero)
   return $script:fxHit
 }
 
@@ -78,7 +82,14 @@ function Stop-OwnedApp($p) {
   if (-not $p) { return }
   try { $p.Refresh() } catch { return }
   if ($p.HasExited) { return }
-  $h = $p.MainWindowHandle
+  # FindAppWindow, not $p.MainWindowHandle: a MNPDF_BACKGROUND window starts
+  # MINIMISED, and a Process's MainWindowHandle answers 0 until its first
+  # ShowWindow - which under the local gate means the WM_CLOSE was never sent
+  # and this suite force-killed its own app instead of letting it flush. The
+  # handle lookup (shared, tests\lib.ps1) enumerates the real top-level window
+  # by class, so it finds the minimised one too.
+  $h = FindAppWindow $p.Id
+  if ($h -eq [IntPtr]::Zero) { $h = $p.MainWindowHandle }
   if ($h -ne [IntPtr]::Zero) { [void][MN]::PostMessageW($h, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) }   # WM_CLOSE: quit cleanly
   if (-not (Await { try { $p.Refresh(); $p.HasExited } catch { $true } } 5000)) {
     try { $p.Kill() } catch {}   # last resort, and only ever this test's own process
@@ -98,8 +109,9 @@ Assert-NoRunningApp
 # this test FORGES update state in the user's real app.txt. Save it once, before
 # anything is written, and put it back on EVERY exit path: the try/finally around
 # the body covers exceptions, early returns and Ctrl-C, and a watchdog child
-# process (tests\watchdog.ps1, spawned by Init-PrefForge) that outlives this
-# shell guarantees it even against a timeout kill or a Stop-Process - so a
+# process (tests\watchdog.ps1, spawned by Init-PrefForge) guards the
+# timeout-kill and Stop-Process paths - tests\lib.ps1 owns what it survives and
+# what it does not, and the Windows runner's tree kill is one it does not - so a
 # crashed run can never leave updtag=v9.9.9 behind and make the next manual
 # check announce a version that does not exist.
 #
@@ -145,8 +157,8 @@ function Run-Case([string]$Name, [string]$Tag, [string[]]$WantSnips, [string]$Wa
       return
     }
     $dlg = FindDialog $p.Id 'mnpdf updates'
-    $body = ControlText ([R]::GetDlgItem($dlg, 100))
-    $btn = ControlText ([R]::GetDlgItem($dlg, 1))
+    $body = ControlText ([CL]::GetDlgItem($dlg, 100))
+    $btn = ControlText ([CL]::GetDlgItem($dlg, 1))
     $missing = @($WantSnips | Where-Object { $body -notmatch [regex]::Escape($_) })
     if ($missing.Count) {
       Fail $Name ("dialog body is missing: {0}" -f ($missing -join ' | '))
@@ -157,7 +169,7 @@ function Run-Case([string]$Name, [string]$Tag, [string[]]$WantSnips, [string]$Wa
       Pass $Name
     }
     # dismiss with the dialog's own Close button: a test never opens the browser
-    $closeBtn = [R]::GetDlgItem($dlg, 3)
+    $closeBtn = [CL]::GetDlgItem($dlg, 3)
     if ($closeBtn -ne [IntPtr]::Zero) { [void][MN]::SendMessageW($closeBtn, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero) }   # BM_CLICK
     [void](Await { (FindDialog $p.Id 'mnpdf updates') -eq [IntPtr]::Zero } 8000)
   } finally {
@@ -211,25 +223,26 @@ try {
       Fail 'an unsaved document is not updated under the user' 'no update dialog'
     } else {
       $dlg = FindDialog $p.Id 'mnpdf updates'
-      [void](Await { (ControlText ([R]::GetDlgItem((FindDialog $p.Id 'mnpdf updates'), 1))) -eq 'Update to v9.9.9' } 8000)
+      [void](Await { (ControlText ([CL]::GetDlgItem((FindDialog $p.Id 'mnpdf updates'), 1))) -eq 'Update to v9.9.9' } 8000)
       [void][MN]::PostMessageW($main, 0x0111, [IntPtr]$CMD_ROTATE_CW, [IntPtr]::Zero)    # dirty the document
       Start-Sleep -Milliseconds 300
       # The refusal is a modal box, so the click is POSTED: a sent BM_CLICK would
       # block until the box the click itself raised is dismissed.
-      [void][MN]::PostMessageW([R]::GetDlgItem((FindDialog $p.Id 'mnpdf updates'), 1), 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)
+      [void][MN]::PostMessageW([CL]::GetDlgItem((FindDialog $p.Id 'mnpdf updates'), 1), 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)
       $warn = [IntPtr]::Zero
       if (-not (Await { (FindDialogExact $p.Id 'mnpdf update') -ne [IntPtr]::Zero } 8000)) {
         Fail 'an unsaved document is not updated under the user' 'no refusal for an unsaved document'
       } else {
         $warn = FindDialogExact $p.Id 'mnpdf update'
-        $warnBody = ControlText ([R]::GetDlgItem($warn, 0xFFFF))
+        $warnBody = ControlText ([CL]::GetDlgItem($warn, 0xFFFF))
         if ($warnBody -match 'unsaved') { Pass 'an unsaved document is not updated under the user' }
         else {
           Fail 'an unsaved document is not updated under the user' ("the refusal says: '{0}'" -f $warnBody)
           Write-Output ("  warning text: " + ($warnBody -replace [string][char]10, ' / '))
         }
-        # the refusal is MB_OK, so it has exactly one button
-        [void][MN]::SendMessageW([R]::GetDlgItem($warn, 1), 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)    # IDOK
+        # measured: an MB_OK | MB_ICONWARNING box carries its one OK button at
+        # control id 2, so a click on id 1 goes to no window at all
+        [void][MN]::SendMessageW([CL]::GetDlgItem($warn, 2), 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)
       }
       if ((FindDialog $p.Id 'mnpdf updates') -eq [IntPtr]::Zero) {
         Fail 'an unsaved document is not updated under the user' 'the update dialog closed anyway'
@@ -275,8 +288,8 @@ try {
       Fail 'an update installs itself and restarts the reader' 'no update dialog in the scratch copy'
     } else {
       $dlg = FindDialog $p.Id 'mnpdf updates'
-      [void](Await { (ControlText ([R]::GetDlgItem($dlg, 1))) -eq 'Update to v9.9.9' } 8000)
-      [void][MN]::SendMessageW([R]::GetDlgItem($dlg, 1), 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)
+      [void](Await { (ControlText ([CL]::GetDlgItem($dlg, 1))) -eq 'Update to v9.9.9' } 8000)
+      [void][MN]::SendMessageW([CL]::GetDlgItem($dlg, 1), 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)
       $oldGone = Await { try { $p.Refresh(); $p.HasExited } catch { $true } } 40000
       $afterSize = 0
       if (Test-Path (Join-Path $root 'app\mnpdf.exe')) {
@@ -341,10 +354,10 @@ try {
       Fail 'an update that cannot reach the release host says why' 'no update dialog in the scratch copy'
     } else {
       $dlg = FindDialog $p.Id 'mnpdf updates'
-      [void](Await { (ControlText ([R]::GetDlgItem($dlg, 1))) -eq 'Update to v9.9.9' } 8000)
-      [void][MN]::SendMessageW([R]::GetDlgItem($dlg, 1), 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)
-      [void](Await { (ControlText ([R]::GetDlgItem($dlg, 100))) -match 'did not go through' } 40000)
-      $body = ControlText ([R]::GetDlgItem($dlg, 100))
+      [void](Await { (ControlText ([CL]::GetDlgItem($dlg, 1))) -eq 'Update to v9.9.9' } 8000)
+      [void][MN]::SendMessageW([CL]::GetDlgItem($dlg, 1), 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)
+      [void](Await { (ControlText ([CL]::GetDlgItem($dlg, 100))) -match 'did not go through' } 40000)
+      $body = ControlText ([CL]::GetDlgItem($dlg, 100))
       $touched = @()
       foreach ($f in 'mnpdf.exe', 'pdfium.dll') {
         if ((Get-FileHash -LiteralPath (Join-Path $netRoot ('app\' + $f)) -Algorithm SHA256).Hash -ne $netBefore[$f]) { $touched += $f }

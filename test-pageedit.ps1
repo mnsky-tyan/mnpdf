@@ -339,6 +339,24 @@ try {
     Pass 'a stamp survives a quit and comes back on relaunch'
   } else { Fail 'stamp replay' 'page 1 does not match the stamped page after a restart' }
 
+  # A stamp whose IMAGE PATH contains a comma must survive the same round-trip:
+  # the ',' is escaped on the sidecar write and unescaped on read, and a
+  # truncation there loses the whole stamp on relaunch. (Regression: the escape
+  # helper once appended a NUL after the escape code, and fprintf('%s') cut the
+  # path at that comma.) The relaunched page must match the just-stamped page
+  # AND differ from the unstamped fixture, so a lost stamp cannot pass.
+  $commaJpg = Join-Path $scratch 'stamp,comma.jpg'
+  Copy-Item $jpg $commaJpg -Force
+  $commaKeep = New-Case
+  $commaHash = Join-Path $scratch 'comma.txt'
+  $rComma = Run-Hooked ("sig|{0}|0;;pagehash|{1}" -f $commaJpg, $commaHash) $commaKeep $commaHash
+  $commaBack = Join-Path $scratch 'comma-back.txt'
+  $rCommaBack = Run-Hooked ("pagehash|{0}" -f $commaBack) $commaKeep $commaBack
+  if ($rComma.Hashes.Count -eq $FixturePages -and $rCommaBack.Hashes.Count -eq $FixturePages -and $rComma.Hashes[0] -ne $ref.Hashes[0] -and $rCommaBack.Hashes[0] -eq $rComma.Hashes[0]) {
+    Pass 'a stamp with a comma in its image path survives a quit and relaunch'
+  } else { Fail 'comma-path stamp replay' 'page 1 changed after restart (path truncated at the comma?)' }
+  Remove-Item $commaJpg -Force -ErrorAction SilentlyContinue
+
   # --- 8. the drawers are windows of their own --------------------------------
   $p = Launch-Tracked $exe (New-Case)
   $h = FindAppWindow $p.Id

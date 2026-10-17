@@ -177,7 +177,10 @@ while IFS= read -r raw || [[ -n "$raw" ]]; do
   fg=0
   # only a TRAILING '*' marks a foreground suite (PowerShell: $line.EndsWith('*'))
   if [[ "$line" == *'*' && "${line: -1}" == '*' ]]; then
-    line="${line%\*}"
+    # strip EVERY trailing asterisk, not one: PowerShell's TrimEnd('*') removes
+    # all of them, so a line like 'test-colors**' has to parse the same here or
+    # the WSL gate and CI would run different rosters
+    while [[ "$line" == *'*' && "${line: -1}" == '*' ]]; do line="${line%\*}"; done
     line=$(printf '%s' "$line" | sed -e 's/[[:space:]]*$//')
     fg=1
   fi

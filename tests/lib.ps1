@@ -12,8 +12,10 @@
 #   3. How to forge and restore %APPDATA%\mnpdf\app.txt safely (several suites
 #      forge it to make the update check deterministic), including the
 #      watchdog child that restores it even against a hard kill.
-#   4. The app's interop surface (class MN), the menu-command ids, the sidecar
-#      filename rule, and the PASS/FAIL bookkeeping every suite shares.
+#   4. The app's interop surfaces (class MN for the app window, class CL for the
+#      handful of extra calls a suite needs when it walks a window's controls),
+#      the menu-command ids, the sidecar filename rule, and the
+#      PASS/FAIL/DEGRADED bookkeeping every suite shares.
 #
 # Dot-sourcing puts these in the caller's scope, so $script:pref* and
 # $script:failures set here are the same variables the suites read.
@@ -56,28 +58,55 @@ public static class MN {
   [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr c);
   [DllImport("user32.dll")] public static extern bool PostMessageW(IntPtr h, uint m, IntPtr w, IntPtr l);
   [DllImport("user32.dll")] public static extern IntPtr SendMessageW(IntPtr h, uint m, IntPtr w, IntPtr l);
-  // WM_GETTEXT into a char[]: cross-process GetWindowTextW is blind on
-  // controls and answers with the creation text, so the suites that read a
-  // control's real content send the message instead
+  // WM_GETTEXT into a char[]: the message writes the text and one NUL and
+  // nothing further, so the caller's buffer keeps whatever it already held
+  // after the text - the text is everything before the first NUL. The suites
+  // that read a control's real content send the message for that reason.
   [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "SendMessageW")]
   public static extern IntPtr SendText(IntPtr h, uint m, IntPtr cap, [Out] char[] buf);
   [DllImport("user32.dll")] public static extern int GetWindowTextW(IntPtr h, [MarshalAs(UnmanagedType.LPWStr)] StringBuilder s, int n);
   [DllImport("user32.dll")] public static extern bool MoveWindow(IntPtr h, int x, int y, int w, int h2, bool r);
   [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out MNRect r);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out MNRect r);
-  [DllImport("user32.dll")] public static extern IntPtr GetMenu(IntPtr hWnd);
-  [DllImport("user32.dll")] public static extern int GetMenuItemCount(IntPtr hMenu);
-  [DllImport("user32.dll")] public static extern int GetMenuItemID(IntPtr hMenu, int nPos);
+}
+"@
+
+# ---- the control / dialog surface (class CL) ----------------------------
+# Deliberately separate from MN: MN is the app-window surface every suite
+# needs, while these are the handful of extra calls used when a suite has to
+# walk a window's controls (read a label's text, count a dialog's buttons,
+# capture pixels for the colours suite). They are declared HERE, once, because
+# the first copy-free version of this was a second Add-Type block inside
+# test-colors.ps1 - Add-Type is per-process, so a name declared twice in one
+# process aborts every suite after it with "the type name 'CL' already exists".
+# A single declaration in the shared file makes that impossible.
+Add-Type -TypeDefinition @"
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+public delegate bool EnumWinProc(IntPtr h, IntPtr p);
+public static class CL {
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassNameW(IntPtr h, StringBuilder s, int n);
+  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWinProc cb, IntPtr p);
+  [DllImport("user32.dll")] public static extern IntPtr GetParent(IntPtr h);
+  [DllImport("user32.dll")] public static extern int GetWindowLongW(IntPtr h, int i);
+  // int, not IntPtr: a real dialog's control id is a small integer
+  [DllImport("user32.dll")] public static extern IntPtr GetDlgItem(IntPtr h, int id);
+  [DllImport("user32.dll")] public static extern bool IsWindowEnabled(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr hdc, uint f);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);
 }
 "@
 
 # ---- menu-command ids the app's WM_COMMAND answers (src/main.cpp) --------
 # Named once here so a suite never re-types a bare int with an ad-hoc comment;
 # the ids are the menu protocol and stay exactly what main.cpp dispatches.
-# The table is deliberately complete even where a suite drives a command only
-# through the MNPDF_HOOK seam instead (the modal-dialog commands: signature
-# pick, merge, split - test-pageedit.ps1 explains why the menu path is
-# unreachable for those).
+# The table is the COMPLETE protocol copied from main.cpp, so a row may exist with
+# no driver in the tree yet: it is documentation of the coupling, not a claim that
+# every command is exercised. Two commands are driven only through the MNPDF_HOOK
+# seam instead (signature pick, merge - test-pageedit.ps1 explains why the menu
+# path is unreachable for those); every other row a suite actually drives, and
+# split (206) is posted as a menu command with its box found by class name.
 ${CMD_MENU_FIND}        = 2     # Edit > Find (the search bar's own command id)
 ${CMD_COPY}             = 101
 ${CMD_FIND}             = 103
@@ -120,10 +149,28 @@ ${CMD_NEW_TAB}          = 300   # New Tab: one more document in this window
 ${CMD_CLOSE_TAB}       = 301   # Close Tab: drop the active one
 ${CMD_HIDE_TABSTRIP}   = 302   # Hide/Show tab strip (the toggle's both directions)
 
-# posted mouse input: WM_LBUTTONDOWN/UP pack y in the hiword, x in the lowword
+# posted mouse input: WM_LBUTTONDOWN/UP pack y in the hiword, x in the lowword.
+# $x/$y are the one deliberately lowercase pair in this file: they are coordinate
+# packing, not a window handle.
 function Lparam([int]$x, [int]$y) { [IntPtr](($y -shl 16) -bor ($x -band 0xFFFF)) }
 
 # the verbose window title: which document, page and zoom the app says it is on
+# read a control's real text with WM_GETTEXT into a char[], and cut at the first
+# NUL. THE one copy of that rule: the message writes the text and one NUL and
+# nothing further, so the caller's buffer keeps whatever it already held AFTER
+# the text as CLR garbage, and the text is everything up to the first NUL. A
+# TrimEnd would leave that garbage attached to an otherwise correct read.
+# Top-level windows keep using Title (GetWindowTextW).
+function Control-Text([IntPtr]$h) {
+  if ($h -eq [IntPtr]::Zero) { return '' }
+  $b = [char[]]::new(4096)
+  [void][MN]::SendText($h, 0x000D, [IntPtr]4095, $b)
+  $s = -join $b
+  $z = $s.IndexOf([char]0)
+  if ($z -ge 0) { $s = $s.Substring(0, $z) }
+  return $s
+}
+
 function Title([IntPtr]$h) { $sb = New-Object System.Text.StringBuilder 256; [void][MN]::GetWindowTextW($h, $sb, 256); $sb.ToString() }
 
 # the arc.pdf fixture's page count, read out of the title assertions it feeds
@@ -140,22 +187,45 @@ function Fail([string]$Name, [string]$Detail) {
   else { Write-Output ("FAIL {0}" -f $Name) }
 }
 
+# A capability case that could not run because THIS box cannot own the clipboard.
+# Degrading is a deliberate design decision (CI can own the clipboard and runs
+# every case), so it is not a failure - but it must never be INVISIBLE: the
+# notice names the case, Complete-Suite counts them, and a run with any degraded
+# case says so in one line instead of looking identical to a full pass.
+# The 'SKIP ' wording has no colon ON PURPOSE: the runners' verdict regex matches
+# 'SKIP:' and fails on it, and a box that cannot hold the clipboard is not a
+# regression.
+$script:degraded = New-Object System.Collections.Generic.List[string]
+function Degraded([string]$Name, [string]$Why) {
+  $script:degraded.Add($Name)
+  Write-Output ("SKIP {0}: {1}" -f $Name, $Why)
+}
+function Report-Degraded {
+  if ($script:degraded.Count) {
+    Write-Output ("note: clipboard unusable on this box - {0} capability case(s) ran no assertion: {1}" -f
+                  $script:degraded.Count, ($script:degraded -join '; '))
+  }
+}
+
 # Every suite ends with exactly this. The runners grep the RESULT line (and
 # ^FAIL), so its shape is a runner contract: FAIL/RESULT at column 0.
 function Complete-Suite {
+  Report-Degraded
   if ($script:failures.Count) { Write-Output ("RESULT: {0} FAILURE(S)" -f $script:failures.Count); exit 1 }
   Write-Output "RESULT: ALL PASS"
 }
 
 # ---- waiting --------------------------------------------------------------
 # wait until a condition holds (polled) instead of sleeping a guessed length:
-# a loaded machine makes every fixed sleep a coin flip
-function Await([scriptblock]$Cond, [int]$TimeoutMs = 15000, [int]$StepMs = 100) {
+# a loaded machine makes every fixed sleep a coin flip. The poll step stays
+# 100 ms for every caller, so it is not a parameter: it was tuned and documented
+# once, and a knob nobody turns only invites a caller to tune it again.
+function Await([scriptblock]$Cond, [int]$TimeoutMs = 15000) {
   $elapsed = 0
   while ($elapsed -lt $TimeoutMs) {
     if (& $Cond) { return $true }
-    Start-Sleep -Milliseconds $StepMs
-    $elapsed += $StepMs
+    Start-Sleep -Milliseconds 100
+    $elapsed += 100
   }
   return $false
 }
@@ -181,7 +251,7 @@ function FindAppWindow([int]$ProcId) {
 # internal: Restore a backgrounded window without activating it (SW_SHOWNOACTIVATE
 # through SetWindowPlacement gives a real client rect with the foreground
 # untouched). Launch composes it; suites go through Launch, not here.
-# Verified: showCmd=1, client 537x364, isFg=False.
+# Verified: showCmd=4 (SW_SHOWNOACTIVATE), client 537x364, isFg=False.
 function ShowNoActivate([IntPtr]$Wnd) {
   $wp = New-Object WPL
   $wp.length = 44
@@ -192,9 +262,14 @@ function ShowNoActivate([IntPtr]$Wnd) {
 
 # The app binary a suite drives: the runner's explicit choice, else the tree's
 # own build output (lib.ps1 lives in tests\, so the repo root is one level up).
+# A missing binary is a hard stop on BOTH branches, and the message says what to
+# run: the fallback used to return the missing path, and the first thing anyone
+# saw was "no mnpdf app window" from the launch instead.
 function Resolve-AppExe {
-  if ($env:MNPDF_GATE_EXE) { return $env:MNPDF_GATE_EXE }
-  return Join-Path $PSScriptRoot "..\build\mnpdf.exe"
+  if ($env:MNPDF_GATE_EXE) { return (Resolve-Path $env:MNPDF_GATE_EXE).Path }
+  $built = Join-Path $PSScriptRoot "..\build\mnpdf.exe"
+  if (Test-Path -LiteralPath $built) { return (Resolve-Path $built).Path }
+  throw "app binary not found at $built - run build.bat first"
 }
 
 $script:appWaitMs = 20000   # one bound for both launch waits
@@ -272,23 +347,34 @@ public static class VDM {
   return $true
 }
 
+# the placement target this run asks for, or $null when placement is off (CI:
+# no MNPDF_WINDOW_DESKTOP, so nothing here may move a window). THE one parse of the
+# variable: the one-shot move, the watcher and Start-App's early loop all used to
+# parse it separately.
+function Get-DesktopTarget {
+  if (-not $env:MNPDF_WINDOW_DESKTOP) { return $null }
+  $target = 0
+  if (-not [int]::TryParse($env:MNPDF_WINDOW_DESKTOP, [ref]$target)) { return $null }
+  return $target
+}
+
 function Move-AppWindowToDesktop([IntPtr]$Wnd) {
   if (-not (Ensure-VdaReady)) { return }
-  $target = 0
-  if (-not [int]::TryParse($env:MNPDF_WINDOW_DESKTOP, [ref]$target)) { return }
+  $target = Get-DesktopTarget
+  if ($null -eq $target) { return }
   # -1 is the accessor for DEFAULT_DESKTOP, not a "not assigned yet" state: a
   # window created moments ago really is already on a desktop, and that desktop
   # is the one in use. So there is nothing to wait out - move it, then verify
   # and retry the move itself a few times.
   #
-  # The sleep between tries is 10ms, not 60ms, and the cap is 100 tries: the
-  # window is visible off-target for as long as this loop has not settled it,
-  # and a placed window is minimised-but-taskbarred on the desktop someone is
-  # using. Measured before this change: the app's window existed at ~750ms on
-  # the working desktop and only landed on the seat at ~1950ms, i.e. ~1.2s of
-  # taskbar button per launch; the roster launches a window per case, so a run
-  # read as continuous flashing. The accessor move itself is cheap (one call),
-  # so a tight poll is the honest way to shrink that window.
+  # The sleep between tries is 10ms, not 60ms: the window is visible off-target
+  # for as long as this loop has not settled it, and a placed window is
+  # minimised-but-taskbarred on the desktop someone is using. Measured before
+  # this change: the app's window existed at ~750ms on the working desktop and
+  # only landed on the seat at ~1950ms, i.e. ~1.2s of taskbar button per launch;
+  # the roster launches a window per case, so a run read as continuous flashing.
+  # The accessor move itself is cheap (one call), so a tight poll is the honest
+  # way to shrink that window.
   for ($i = 0; $i -lt 100 -and [VDM]::DesktopOf($Wnd) -ne $target; $i++) {
     [void][VDM]::MoveTo($Wnd, $target)
     Start-Sleep -Milliseconds 10
@@ -316,8 +402,8 @@ function Move-AppWindowToDesktop([IntPtr]$Wnd) {
 # its own once the app process is gone.
 function Start-DesktopWatcher([int]$ProcId) {
   if (-not (Ensure-VdaReady)) { return }
-  $target = 0
-  if (-not [int]::TryParse($env:MNPDF_WINDOW_DESKTOP, [ref]$target)) { return }
+  $target = Get-DesktopTarget
+  if ($null -eq $target) { return }
   $shell = [runspacefactory]::CreateRunspace()
   $shell.Open()
   $rs = [powershell]::Create(); $rs.Runspace = $shell
@@ -334,6 +420,10 @@ function Start-DesktopWatcher([int]$ProcId) {
       try { $wins = [VDM]::TopLevelOf([uint32]$pidToWatch) } catch { }
       foreach ($h in $wins) {
         try {
+          # Must call [VDM] directly, NOT a placement helper: PowerShell functions
+          # defined in the caller session are invisible inside a fresh runspace,
+          # while Add-Type types like [VDM] are loaded into the process AppDomain
+          # and visible everywhere.
           $of = [VDM]::DesktopOf($h)
           if ($of -eq $desktop) { continue }     # already where it belongs
           [void][VDM]::MoveTo($h, $desktop)      # -1 = DEFAULT_DESKTOP: the one to move
@@ -419,17 +509,14 @@ function Start-App([string]$Exe, [string]$Doc) {
   # window style must stay an ordinary top-level window, because the virtual-
   # desktop API cannot see or move a WS_EX_TOOLWINDOW one.
   if ($env:MNPDF_WINDOW_DESKTOP -and (Ensure-VdaReady)) {
-    $target = 0
-    if ([int]::TryParse($env:MNPDF_WINDOW_DESKTOP, [ref]$target)) {
-      for ($i = 0; $i -lt 500; $i++) {
-        $w0 = FindAppWindow $proc.Id
-        if ($w0 -ne [IntPtr]::Zero) {
-          if ([VDM]::DesktopOf($w0) -eq $target) { break }
-          [void][VDM]::MoveTo($w0, $target)
-        }
-        Start-Sleep -Milliseconds 10
-      }
+    $w0 = [IntPtr]::Zero
+    for ($i = 0; $i -lt 500 -and $w0 -eq [IntPtr]::Zero; $i++) {
+      $w0 = FindAppWindow $proc.Id
+      if ($w0 -eq [IntPtr]::Zero) { Start-Sleep -Milliseconds 10 }
     }
+    # the same retry rule the one-shot move applies, through its one owner:
+    # move, verify with the accessor, retry the move itself
+    if ($w0 -ne [IntPtr]::Zero) { Move-AppWindowToDesktop $w0 }
   }
   if (-not (Await { (FindAppWindow $proc.Id) -ne [IntPtr]::Zero } $script:appWaitMs)) { throw "no mnpdf app window ($Exe $Doc)" }
   $w = FindAppWindow $proc.Id
@@ -511,6 +598,13 @@ function Restore-PrefState {
   # writeAppPref emits only known keys, so a sentinel here means the restore above
   # did not happen and the file is still pure forge.
   if (Test-PrefForged -AppPref $AppPref -Sentinel $Sentinel) { Remove-Item -LiteralPath $AppPref -ErrorAction SilentlyContinue }
+  # a restore that quietly did not happen is the one failure this function must
+  # report: without the app.txt the user's next launch is on default prefs and
+  # nothing above would have said so. The backup survives by design, so a second
+  # call can still put it back.
+  if (-not (Test-Path -LiteralPath $AppPref)) {
+    Write-Output "note: no app.txt at $AppPref (there was none, or the restore failed - the $Missing / $Backup markers are still in place)"
+  }
 }
 
 # suite-facing restore: the same rule against the paths Init-PrefForge recorded
@@ -540,9 +634,20 @@ function Init-PrefForge([string]$AppPref, [string]$Label) {
   } else {
     Set-Content -LiteralPath $script:prefMissing -Value ''
   }
-  # a watchdog child that outlives this shell by any means (timeout, tree kill,
-  # hard crash) is the only thing that restores the prefs on those paths. The
-  # paths go as ARGUMENTS to a static script file, never interpolated into
+  # a watchdog child is the only thing that restores the prefs on those paths.
+  # It survives a normal exit, a hard crash and the WSL runner's direct-child
+  # kill, but NOT the Windows runner's `taskkill /T` tree kill (scripts\
+  # gate-common.ps1, Invoke-BoundedRun), which takes the watchdog down with the
+  # suite.
+  #
+  # RECORDED FOLLOW-UP (not implemented here): on that tree-kill path a forged
+  # app.txt is left behind with no watchdog to restore it. It has not fired in
+  # practice - the 900 s suite bound is roughly 29x the slowest recorded suite
+  # runtime - but if that margin ever shrinks, spawn the watchdog OUTSIDE the
+  # kill tree so it is not a descendant of this shell, or have the bounded
+  # runner trigger the suite's pref restore after a kill.
+  #
+  # The paths go as ARGUMENTS to a static script file, never interpolated into
   # generated code: an apostrophe in a profile path cannot break the restore
   # (pre-quoted for Start-Process's raw command line, which does not add quotes).
   $wdPath = Join-Path $PSScriptRoot 'watchdog.ps1'
@@ -587,9 +692,15 @@ function Set-ForgedAppPref([int]$SecondsAgo = 300, [string]$Tag) {
 # instance the user has open is running: deciding after the wipe would delete
 # real state first. Skip (exit 0) is the honest outcome; the runners treat a
 # SKIP as a failure, so this only ever fires when a human really has the app open.
+# The process NAME decides it, never MainWindowHandle: FindAppWindow's comment
+# records that a backgrounded window (MNPDF_BACKGROUND=1, which the gate sets)
+# keeps MainWindowHandle 0 until its first ShowWindow, so that filter answers
+# "nothing running" for a live instance - and the suites wipe state RIGHT after
+# this call. The gate pre-flight (Assert-NoAppRunning) counts processes for the
+# same reason.
 function Assert-NoRunningApp {
-  $existing = Get-Process mnpdf -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne [IntPtr]::Zero }
-  if ($existing) { Write-Output "SKIP: an mnpdf instance is already running (state unknown)"; exit 0 }
+  $existing = @(Get-Process mnpdf -ErrorAction SilentlyContinue)
+  if ($existing.Count) { Write-Output "SKIP: an mnpdf instance is already running (state unknown)"; exit 0 }
 }
 
 # ---- clipboard (zombie-safe) ----------------------------------------------
@@ -604,11 +715,15 @@ $script:clipOk = $true   # cleared the first time a read hangs; never touch it a
 function Test-ClipboardRoundTrip {
   $sentinel = 'mnpdf-clip-probe-{0}' -f [Guid]::NewGuid().ToString('n')
   $tmpW = [System.IO.Path]::GetTempFileName()
+  $proc = $null
   try {
     $proc = Start-Process powershell -ArgumentList '-NoProfile','-Command',
             ("Set-Clipboard -Value '{0}' | Out-File -Encoding unicode '$tmpW'" -f $sentinel) -PassThru -WindowStyle Hidden
     if (-not $proc.WaitForExit(2000)) { try { $proc.Kill() } catch {}; return $false }
-  } finally { Remove-Item $tmpW -ErrorAction SilentlyContinue }
+  } finally {
+    if ($proc) { $proc.Dispose() }
+    Remove-Item $tmpW -ErrorAction SilentlyContinue
+  }
   return ((GetClip) -eq $sentinel)
 }
 
@@ -618,29 +733,34 @@ function GetClip {
   # the first hang instead of stalling
   if (-not $script:clipOk) { return '' }
   $tmp = [System.IO.Path]::GetTempFileName()
-  $proc = Start-Process powershell -ArgumentList '-NoProfile','-Command',"Get-Clipboard -Raw | Out-File -Encoding unicode '$tmp'" -PassThru -WindowStyle Hidden
-  if (-not $proc.WaitForExit(2000)) {
-    try { $proc.Kill() } catch {}
-    Remove-Item $tmp -ErrorAction SilentlyContinue
-    $script:clipOk = $false   # zombie lock: bail out for good
-    return ''
+  $proc = $null
+  try {
+    $proc = Start-Process powershell -ArgumentList '-NoProfile','-Command',"Get-Clipboard -Raw | Out-File -Encoding unicode '$tmp'" -PassThru -WindowStyle Hidden
+    if (-not $proc.WaitForExit(2000)) {
+      try { $proc.Kill() } catch {}
+      Remove-Item $tmp -ErrorAction SilentlyContinue
+      $script:clipOk = $false   # zombie lock: bail out for good
+      return ''
+    }
+    # the temp file must go on EVERY path, including the read below: GetClip is
+    # called in a loop (test-features' drag/word sweeps call it hundreds of times
+    # per run), and the old code leaked one tmp*.tmp per call. The process handle
+    # is disposed on the same paths, for the same reason.
+    try { return ((Get-Content $tmp -Raw -ErrorAction SilentlyContinue) -replace "\r?\n?$", '') }
+    finally { Remove-Item $tmp -ErrorAction SilentlyContinue }
+  } finally {
+    if ($proc) { $proc.Dispose() }
   }
-  # the temp file must go on EVERY path, including the read below: GetClip is
-  # called in a loop (test-features' drag/word sweeps call it hundreds of times
-  # per run), and the old code leaked one tmp*.tmp per call. Its sibling
-  # Test-ClipboardRoundTrip above has always removed its file in a finally.
-  try { return ((Get-Content $tmp -Raw -ErrorAction SilentlyContinue) -replace "\r?\n?$", '') }
-  finally { Remove-Item $tmp -ErrorAction SilentlyContinue }
 }
 
 # ---- sidecar filename (the app's own hash, in one place) ------------------
 # sidecar file for a pdf path: FNV-1a over UTF-16 bytes incl. the terminator,
 # the same hash the app uses (sidecarPathFor, src/main.cpp); BigInteger keeps
 # the 64-bit wraps exact. This is the ONE PowerShell copy of that rule.
-function SidecarFor([string]$pdfPath) {
+function SidecarFor([string]$PdfPath) {
   $M = [System.Numerics.BigInteger]::Pow(2, 64)
   $hh = [System.Numerics.BigInteger]1469598103934665603
-  foreach ($b in [Text.Encoding]::Unicode.GetBytes($pdfPath)) {
+  foreach ($b in [Text.Encoding]::Unicode.GetBytes($PdfPath)) {
     $hh = (($hh -bxor [System.Numerics.BigInteger]$b) * [System.Numerics.BigInteger]1099511628211) % $M
   }
   $hh = ($hh * [System.Numerics.BigInteger]1099511628211) % $M   # trailing NUL,

@@ -196,10 +196,20 @@ function AutosaveOff([IntPtr]$Wnd) {
   $pref = Join-Path $env:APPDATA 'mnpdf\app.txt'
   return (Await { (Get-Content $pref -Raw -ErrorAction SilentlyContinue) -match 'autosave=0' } 8000)
 }
+# QuitApp always reaps the instance it is given: a graceful quit is tried
+# first, but if the window ignores it the process is force-killed. Every case
+# here launches its own instance, and a leaked one would land the next case on
+# top of a stray - which this suite's own case header forbids (the Assert-
+# NoRunningApp in lib.ps1 then refuses every later suite). Returning false
+# without killing would hand that stray to the caller.
 function QuitApp($P) {
   $w = FindAppWindow $P.Id
   if ($w -ne [IntPtr]::Zero) { [void][MN]::PostMessageW($w, 0x0111, [IntPtr]$CMD_QUIT, [IntPtr]::Zero) }
   for ($i = 0; $i -lt 60 -and -not $P.HasExited; $i++) { Start-Sleep -Milliseconds 200 }
+  if (-not $P.HasExited) {
+    try { Stop-Process -Id $P.Id -Force -ErrorAction Stop } catch { }
+    for ($i = 0; $i -lt 20 -and -not $P.HasExited; $i++) { Start-Sleep -Milliseconds 100 }
+  }
   return $P.HasExited
 }
 function ZoomTo([IntPtr]$Wnd, [int]$Times, [int]$CmdId) {
@@ -238,40 +248,52 @@ if (-not (AwaitTitle $wA "mnpdf 1/$pagesA")) {
 }
 
 # --- T11: a mark made in a tab then closed in front still reaches its sidecar -
+# The case body runs inside a try/finally: tests\lib.ps1 sets the error
+# preference to Stop, so a terminating error anywhere below would leave this
+# instance running AND print no verdict at all. The finally also covers every
+# early branch, so the app this case launched can never outlive the case - the
+# next case then launches on top of a stray instance, which is what the gate has
+# to reap.
 Remove-Item "$env:APPDATA\mnpdf\*" -Recurse -Force -ErrorAction SilentlyContinue
-$procC = Launch (Resolve-AppExe) $A
-$wC = FindAppWindow $procC.Id
-if (-not (AwaitTitle $wC "mnpdf 1/$pagesA")) {
-  Fail 'closing a tab keeps its mark in its sidecar' "no document window: '$(Title $wC)'"
-} elseif (-not (AutosaveOff $wC)) {
-  Fail 'closing a tab keeps its mark in its sidecar' 'autosave stayed on'
-  [void](QuitApp $procC)
-} else {
-  [void](ZoomTo $wC 2 $CMD_ZOOM_IN)                  # the mark this tab will own
-  [void][MN]::PostMessageW($wC, 0x0111, [IntPtr]$CMD_NEW_TAB, [IntPtr]::Zero)   # New Tab
-  AskOpen $wC $B
-  $mC = StripMetrics $wC
-  $pagesB = 0
-  if (AwaitTitle $wC 'mnpdf 1/\d+') { $pagesB = PagesInTitle $wC }
-  $xTab1 = 4 + [int]($mC.tw / 2)
-  ClickAt $wC $xTab1 ([int]($mC.strip / 2))                            # back to tab 1
-  $zClose = ''
-  if (AwaitTitle $wC "mnpdf 1/$pagesA") { $zClose = ZoomTo $wC 1 $CMD_ZOOM_OUT }   # a different view, still unsaved
-  [void][MN]::PostMessageW($wC, 0x0111, [IntPtr]$CMD_CLOSE_TAB, [IntPtr]::Zero)   # Close Tab: THIS tab goes
-  $took = $false
-  if (($pagesB -gt 0) -and (AwaitTitle $wC "mnpdf 1/$pagesB")) { $took = QuitApp $procC }
-  if (-not ($took -and $zClose)) {
-    Fail 'closing a tab keeps its mark in its sidecar' "closed tab: '$(Title $wC)'"
-    [void](QuitApp $procC)      # this window outlives the case otherwise: the case
-                                # below then launches on top of it, and a stray
-                                # instance is what the gate has to reap later
+try {
+  $procC = Launch (Resolve-AppExe) $A
+  $wC = FindAppWindow $procC.Id
+  if (-not (AwaitTitle $wC "mnpdf 1/$pagesA")) {
+    Fail 'closing a tab keeps its mark in its sidecar' "no document window: '$(Title $wC)'"
+  } elseif (-not (AutosaveOff $wC)) {
+    Fail 'closing a tab keeps its mark in its sidecar' 'autosave stayed on'
+    [void](QuitApp $procC)
   } else {
-    $procC2 = Launch (Resolve-AppExe) $A
-    $wC2 = FindAppWindow $procC2.Id
-    if (AwaitTitle $wC2 "mnpdf 1/$pagesA\s+$zClose") { Pass 'closing a tab keeps its mark in its sidecar' }
-    else { Fail 'closing a tab keeps its mark in its sidecar' "expected $zClose, got '$(Title $wC2)'" }
-    [void](QuitApp $procC2)
+    [void](ZoomTo $wC 2 $CMD_ZOOM_IN)                  # the mark this tab will own
+    [void][MN]::PostMessageW($wC, 0x0111, [IntPtr]$CMD_NEW_TAB, [IntPtr]::Zero)   # New Tab
+    AskOpen $wC $B
+    $mC = StripMetrics $wC
+    $pagesB = 0
+    if (AwaitTitle $wC 'mnpdf 1/\d+') { $pagesB = PagesInTitle $wC }
+    $xTab1 = 4 + [int]($mC.tw / 2)
+    ClickAt $wC $xTab1 ([int]($mC.strip / 2))                            # back to tab 1
+    $zClose = ''
+    if (AwaitTitle $wC "mnpdf 1/$pagesA") { $zClose = ZoomTo $wC 1 $CMD_ZOOM_OUT }   # a different view, still unsaved
+    [void][MN]::PostMessageW($wC, 0x0111, [IntPtr]$CMD_CLOSE_TAB, [IntPtr]::Zero)   # Close Tab: THIS tab goes
+    $took = $false
+    if (($pagesB -gt 0) -and (AwaitTitle $wC "mnpdf 1/$pagesB")) { $took = QuitApp $procC }
+    if (-not ($took -and $zClose)) {
+      Fail 'closing a tab keeps its mark in its sidecar' "closed tab: '$(Title $wC)'"
+      [void](QuitApp $procC)      # this window outlives the case otherwise: the case
+                                  # below then launches on top of it, and a stray
+                                  # instance is what the gate has to reap later
+    } else {
+      $procC2 = Launch (Resolve-AppExe) $A
+      $wC2 = FindAppWindow $procC2.Id
+      if (AwaitTitle $wC2 "mnpdf 1/$pagesA\s+$zClose") { Pass 'closing a tab keeps its mark in its sidecar' }
+      else { Fail 'closing a tab keeps its mark in its sidecar' "expected $zClose, got '$(Title $wC2)'" }
+      [void](QuitApp $procC2)
+    }
   }
+} finally {
+  # the app closes itself on the success path (closing the last tab), so a
+  # $procC still running here means the case ended on a failure or an exception
+  if ($procC -and -not $procC.HasExited) { [void](QuitApp $procC) }
 }
 
 # --- T12: a hidden strip stays hidden across a relaunch ------------------
@@ -279,47 +301,55 @@ if (-not (AwaitTitle $wC "mnpdf 1/$pagesA")) {
 # what a relaunch starts with is the proof the preference was persisted, not just
 # applied. The + square is the probe: with the strip shown it opens a tab, and
 # with the strip hidden its coordinates are document, so the same click cannot.
-$procD = Launch (Resolve-AppExe) $A
-$wD = FindAppWindow $procD.Id
-if (-not (AwaitTitle $wD 'mnpdf 1/\d+')) {
-  Fail 'a hidden strip stays hidden across a relaunch' "no document window: '$(Title $wD)'"
-  [void](QuitApp $procD)      # the case cannot continue, but the window must not
-                              # survive it - a later case would launch on top
-} else {
-  [void][MN]::PostMessageW($wD, 0x0111, [IntPtr]$CMD_HIDE_TABSTRIP, [IntPtr]::Zero)   # Hide tab strip
-  Start-Sleep -Milliseconds 400
-  if (QuitApp $procD) {
-    $procD2 = Launch (Resolve-AppExe) $A
-    $wD2 = FindAppWindow $procD2.Id
-    if (AwaitTitle $wD2 'mnpdf 1/\d+') {
-      $mD = StripMetrics $wD2
-      $crD = New-Object MNRect
-      [void][MN]::GetClientRect($wD2, [ref]$crD)
-      $plusX = $crD.R - $crD.L - [int]($mD.strip / 2)
-      ClickAt $wD2 $plusX ([int]($mD.strip / 2))       # where the + would be
-      Start-Sleep -Milliseconds 300                    # let the click's effect land
-      # The document title is asserted DIRECTLY after the click: the verbose
-      # title always carries 'mnpdf N/M Z%', so polling AwaitTitle would match
-      # before the click could matter. If the strip were shown, this click opens
-      # a tab and the title becomes a bare 'mnpdf'; reading the title directly
-      # here is what actually proves the click changed nothing.
-      if ((Title $wD2) -match 'mnpdf 1/\d+\s+\d+%') {
-        Pass 'a relaunch with the strip hidden starts with no strip'
-        [void][MN]::PostMessageW($wD2, 0x0111, [IntPtr]$CMD_HIDE_TABSTRIP, [IntPtr]::Zero)   # Show tab strip
-        Start-Sleep -Milliseconds 400
-        ClickAt $wD2 $plusX ([int]($mD.strip / 2))     # now it is the + square
-        if (AwaitTitle $wD2 '^mnpdf$') { Pass 'showing the strip restores the + button' }
-        else { Fail 'showing the strip restores the + button' "'$(Title $wD2)'" }
-      } else {
-        Fail 'a relaunch with the strip hidden starts with no strip' "the + click switched state: '$(Title $wD2)'"
-      }
-    } else {
-      Fail 'a hidden strip stays hidden across a relaunch' "relaunch: '$(Title $wD2)'"
-    }
-    [void](QuitApp $procD2)
+# Same exception-safety contract as T11: whatever happens below, the instance
+# this case launches is quit before the next case starts.
+try {
+  $procD = Launch (Resolve-AppExe) $A
+  $wD = FindAppWindow $procD.Id
+  if (-not (AwaitTitle $wD 'mnpdf 1/\d+')) {
+    Fail 'a hidden strip stays hidden across a relaunch' "no document window: '$(Title $wD)'"
+    [void](QuitApp $procD)      # the case cannot continue, but the window must not
+                                # survive it - a later case would launch on top
   } else {
-    Fail 'a hidden strip stays hidden across a relaunch' 'the quit did not complete'
+    [void][MN]::PostMessageW($wD, 0x0111, [IntPtr]$CMD_HIDE_TABSTRIP, [IntPtr]::Zero)   # Hide tab strip
+    Start-Sleep -Milliseconds 400
+    if (QuitApp $procD) {
+      $procD2 = Launch (Resolve-AppExe) $A
+      $wD2 = FindAppWindow $procD2.Id
+      if (AwaitTitle $wD2 'mnpdf 1/\d+') {
+        $mD = StripMetrics $wD2
+        $crD = New-Object MNRect
+        [void][MN]::GetClientRect($wD2, [ref]$crD)
+        $plusX = $crD.R - $crD.L - [int]($mD.strip / 2)
+        ClickAt $wD2 $plusX ([int]($mD.strip / 2))       # where the + would be
+        Start-Sleep -Milliseconds 300                    # let the click's effect land
+        # The document title is asserted DIRECTLY after the click: the verbose
+        # title always carries 'mnpdf N/M Z%', so polling AwaitTitle would match
+        # before the click could matter. If the strip were shown, this click opens
+        # a tab and the title becomes a bare 'mnpdf'; reading the title directly
+        # here is what actually proves the click changed nothing.
+        if ((Title $wD2) -match 'mnpdf 1/\d+\s+\d+%') {
+          Pass 'a relaunch with the strip hidden starts with no strip'
+          [void][MN]::PostMessageW($wD2, 0x0111, [IntPtr]$CMD_HIDE_TABSTRIP, [IntPtr]::Zero)   # Show tab strip
+          Start-Sleep -Milliseconds 400
+          ClickAt $wD2 $plusX ([int]($mD.strip / 2))     # now it is the + square
+          if (AwaitTitle $wD2 '^mnpdf$') { Pass 'showing the strip restores the + button' }
+          else { Fail 'showing the strip restores the + button' "'$(Title $wD2)'" }
+        } else {
+          Fail 'a relaunch with the strip hidden starts with no strip' "the + click switched state: '$(Title $wD2)'"
+        }
+      } else {
+        Fail 'a hidden strip stays hidden across a relaunch' "relaunch: '$(Title $wD2)'"
+      }
+      [void](QuitApp $procD2)
+    } else {
+      Fail 'a hidden strip stays hidden across a relaunch' 'the quit did not complete'
+    }
   }
+} finally {
+  # a case that fails early must not leave $procD running either ($procD2 quits
+  # itself on its own path)
+  if ($procD -and -not $procD.HasExited) { [void](QuitApp $procD) }
 }
 
 Complete-Suite

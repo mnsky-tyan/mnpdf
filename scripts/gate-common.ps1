@@ -8,14 +8,25 @@ $ErrorActionPreference = 'Stop'
 # scripts/suites.txt: one suite per line, '#' opens a comment, and a trailing
 # '*' marks a foreground suite (the app starts without MNPDF_BACKGROUND so its
 # popup can take the keyboard).
-function Read-SuiteRoster {
-  param([string]$RosterPath)
-  # MNPDF_SKIP_SUITES (comma-separated names) drops suites from the roster for
-  # this run: a suite can be environmentally broken on one machine (the
-  # clipboard suites fail when some other program holds the clipboard) while
-  # staying green on CI, which never sets the variable.
+# THE parsed MNPDF_SKIP_SUITES list: the comma-separated names a run drops from
+# its roster. One owner for the parse, because the plan a runner announces and
+# the roster it actually runs must come from the same split: test-ci.ps1 used to
+# split the same string a second time for its plan line, and the plan count went
+# wrong the moment the two copies disagreed.
+function Get-SkipList {
   $skip = @()
   if ($env:MNPDF_SKIP_SUITES) { $skip = $env:MNPDF_SKIP_SUITES.Split(',') | ForEach-Object { $_.Trim() } }
+  return @($skip | Where-Object { $_ })
+}
+
+# THE roster Get-SkipList drops its names from.
+function Read-SuiteRoster {
+  param([string]$RosterPath)
+  # A suite can be environmentally broken on one machine (the clipboard suites
+  # fail when some other program holds the clipboard) while staying green on CI,
+  # which never sets the variable. The skip list comes from Get-SkipList, so the
+  # dropped names and the announced plan can never be two different parses.
+  $skip = Get-SkipList
   foreach ($raw in (Get-Content -LiteralPath $RosterPath)) {
     $line = ("$raw" -replace '#.*$', '').Trim()
     if (-not $line) { continue }
@@ -31,15 +42,80 @@ function Read-SuiteRoster {
   }
 }
 
+# THE environment a suite run owes its caller back. The suite's child shell
+# isolates itself from this list, so a new seam added to gate-common.ps1 shows up
+# there automatically, instead of being left set for the rest of the run.
+$script:SuiteSeamNames = @('APPDATA', 'TEMP', 'TMP', 'MNPDF_GATE_EXE',
+                            'MNPDF_GATE_STATE', 'MNPDF_GATE_SUITE', 'MNPDF_BACKGROUND')
+
+# THE seams the RUNNER exports into its own environment for one suite: the same
+# names, so a new seam cannot exist in one place and not the other. A runner only
+# ever sets these four - its own APPDATA/TEMP are not part of the isolation,
+# which lives in the child shell.
+$script:RunnerSeamNames = @('MNPDF_GATE_EXE', 'MNPDF_GATE_STATE',
+                            'MNPDF_GATE_SUITE', 'MNPDF_BACKGROUND')
+
+# THE foreground decision, in one place: the app checks only that
+# MNPDF_BACKGROUND EXISTS, never its value, so a foreground suite needs the
+# variable REMOVED, not set to 0. Both runners call this; scripts/gate-test.sh
+# applies the same rule for the WSL path.
+function Set-SuiteForeground {
+  param([bool]$Foreground)
+  if ($Foreground) { Remove-Item Env:MNPDF_BACKGROUND -ErrorAction SilentlyContinue }
+  else { $env:MNPDF_BACKGROUND = '1' }
+}
+
+# --- the bounded launch ------------------------------------------------------
+# Run a child with a wall-clock bound, streaming its stdio to the console. A
+# child that ignores the bound is killed as a process TREE (taskkill /T), so a
+# deadlocked suite cannot leave the app it launched behind either. Deliberately
+# NOT Start-Process -Wait or Wait-Process: waiting also waits for the child's
+# inherited output handle, and the app a suite launches holds that handle open
+# long after the suite itself has finished - which is why the plain '&' form
+# was restored once before. The child is started directly through
+# ProcessStartInfo with UseShellExecute false, which inherits this console (so
+# stdio still streams) and keeps a real process handle: Start-Process -PassThru
+# returns an object whose ExitCode is always null, so a nonzero exit could not
+# be told from a clean one. The bounds match scripts/gate-test.sh: build 600 s,
+# each suite 900 s.
+#
+# RECORDED FOLLOW-UP (not implemented here): the kill is the whole TREE, so a
+# suite killed while it has a forged app.txt in place also loses the preference
+# watchdog (tests/watchdog.ps1, a Start-Process child of that suite) and the
+# user's real prefs would not be restored on this path. It is not reached in
+# practice: 900 s is roughly 29x the slowest recorded suite runtime. If that
+# margin shrinks, spawn the watchdog outside the kill tree or trigger the
+# suite's pref restore after a kill.
+function Invoke-BoundedRun {
+  param([string]$FilePath, [string[]]$ArgumentList, [int]$TimeoutSeconds, [string]$What)
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  $psi.FileName = $FilePath
+  $psi.Arguments = ($ArgumentList | ForEach-Object {
+    if ($_ -match '\s') { '"' + $_ + '"' } else { $_ }
+  }) -join ' '
+  $psi.UseShellExecute = $false
+  $p = [System.Diagnostics.Process]::Start($psi)
+  $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+  while (-not $p.HasExited) {
+    if ((Get-Date) -ge $deadline) {
+      taskkill.exe /T /F /PID $p.Id | Out-Null
+      throw "$What timed out after $TimeoutSeconds s (killed)"
+    }
+    Start-Sleep -Milliseconds 500
+  }
+  $p.WaitForExit()
+  if ($p.ExitCode -ne 0) { throw "$What exited $($p.ExitCode)" }
+}
+
 # --- the build --------------------------------------------------------------
-# One recipe for both runners. The caller bounds it in time.
+# One recipe for both runners.
 function Invoke-Build {
   param([string]$RepoRoot, [string]$ExePath)
   $null = New-Item -ItemType Directory -Force -Path (Join-Path $RepoRoot 'build')
   # the .bat is addressed absolutely: cmd resolves a bare script name against
   # the PATH, not the current directory
-  & cmd.exe /c ('"' + (Join-Path $RepoRoot 'build.bat') + '"')
-  if ($LASTEXITCODE -ne 0) { throw "build.bat exited $LASTEXITCODE" }
+  Invoke-BoundedRun -FilePath 'cmd.exe' -ArgumentList @('/c', (Join-Path $RepoRoot 'build.bat')) `
+    -TimeoutSeconds 600 -What 'build.bat'
   if (-not (Test-Path -LiteralPath $ExePath)) { throw 'build\mnpdf.exe is missing' }
 }
 
@@ -125,7 +201,7 @@ function Invoke-SuiteRun {
   @{ Id = $PID; Started = $self.StartTime.ToUniversalTime().Ticks } |
     ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $state 'runner.json')
   $restore = @{}
-  foreach ($name in 'APPDATA', 'TEMP', 'TMP', 'MNPDF_GATE_EXE', 'MNPDF_GATE_STATE', 'MNPDF_GATE_SUITE', 'MNPDF_BACKGROUND') {
+  foreach ($name in $script:SuiteSeamNames) {
     $restore[$name] = (Get-Item "Env:$name" -ErrorAction SilentlyContinue).Value
   }
   $ok = $false
@@ -133,15 +209,15 @@ function Invoke-SuiteRun {
     $env:APPDATA = $appData
     $env:TEMP = $temp
     $env:TMP = $temp
-    $env:MNPDF_GATE_EXE = $exePath
-    $env:MNPDF_GATE_STATE = $state
-    $env:MNPDF_GATE_SUITE = $suitePath
-    if ($foreground) { Remove-Item Env:MNPDF_BACKGROUND -ErrorAction SilentlyContinue }
-    else { $env:MNPDF_BACKGROUND = '1' }
+    # MNPDF_GATE_EXE / STATE / SUITE arrive in this child's own environment from
+    # the runner, which exported them for exactly this call: re-writing them here
+    # would only pretend to override something that cannot change.
+    Set-SuiteForeground -Foreground ([bool]$foreground)
     # LOCKSTEP: scripts/test-ci.ps1 makes the same set/remove decision for the CI
-    # runner from the same roster marker, and scripts/gate-test.sh mirrors both
-    # for the WSL path - the app checks existence only, so the rule is one
-    # sentence and must stay identical everywhere it is applied.
+    # runner from the same roster marker through the same function, and
+    # scripts/gate-test.sh mirrors both for the WSL path - the app checks
+    # existence only, so the rule is one sentence and must stay identical
+    # everywhere it is applied.
     # The suite is invoked directly rather than through Start-Process -Wait:
     # that also waits for the child's inherited output handle, and the app the
     # suite launches holds it open long after the suite itself has finished.

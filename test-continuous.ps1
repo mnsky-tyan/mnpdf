@@ -71,12 +71,17 @@ if ($t3 -match "mnpdf 1/$FixturePages") { Pass "scroll back to top: '$t3'" }
 else { Fail "scroll back" "'$t3'" }
 
 $p.Refresh()
-if ($p.HasExited) { throw "mnpdf exited unexpectedly" }
+if ($p.HasExited) {
+  # a terminating error here once left the app instance running and printed no
+  # verdict at all; now it is an ordinary failing case with a quit on the way out
+  Fail "app stayed up" "mnpdf exited unexpectedly"
+} else {
 
 # this suite's instance goes home: a suite that leaves an app running fails the
 # next suite's machine-is-free pre-flight, here and in CI
 [void][MN]::PostMessageW($h, 0x0111, [IntPtr]$CMD_QUIT, [IntPtr]::Zero)
 [void](Await { $p.HasExited } 15000)
 if (-not $p.HasExited) { $p | Stop-Process -Force }
+}
 
 Complete-Suite

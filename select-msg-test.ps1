@@ -16,10 +16,20 @@ $Pdf = Join-Path $PSScriptRoot "build\arc.pdf"
 
 function Post([IntPtr]$h, [uint32]$m, [IntPtr]$w, [IntPtr]$l) { [void][MN]::PostMessageW($h, $m, $w, $l) }
 
-# hl= entries currently on disk for the open doc (sidecar is rewritten whole)
-function HlCount { $sc2 = Get-ChildItem "$env:APPDATA\mnpdf\doc-*.txt" -ErrorAction SilentlyContinue | Select-Object -First 1
-  if (-not $sc2) { return 0 }
-  @(Get-Content $sc2.FullName | Where-Object { $_ -match '^hl=' }).Count }
+# hl= entries currently on disk for the open doc (sidecar is rewritten whole).
+# The sidecar is located by the app's own filename hash (SidecarFor), not by a
+# glob: this file used to take the UNsorted first doc-*.txt here and the NEWEST
+# one two screens down, so one file answered two questions two different ways.
+# The hash is exact, so both reads land on the same file every time.
+function HlCount {
+  $sc2 = SidecarFor $Pdf
+  if (-not (Test-Path -LiteralPath $sc2)) { return 0 }
+  @(Get-Content -LiteralPath $sc2 | Where-Object { $_ -match '^hl=' }).Count }
+function SidecarRaw {
+  $sc2 = SidecarFor $Pdf
+  if (-not (Test-Path -LiteralPath $sc2)) { return '' }
+  return (Get-Content -LiteralPath $sc2 -Raw)
+}
 function CopyAndWait([IntPtr]$h, [string]$prev) {
   if (-not $script:clipOk) { Post $h 0x0301 ([IntPtr]0) ([IntPtr]0); Start-Sleep -Milliseconds 300; return '' }
   Post $h 0x0301 ([IntPtr]0) ([IntPtr]0)                        # WM_COPY
@@ -34,6 +44,27 @@ function CopyAndWait([IntPtr]$h, [string]$prev) {
 function OpenSearch([IntPtr]$h) {
   Post $h 0x0111 ([IntPtr]$CMD_MENU_FIND) ([IntPtr]0)           # WM_COMMAND Edit > Find
 }
+
+# quit the instance this suite owns, whatever happened above it.
+function Quit-OwnedApp($Proc) {
+  if (-not $Proc) { return $true }
+  $w = FindAppWindow $Proc.Id
+  if ($w -ne [IntPtr]::Zero) { Post $w 0x0111 ([IntPtr]$CMD_QUIT) ([IntPtr]0) }
+  for ($i = 0; $i -lt 60 -and -not $Proc.HasExited; $i++) { Start-Sleep -Milliseconds 200 }
+  # poll OUR process, never Get-Process mnpdf: an unrelated instance the reader
+  # opened must not read as "the quit failed"
+  if (-not $Proc.HasExited) {
+    try { $Proc | Stop-Process -Force -ErrorAction Stop } catch { }
+  }
+  return $Proc.HasExited
+}
+
+# One try/finally around the whole body: tests/lib.ps1 sets the error preference
+# to Stop, so any bad call terminates the script - and a suite that leaves its app
+# instance running fails the NEXT suite's machine-is-free pre-flight, on CI and
+# locally. The body keeps this file's flat, unindented style on purpose, so the
+# diff stays readable.
+try {
 
 # requires a fresh instance we own: the assertions assume a clean state
 Assert-NoRunningApp
@@ -87,11 +118,12 @@ if ($pbox2 -eq [IntPtr]::Zero) { Pass "outside click closed the box" }
 else { Fail "pin close" "box stayed open" }
 
 Await {                                                       # debounced autosave flush, polled
-  $script:sc2 = Get-ChildItem "$env:APPDATA\mnpdf\doc-*.txt" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime | Select-Object -Last 1
-  $script:sc2 -and (Get-Content $script:sc2.FullName -Raw -ErrorAction SilentlyContinue) -match 'pin=\d+,[\d.]+,[\d.]+,c\d+,hi\\nyo'
+  (SidecarRaw) -match 'pin=\d+,[\d.]+,[\d.]+,c\d+,hi\\nyo'
 } 30000 | Out-Null
-$sc2 = Get-ChildItem "$env:APPDATA\mnpdf\doc-*.txt" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime | Select-Object -Last 1
-$raw2 = Get-Content $sc2.FullName -Raw
+# no sidecar file is a real failure, not a null-deref: the Await above discards
+# its own result, so an unguarded $sc2.FullName threw here and died with a
+# PowerShell stack trace instead of ever printing a verdict or quitting the app
+$raw2 = SidecarRaw
 if ($raw2 -match 'pin=\d+,[\d.]+,[\d.]+,c\d+,hi\\nyo') {
   Pass "multiline pin saved (escaped newline)"
 } else { Fail "pin save" "multiline pin not saved: $raw2" }
@@ -138,15 +170,18 @@ for ($cand = 484; $cand -le 616; $cand += 12) {
   if (-not $script:clipOk) { break }
   if ($t -match 'recommendation') { break }
 }
-if (-not $script:clipOk) { Write-Output "SKIP drag copy: clipboard locked" }
-elseif (-not (Test-ClipboardRoundTrip)) { Write-Output "SKIP drag copy: clipboard not writable on this box" }
+if (-not $script:clipOk) { Degraded 'drag copy' 'clipboard locked' }
+elseif (-not (Test-ClipboardRoundTrip)) { Degraded 'drag copy' 'clipboard not writable on this box' }
 elseif ($t -match 'recommendation') { Pass "drag select + copy: [$($t.Length)] $t" }
 else { Fail "drag select" "clipboard was '$t'" }
 # release kept the selection: highlight it through the same command the right-click menu posts
 Post $h 0x0111 ([IntPtr]$CMD_HIGHLIGHT) ([IntPtr]0)            # Highlight (default color = yellow)
 Await { (HlCount) -gt 0 } 30000 | Out-Null                   # debounced flush, polled (8s was a coin flip under load)
-$sc = Get-ChildItem "$env:APPDATA\mnpdf\doc-*.txt" -ErrorAction SilentlyContinue | Select-Object -First 1
-$hlLine = if ($sc) { (Get-Content $sc.FullName) | Where-Object { $_ -match '^hl=' } | Select-Object -First 1 }
+# NOTE the parentheses around (SidecarRaw): a bare `SidecarRaw -split "`n"`
+# is parsed as a COMMAND with a -split argument, not as splitting the function's
+# output - it silently returned the wrong thing here and the case read as a
+# failure with a correct sidecar on disk.
+$hlLine = if ((HlCount) -gt 0) { ((SidecarRaw) -split "`n" | Where-Object { $_ -match '^hl=' } | Select-Object -First 1) } else { '' }
 if ($hlLine) { Pass "highlight via menu command persisted: $hlLine" }
 else { Fail "highlight via menu command" "no hl= in sidecar" }
 
@@ -168,8 +203,8 @@ foreach ($y in 300, 340, 260, 380, 220, 420, 180, 460) {
     if ($t -and $t -notmatch '\s' -and $t.Length -le 20) { $wordX = $x; $wordAt = $y; $word = $t; break }
   }
 }
-if (-not $script:clipOk) { Write-Output "SKIP word select: clipboard locked" }
-elseif (-not (Test-ClipboardRoundTrip)) { Write-Output "SKIP word select: clipboard not writable on this box" }
+if (-not $script:clipOk) { Degraded 'word select' 'clipboard locked' }
+elseif (-not (Test-ClipboardRoundTrip)) { Degraded 'word select' 'clipboard not writable on this box' }
 elseif ($word) { Pass "word select: '$word'" }
 else { Fail "word select" "no single word in the sweep (last '$t')" }
 
@@ -186,8 +221,8 @@ $t = CopyAndWait $h (GetClip)
 # the line at the word's spot must at least contain the word; it may be a
 # short heading, so a prose length would assume one document's layout again
 $w = if ($word) { $word.Trim() } else { '' }
-if (-not $script:clipOk) { Write-Output "SKIP line select: clipboard locked" }
-elseif (-not (Test-ClipboardRoundTrip)) { Write-Output "SKIP line select: clipboard not writable on this box" }
+if (-not $script:clipOk) { Degraded 'line select' 'clipboard locked' }
+elseif (-not (Test-ClipboardRoundTrip)) { Degraded 'line select' 'clipboard not writable on this box' }
 elseif ($w -and $t -and $t.Contains($w) -and $t.Length -ge $w.Length) { Pass "line select: '$t'" }
 else { Fail "line select" "clipboard was '$t' (word was '$w')" }
 
@@ -210,7 +245,9 @@ if ($edit -eq [IntPtr]::Zero -or -not [MN]::IsWindowVisible($edit)) {
   } else { Fail "search title" "'$title'" }
 
   $lbl = [MN]::FindWindowExW($h, [IntPtr]::Zero, "Static", [IntPtr]::Zero)
-  $lt0 = Title $lbl
+  # the label is a control whose text the app rewrites at runtime, so it is read
+  # with the shared Control-Text rule (WM_GETTEXT + first-NUL cut)
+  $lt0 = Control-Text $lbl
   if ($lt0 -match '^(\d+)/(\d+)$' -and [int]$Matches[1] -eq 1 -and [int]$Matches[2] -ge 2) {
     Pass "counter label: '$lt0' (document-wide total)"
   } else { Fail "counter label" "'$lt0'" }
@@ -223,14 +260,14 @@ if ($edit -eq [IntPtr]::Zero -or -not [MN]::IsWindowVisible($edit)) {
   $title2 = Title $h
   if ($title2 -ne $title) { Pass "F3 walk: title='$title2'" }
   else { Fail "F3" "did not move: '$title2'" }
-  $lt1 = Title $lbl
+  $lt1 = Control-Text $lbl
   if ($lt1 -match '^(\d+)/(\d+)$' -and [int]$Matches[1] -eq 2) {
     Pass "F3 advances the counter: '$lt1'"
   } else { Fail "F3 counter" "'$lt1'" }
 
   Post $edit 0x0100 ([IntPtr]0x0D) ([IntPtr]0)                  # Enter -> next match
   Await { (Title $h) -match 'recommendation 3/\d+' } 45000 | Out-Null   # same label-then-title order
-  $lt2 = Title $lbl
+  $lt2 = Control-Text $lbl
   if ($lt2 -match '^(\d+)/(\d+)$' -and [int]$Matches[1] -eq 3) {
     Pass "Enter jumps to next match: '$lt2'"
   } else { Fail "Enter" "did not advance: '$lt2'" }
@@ -242,7 +279,11 @@ if ($edit -eq [IntPtr]::Zero -or -not [MN]::IsWindowVisible($edit)) {
   else { Fail "Esc" "left search open: '$title3'" }
 }
 
-if ($p.HasExited) { throw "mnpdf exited unexpectedly during the test" }
+if ($p.HasExited) {
+  # a terminating error here once left the app instance running and printed no
+  # verdict at all; now it is an ordinary failing case with a quit on the way out
+  Fail "app stayed up" "mnpdf exited unexpectedly during the test"
+} else {
 
 # --- undo/redo keep the sidecar in sync (autosaved state matches the screen) ---
 Post $h 0x0111 ([IntPtr]$CMD_UNDO) ([IntPtr]0)                  # undo
@@ -285,14 +326,17 @@ Start-Sleep -Milliseconds 300
 Post $h 0x0111 ([IntPtr]$CMD_HIGHLIGHT) ([IntPtr]0)             # Highlight (default color)
 Await { (HlCount) -gt $hlBefore } 30000 | Out-Null               # debounced flush, polled
 $hlAfter = HlCount
-if ($hlAfter -gt $hlBefore) { Pass "autosave still flushes after off->on cycle ($hlBefore -> $hlAfter hl lines)" }
-else { Fail "autosave still flushes after off->on cycle" "$hlBefore -> $hlAfter" }
+  if ($hlAfter -gt $hlBefore) { Pass "autosave still flushes after off->on cycle ($hlBefore -> $hlAfter hl lines)" }
+  else { Fail "autosave still flushes after off->on cycle" "$hlBefore -> $hlAfter" }
+}
 
 # --- quit with autosave on: no prompt, app exits ---
-Post $h 0x0111 ([IntPtr]$CMD_QUIT) ([IntPtr]0)
-Await { -not (Get-Process mnpdf -ErrorAction SilentlyContinue) } 8000 | Out-Null
-$gone = -not (Get-Process mnpdf -ErrorAction SilentlyContinue)
-if ($gone) { Pass "quit without prompt (autosave on)" }
+$quitOk = Quit-OwnedApp $p
+if ($quitOk) { Pass "quit without prompt (autosave on)" }
 else { Fail "quit" "app still running (prompt?)" }
+} finally {
+  # every path out of the body, exception included, ends this suite's instance
+  Quit-OwnedApp $p | Out-Null
+}
 
 Complete-Suite
