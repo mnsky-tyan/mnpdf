@@ -12,8 +12,10 @@
 #   3. How to forge and restore %APPDATA%\mnpdf\app.txt safely (several suites
 #      forge it to make the update check deterministic), including the
 #      watchdog child that restores it even against a hard kill.
-#   4. The app's interop surface (class MN), the menu-command ids, the sidecar
-#      filename rule, and the PASS/FAIL bookkeeping every suite shares.
+#   4. The app's interop surfaces (class MN for the app window, class CL for the
+#      handful of extra calls a suite needs when it walks a window's controls),
+#      the menu-command ids, the sidecar filename rule, and the
+#      PASS/FAIL/DEGRADED bookkeeping every suite shares.
 #
 # Dot-sourcing puts these in the caller's scope, so $script:pref* and
 # $script:failures set here are the same variables the suites read.
