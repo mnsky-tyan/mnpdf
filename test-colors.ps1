@@ -43,13 +43,14 @@ Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, System.Drawing
 # Interop NOTE: no Add-Type block of its own. This suite once imported a SECOND,
 # identical [CL] type (user32 EnumWindows/GetParent/GetClassLongW and a
 # GetDlgItem that takes an IntPtr dialog, not an int id) while this file still
-# called [CL]::EnumWindows everywhere. Add-Type is lexical-scoped to the file
-# that created it, so a load order where lib.ps1 came first and someone pasted
-# that block back in would either shadow the shared type or abort the suite with
-# "The type name 'CL' already exists". Everything the shared [MN]/[CL] surface
-# already has - EnumWindows, GetClassNameW, GetParent, GetDlgItem,
-# IsWindowEnabled, SendText - comes from there. Nothing else is imported here:
-# the shared GetDlgItem takes an int, which is what a real dialog always gets.
+# called [CL]::EnumWindows everywhere. Add-Type is per-process (a type declared
+# once is visible to every suite in the process), so pasting that block back in
+# would not shadow anything - it would abort the suite with "The type name 'CL'
+# already exists", exactly as lib.ps1's own declaration note says. Everything
+# the shared [MN]/[CL] surface already has - EnumWindows, GetClassNameW,
+# GetParent, GetDlgItem, IsWindowEnabled, SendText - comes from there. Nothing
+# else is imported here: the shared GetDlgItem takes an int, which is what a real
+# dialog always gets.
 
 $doc = Join-Path $PSScriptRoot 'tests\arc.pdf'
 $exe = Resolve-AppExe
