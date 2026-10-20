@@ -44,7 +44,7 @@ target_link_directories(mnpdf-core-test PRIVATE ${PDFIUM_ROOT}/lib)
 target_link_libraries(mnpdf-core-test PRIVATE pdfium)
 set_target_properties(mnpdf-core-test PROPERTIES BUILD_RPATH "$ORIGIN")
 add_test(NAME core-test COMMAND mnpdf-core-test
-         ${CMAKE_CURRENT_SOURCE_DIR}/tests/arc.pdf /tmp)
+         ${CMAKE_CURRENT_SOURCE_DIR}/tests/arc.pdf /tmp ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 enable_testing()
 
 target_include_directories(mnpdf PRIVATE

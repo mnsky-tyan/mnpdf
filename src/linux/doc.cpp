@@ -365,6 +365,7 @@ static int pinIndexOf(const Pin& v, int color) {
     return -1;
 }
 static void pinEraseAt(int idx) { if (idx >= 0 && idx < (int)gPins.size()) gPins.erase(gPins.begin() + idx); }
+static void pinInsertAt(int idx, const Pin& pin) { if (idx >= 0 && idx <= (int)gPins.size()) gPins.insert(gPins.begin() + idx, pin); }
 static void pinSetTextAt(int idx, const std::wstring& text) { if (idx >= 0 && idx < (int)gPins.size()) gPins[idx].text = text; }
 static void hlRecolorAt(int page, int start, int count, int color) {
     for (Hl& h : gHls) if (h.page == page && h.start == start && h.count == count) { h.color = color; break; }
@@ -385,9 +386,7 @@ void undoOp() {
     case 1: gHls.push_back(op.hlVal); break;
     case 2: hlRecolorAt(op.hlVal.page, op.hlVal.start, op.hlVal.count, op.hlFrom); break;
     case 3: pinEraseAt(op.pinIdx); break;
-    case 4:                                       // pindel: restore
-        gPins.push_back(op.pinVal);
-        break;
+    case 4: pinInsertAt(op.pinIdx, op.pinVal); break;   // pindel: restore
     case 5: pinSetTextAt(op.pinIdx, op.textFrom); break;
     case 6: rotApply(op.rotPage, op.rotFrom); break;
     case 7: { int i = pinIndexOf(op.pinVal, op.hlTo); if (i >= 0) { gPins[i].color = op.hlFrom; op.pinIdx = i; } }
@@ -411,7 +410,7 @@ void redoOp() {
         { int i = hlIndexOf(op.hlVal); if (i >= 0) gHls.erase(gHls.begin() + i); }
         break;
     case 2: hlRecolorAt(op.hlVal.page, op.hlVal.start, op.hlVal.count, op.hlTo); break;
-    case 3: if (op.pinIdx >= 0 && op.pinIdx <= (int)gPins.size()) gPins.insert(gPins.begin() + op.pinIdx, op.pinVal); break;
+    case 3: pinInsertAt(op.pinIdx, op.pinVal); break;
     case 4: pinEraseAt(op.pinIdx); break;
     case 5: pinSetTextAt(op.pinIdx, op.textTo); break;
     case 6: rotApply(op.rotPage, op.rotTo); break;
@@ -499,13 +498,12 @@ int pinRadius() { int r = (int)(3.0 * gZoom); if (r < 3) r = 3; if (r > 14) r = 
 void addPinAt(int page, double px, double py) {
     if (gDocPages <= 0 || page < 0 || page >= gDocPages) return;
     gPins.push_back({ page, px, py, L"", gPinDefault, false });
-    markDirty();
     renderPage();
 }
 
 void deletePin(int idx) {
     if (idx < 0 || idx >= (int)gPins.size()) return;
-    Op op = {}; op.kind = 4; op.pinVal = gPins[idx];
+    Op op = {}; op.kind = 4; op.pinIdx = idx; op.pinVal = gPins[idx];
     if (gPins[idx].baked) gTomb.push_back({ 1, gPins[idx].page, 0, 0, gPins[idx].x, gPins[idx].y });
     gPins.erase(gPins.begin() + idx);
     pushOp(op);
@@ -717,10 +715,11 @@ void copyTextRange(int p0, int i0, int p1, int i1) {
 void commitPinText(int idx, bool fresh, const std::wstring& text) {
     if (idx < 0 || idx >= (int)gPins.size()) return;
     if (fresh) {
-        if (text.empty()) { gPins.erase(gPins.begin() + idx); markDirty(); }
+        if (text.empty()) gPins.erase(gPins.begin() + idx);
         else {
             Op op = {};
             op.kind = 3;
+            op.pinIdx = idx;
             op.pinVal = gPins[idx];
             op.pinVal.text = text;
             gPins[idx].text = text;

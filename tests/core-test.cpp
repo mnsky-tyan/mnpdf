@@ -269,6 +269,58 @@ int main(int argc, char** argv) {
         CHECK(gPins.size() == before, "addPinAt refuses an out-of-range page");
     }
 
+    printf("== undo/redo address the same pin slot (regression: op.pinIdx was unset) ==\n");
+    {
+        // delete the FIRST of two pins, then walk the op back and forth
+        gPins.clear(); gUndo.clear(); gRedo.clear();
+        addPinAt(0, 100, 100);
+        commitPinText(0, true, L"first");
+        addPinAt(0, 200, 200);
+        commitPinText(1, true, L"second");
+        CHECK(gPins.size() == 2, "two committed pins");
+        deletePin(0);
+        CHECK(gPins.size() == 1 && gPins[0].text == L"second", "the first pin is deleted");
+        undoOp();
+        CHECK(gPins.size() == 2, "undo restores the deleted pin");
+        CHECK(gPins.size() == 2 && gPins[0].text == L"first" && gPins[1].text == L"second",
+              "undo puts it back at its own slot, not at the end");
+        redoOp();
+        CHECK(gPins.size() == 1 && gPins[0].text == L"second",
+              "redo deletes it again (regression: the delete op carried no pin index)");
+
+        // a fresh pin with a note: undo drops it, redo must bring it back
+        gPins.clear(); gUndo.clear(); gRedo.clear();
+        addPinAt(0, 300, 300);
+        commitPinText(0, true, L"typed");
+        CHECK(gPins.size() == 1 && gPins[0].text == L"typed", "the new pin carries its note");
+        undoOp();
+        CHECK(gPins.empty(), "undo removes the new pin");
+        redoOp();
+        CHECK(gPins.size() == 1 && gPins[0].text == L"typed",
+              "redo puts the new pin back (regression: the pin-add op carried no pin index)");
+    }
+
+    printf("== a cancelled new pin is not unsaved work (regression: addPinAt dirtied) ==\n");
+    {
+        gPins.clear(); gUndo.clear(); gRedo.clear();
+        gDirty = false;
+        addPinAt(0, 400, 400);
+        commitPinText(0, true, L"");          // cancel, or a note saved empty
+        CHECK(gPins.empty(), "a cancelled new pin leaves no mark");
+        CHECK(!gDirty, "a cancelled new pin leaves the document clean");
+
+        gDirty = true;
+        addPinAt(0, 500, 500);
+        commitPinText(0, true, L"");
+        CHECK(gDirty, "an already dirty document stays dirty when a new pin is cancelled");
+
+        gDirty = false;
+        addPinAt(0, 600, 600);
+        commitPinText(0, true, L"kept");
+        CHECK(gPins.size() == 1, "the committed pin stays");
+        CHECK(gDirty, "a committed note is unsaved work");
+    }
+
     printf("== page rotation ==\n");
     {
         gUndo.clear(); gRedo.clear();

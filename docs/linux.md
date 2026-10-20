@@ -98,8 +98,8 @@ quits after, so a pixel assertion needs no harness clicking a window.
 
 Measured on this machine (`/usr/bin/time`, and RSS sampled from `/proc`):
 
-- Headless core test, 119 checks including two full save/bake round trips:
-  **0.49 s wall, 14.8 MB peak RSS** (measured, `/usr/bin/time`).
+- Headless core test, 143 checks including two full save/bake round trips:
+  **0.26 s wall, 15.1 MB peak RSS** (measured, `/usr/bin/time -v`).
 - The GUI with a 13-page document open, idle after 20 s: **98.6 MB RSS, steady
   state, no growth** (measured, sampled from `/proc/<pid>/status`). Of that,
   the vendored `libpdfium.so` file itself is 7.9 MB (measured, `ls`); how much of
