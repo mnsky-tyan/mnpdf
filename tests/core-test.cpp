@@ -27,7 +27,6 @@ static std::string gLastCopy;
 double ui_scale() { return 1.0; }
 void ui_invalidate() {}
 void ui_set_title(const std::string&) {}
-void ui_toast(const std::string& m) { gMessages.push_back("toast:" + m); }
 int ui_message(const std::string& text, const std::string&, bool) { gMessages.push_back(text); return UI_MSGBOX_YES; }
 std::string ui_open_file() { return gStubOpenPath; }
 std::string ui_save_file(const std::string& s) { return gStubSavePath.empty() ? s : gStubSavePath; }
@@ -36,7 +35,6 @@ bool ui_prompt(const std::string&, std::string& v) { (void)v; return false; }
 bool ui_prompt_range(std::string& r) { r = "2-3"; return true; }
 bool ui_color_box(int& idx) { idx = kPalPreset; return false; }
 void ui_copy_text(const std::string& t) { gCopyCount++; gLastCopy = t; }
-void ui_note_editor(int, int, int, const std::wstring&) {}
 void refreshDrawers() {}
 extern int ui_matchActive();   // from search.cpp: which match is active
 void ui_windowRect(int* x, int* y, int* w, int* h, int* maxed) { *x = 0; *y = 0; *w = 800; *h = 600; *maxed = 0; }
@@ -44,11 +42,6 @@ void ui_windowRect(int* x, int* y, int* w, int* h, int* maxed) { *x = 0; *y = 0;
 // render.cpp needs GTK/cairo; the test supplies the two render entry points.
 void renderPage() { ui_invalidate(); }
 bool renderPageToBuffer(int, int, int, std::vector<unsigned char>& out, int* stride) { out.clear(); return false; }
-void ui_tabStripInfo(std::vector<std::wstring>& names, std::vector<int>& dirty, int& active) {
-    active = gActiveDoc;
-    for (int i = 0; i < gDocCount; i++) { names.push_back(gDocs[i]->path); dirty.push_back(gDocs[i]->dirty); }
-}
-bool ui_hasDoc() { return gDoc != nullptr; }
 
 // ---- test harness ----
 static int gPass = 0, gFail = 0;
@@ -97,6 +90,13 @@ int main(int argc, char** argv) {
     std::string dirOf = (argc > 3) ? argv[3] : "tests/";
     if (!dirOf.empty() && dirOf.back() != '/') dirOf += '/';
     mkdir(scratch.c_str(), 0755);
+    // A private directory per run: a previous run's split.pdf, saved.pdf or
+    // bad.pdf must never satisfy (or break) a file-existence assertion here.
+    std::string runTemplate = scratch + "/run.XXXXXX";
+    std::vector<char> runDir(runTemplate.begin(), runTemplate.end());
+    runDir.push_back('\0');
+    if (!mkdtemp(runDir.data())) { fprintf(stderr, "cannot create a scratch dir under %s\n", scratch.c_str()); return 2; }
+    scratch = runDir.data();
     setenv("XDG_CONFIG_HOME", scratch.c_str(), 1);   // isolate all state writes
 
     FPDF_InitLibrary();
@@ -507,6 +507,39 @@ int main(int argc, char** argv) {
         CHECK(GetRValue(c) == 0x12 && GetGValue(c) == 0x34 && GetBValue(c) == 0x56, "custom colour bytes match");
     }
 
+    printf("== app.txt keeps the keys the Windows reader owns ==\n");
+    {
+        // One shared app.txt: Windows writes titlebar= and the update-check
+        // clock/tag here too, so a Linux rewrite must carry those lines forward
+        // instead of dropping them from a shared config directory.
+        std::string prefsPath = scratch + "/mnpdf/app.txt";
+        FILE* pf = fopen(prefsPath.c_str(), "wb");
+        if (pf) {
+            fputs("tabstrip=1\ntitlebar=1\nautosave=1\nhlcolor=3\npincolor=1\nnight=0\n"
+                  "updcheck=1700000000\nupdtag=v2.6.0\n", pf);
+            fclose(pf);
+        }
+        loadAppPref();
+        writeAppPref();
+        std::string after;
+        FILE* rf = fopen(prefsPath.c_str(), "rb");
+        if (rf) {
+            char buf[512];
+            size_t got;
+            while ((got = fread(buf, 1, sizeof buf, rf)) > 0) after.append(buf, got);
+            fclose(rf);
+        }
+        size_t pTitle = after.find("titlebar=1");
+        size_t pCheck = after.find("updcheck=1700000000");
+        size_t pTag = after.find("updtag=v2.6.0");
+        size_t pTab = after.find("tabstrip=");
+        CHECK(pTitle != std::string::npos && pCheck != std::string::npos && pTag != std::string::npos &&
+              pTitle < pCheck && pCheck < pTag && pTag < pTab,
+              "foreign keys survive a Linux write, in order, before the Linux block");
+        CHECK(after.find("night=") != std::string::npos && after.find("night=") == after.rfind("night="),
+              "the Linux-owned block is written once, not appended to a copy");
+    }
+
     printf("== format interop: marks baked by the Windows app lift on Linux ==\n");
     {
         // tests/mnpdf-baked.pdf carries a Highlight with Source "mnpdf 0 45" and
@@ -555,8 +588,11 @@ int main(int argc, char** argv) {
         // open. Regression: an earlier port of the guard accepted both.
         {
             unsigned char frameless[] = {0xFF,0xD8,0xFF,0xDA,0x00,0x04,0x01,0x00,0x00,0x11,0x22,0x33,0xFF,0xD9};
-            unsigned char badcomp[] = {0xFF,0xD8,0xFF,0xC0,0x00,0x0B,0x00,0x08,0x00,0x08,0x03,0x01,0x11,0x00,
-                                       0x02,0x21,0x11,0xFF,0xDA,0x00,0x04,0x01,0x09,0x00,0xFF,0xD9};
+            // A well-formed one-component SOF, then a scan that names component
+            // 0x09 - a name the frame never declared. Only the component-id
+            // match rejects this, not the frame-length or count guards.
+            unsigned char badcomp[] = {0xFF,0xD8,0xFF,0xC0,0x00,0x0B,0x08,0x00,0x08,0x00,0x08,0x01,0x01,0x11,0x00,
+                                       0xFF,0xDA,0x00,0x08,0x01,0x09,0x00,0x00,0x00,0x00,0xFF,0xD9};
             FILE* fp = fopen((scratch + "/frameless.jpg").c_str(), "wb");
             if (fp) { fwrite(frameless, 1, sizeof frameless, fp); fclose(fp); }
             fp = fopen((scratch + "/badcomp.jpg").c_str(), "wb");

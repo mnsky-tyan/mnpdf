@@ -76,15 +76,6 @@ static std::wstring basenameOf(const std::wstring& p) {
     return s == std::wstring::npos ? p : p.substr(s + 1);
 }
 
-void ui_tabStripInfo(std::vector<std::wstring>& names, std::vector<int>& dirty, int& active) {
-    active = gActiveDoc;
-    for (int i = 0; i < gDocCount; i++) {
-        names.push_back(gDocs[i]->path.empty() ? L"New tab" : basenameOf(gDocs[i]->path));
-        dirty.push_back(gDocs[i]->dirty ? 1 : 0);
-    }
-}
-bool ui_hasDoc() { return gDoc != nullptr; }
-
 // the tab labels live in the notebook, so refresh them there
 static void refreshTabLabels() {
     for (int i = 0; i < gDocCount; i++) {
@@ -109,8 +100,6 @@ void ui_set_title(const std::string&) {
     gtk_window_set_title(GTK_WINDOW(gWin), base.c_str());
     refreshTabLabels();
 }
-
-void ui_toast(const std::string& msg) { g_print("[mnpdf] %s\n", msg.c_str()); }
 
 // ---- message box ----
 int ui_message(const std::string& text, const std::string& caption, bool yesno) {
@@ -250,15 +239,16 @@ static void openNoteEditor(int idx, bool fresh) {
     commitPinText(idx, fresh, text);
 }
 
-void ui_note_editor(int pinIndex, int, int, const std::wstring&) { openNoteEditor(pinIndex, false); }
-
 // ---- tab lifecycle ----
 static void requestQuit();
 static void makeArea(GtkWidget** out);
 static void onAreaSize(GtkWidget*, GtkAllocation*, gpointer);
+static void settleActiveDoc();
 
 static void addTab(const std::wstring& path) {
     if (gDocCount >= kMaxTabs) return;
+    settleActiveDoc();                // the outgoing tab keeps its marks before the switch
+    flushPageCache();
     gDocs[gDocCount] = new Doc();
     int idx = gDocCount++;
     GtkWidget* area = nullptr;
@@ -283,26 +273,6 @@ static void settleActiveDoc() {
         ui_matchReset();
     }
     clearSelection();
-}
-
-static void switchToDoc(int idx) {
-    if (idx < 0 || idx >= gDocCount || idx == gActiveDoc) return;
-    settleActiveDoc();
-    flushPageCache();
-    gActiveDoc = idx;
-    loadPage(gPageIndex);
-    relayoutPages();
-    clampScroll();
-    renderPage();
-}
-
-static bool canNewTab() { return gDocCount < kMaxTabs; }
-
-static void newTab() {
-    if (!canNewTab()) return;
-    settleActiveDoc();
-    flushPageCache();
-    addTab(L"");
 }
 
 static void closeTab() {
@@ -459,7 +429,7 @@ static void onMenuActivate(GtkMenuItem* mi, gpointer data) {
         }
         break;
     }
-    case 300: newTab(); break;
+    case 300: addTab(L""); break;
     case 301: closeTab(); break;
     case 302: { bool vis = gtk_notebook_get_show_tabs(GTK_NOTEBOOK(gNotebook));
                 gtk_notebook_set_show_tabs(GTK_NOTEBOOK(gNotebook), !vis); } break;
@@ -484,9 +454,6 @@ static void onMenuActivate(GtkMenuItem* mi, gpointer data) {
     case 411: deletePin(gMenuPinIdx); break;
     case 412: deleteHighlight(gMenuHlIdx); break;
     case 700: doPrint(); break;
-    }
-    if (id >= 500 && id < 500 + kPalCount) {   // palette entry for the pending highlight
-        applyHighlightFromSelection(id - 500);
     }
 }
 
@@ -726,10 +693,11 @@ static gboolean onKey(GtkWidget*, GdkEventKey* ev, gpointer) {
     case GDK_KEY_0: if (ctrl) fitWidth(); break;
     case GDK_KEY_f: if (ctrl) toggleSearch(true); break;
     case GDK_KEY_o: if (ctrl) { std::string f = ui_open_file(); if (!f.empty()) openPath(utf8ToWide(f)); } break;
-    case GDK_KEY_t: if (ctrl) newTab(); break;
+    case GDK_KEY_t: if (ctrl) addTab(L""); break;
     case GDK_KEY_w: if (ctrl) closeTab(); break;
     case GDK_KEY_Tab:
-        if (ctrl) switchToDoc((gActiveDoc + (shift ? gDocCount - 1 : 1)) % gDocCount);
+        if (ctrl) gtk_notebook_set_current_page(GTK_NOTEBOOK(gNotebook),
+                                                (gActiveDoc + (shift ? gDocCount - 1 : 1)) % gDocCount);
         break;
     case GDK_KEY_c: if (ctrl) copySelection(); break;
     case GDK_KEY_F3: if (!gSearchOpen) toggleSearch(true); else nextMatch(shift ? -1 : 1); break;
@@ -872,6 +840,50 @@ static void onWindowState(GtkWidget*, GdkEventWindowState* ev, gpointer) {
     gWinMax = (ev->new_window_state & GDK_WINDOW_STATE_MAXIMIZED) != 0;
 }
 
+// The saved frame comes back where the last session left it, bounded the way the
+// Windows reader bounds it (src/main.cpp, clampBox and MonitorFromRect): a rect
+// no monitor can see any more falls back to the default placement, and one that
+// only partly fits keeps its width and height with its top-left moved inside
+// that monitor's work area, so the caption strip and a resize border stay
+// reachable.
+static int clampBox(int pos, int size, int lo, int hi) {
+    if (pos < lo) pos = lo;
+    else if (pos + size > hi) pos = hi - size;
+    if (pos < lo) pos = lo;
+    return pos;
+}
+
+static void restoreWindowGeometry() {
+    // -1,-1 is the unsaved default loadAppPref leaves alone; any other pair is a
+    // position the user actually left the window at, negative ones included
+    // (a monitor can sit left of or above the primary).
+    if (!(gWinX == -1 && gWinY == -1)) {
+        GdkDisplay* dpy = gdk_display_get_default();
+        GdkMonitor* land = nullptr;
+        int best = 0;
+        int n = dpy ? gdk_display_get_n_monitors(dpy) : 0;
+        for (int i = 0; i < n; i++) {
+            GdkMonitor* m = gdk_display_get_monitor(dpy, i);
+            if (!m) continue;
+            GdkRectangle g;
+            gdk_monitor_get_geometry(m, &g);
+            int l = gWinX > g.x ? gWinX : g.x;
+            int t = gWinY > g.y ? gWinY : g.y;
+            int r = (gWinX + gWinW < g.x + g.width) ? gWinX + gWinW : g.x + g.width;
+            int b = (gWinY + gWinH < g.y + g.height) ? gWinY + gWinH : g.y + g.height;
+            int area = (r > l && b > t) ? (r - l) * (b - t) : 0;
+            if (area > best) { best = area; land = m; }
+        }
+        if (land) {                              // off every monitor: default placement
+            GdkRectangle wa;
+            gdk_monitor_get_workarea(land, &wa);
+            gtk_window_move(GTK_WINDOW(gWin), clampBox(gWinX, gWinW, wa.x, wa.x + wa.width),
+                                               clampBox(gWinY, gWinH, wa.y, wa.y + wa.height));
+        }
+    }
+    if (gWinMax) gtk_window_maximize(GTK_WINDOW(gWin));
+}
+
 static void onOpenActivate(GtkMenuItem*, gpointer) {
     std::string f = ui_open_file();
     if (!f.empty()) openPath(utf8ToWide(f));
@@ -959,6 +971,7 @@ int main(int argc, char** argv) {
 
     gWin = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_default_size(GTK_WINDOW(gWin), gWinW > 0 ? gWinW : 1100, gWinH > 0 ? gWinH : 800);
+    restoreWindowGeometry();
     gtk_window_set_title(GTK_WINDOW(gWin), "mnpdf");
     gtk_window_set_icon_name(GTK_WINDOW(gWin), "application-pdf");
     g_signal_connect(gWin, "destroy", G_CALLBACK(gtk_main_quit), nullptr);

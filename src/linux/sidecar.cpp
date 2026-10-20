@@ -331,9 +331,31 @@ void loadAppPref() {
 // window geometry is written by the platform layer through ui_windowRect()
 extern void ui_windowRect(int* x, int* y, int* w, int* h, int* maxed);
 
+// The keys this writer owns. Everything else in app.txt belongs to another
+// reader of the same shared directory (Windows writes titlebar=, updcheck= and
+// updtag=), so those lines are carried forward unchanged and in their original
+// order instead of being dropped by the rewrite.
+static bool linuxAppKey(const char* line) {
+    static const char* kOwned[] = { "tabstrip=", "autosave=", "hlcolor=", "pincolor=", "night=",
+                                    "winx=", "winy=", "winw=", "winh=", "winmax=", "palnext=" };
+    for (const char* k : kOwned)
+        if (strncmp(line, k, strlen(k)) == 0) return true;
+    return strncmp(line, "pal", 3) == 0 && line[3] >= '0' && line[3] <= '9' && line[4] == '=';
+}
+
 void writeAppPref() {
-    FILE* fp = fopen((appDir() + "/app.txt").c_str(), "wb");
+    std::string path = appDir() + "/app.txt";
+    std::vector<std::string> foreign;
+    FILE* in = fopen(path.c_str(), "rb");
+    if (in) {
+        std::vector<char> lineBuf(128);
+        while (readLine(in, lineBuf))
+            if (lineBuf[0] && !linuxAppKey(lineBuf.data())) foreign.push_back(lineBuf.data());
+        fclose(in);
+    }
+    FILE* fp = fopen(path.c_str(), "wb");
     if (!fp) return;
+    for (const std::string& line : foreign) fprintf(fp, "%s\n", line.c_str());
     fprintf(fp, "tabstrip=%d\nautosave=%d\nhlcolor=%d\npincolor=%d\nnight=%d\n",
             gTabStrip ? 1 : 0, gAutosave ? 1 : 0, gHlDefault, gPinDefault, gNight ? 1 : 0);
     int x = 0, y = 0, w = 0, h = 0, mx = 0;

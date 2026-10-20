@@ -18,7 +18,6 @@ void ui_invalidate();
 // the drawers (thumbnails/outline) follow any change to the page list
 void refreshDrawers();
 void ui_set_title(const std::string& t); // window/tab title
-void ui_toast(const std::string& msg);   // transient user-visible status line
 
 // modal-ish message box (used by save failures and page-surgery refusals)
 int ui_message(const std::string& text, const std::string& caption, bool yesno);
@@ -29,15 +28,10 @@ std::string ui_open_file();
 std::string ui_save_file(const std::string& suggested);
 std::string ui_pick_jpeg();
 
-// a text prompt with a default value; nullopt/cancel returns false
-bool ui_prompt(const std::string& caption, const std::string& label, std::string& value);
+// a text prompt with a default value; cancel leaves value untouched and returns false
+bool ui_prompt(const std::string& label, std::string& value);
 bool ui_prompt_range(std::string& range);             // "Split pages" range prompt
 bool ui_color_box(int& paletteIndex);                  // custom #rrggbb entry
-
-// pin note editing: the editor runs over the view; it reports back through
-// prompt_note_finished when done (empty text = the pin was cancelled and is
-// dropped by the caller)
-void ui_note_editor(int pinIndex, int cx, int cy, const std::wstring& initial);
 
 // clip text as UTF-8
 void ui_copy_text(const std::string& utf8);

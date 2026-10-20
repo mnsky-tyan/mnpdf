@@ -86,7 +86,7 @@ the reference for semantic divergences. Findings below are deduplicated.
 | C9 | Fixed: openPath writes the sidecar when the reloaded document is still dirty instead of dropping the edit. |
 | C10 | Fixed: clearDocState resets gSigPlacing. |
 | C11 | Fixed: app.txt gained winx/winy/winw/winh/winmax (Windows key names) and the window restores from them with on-screen bounds checks. |
-| C12 | Deferred (tracked, documented in docs/linux.md and AGENTS.md): the captionless custom titlebar and mark-level right-click menu are Linux UI polish, not correctness or interop; no user-visible data loss. |
+| C12 | Fixed: ui.h now declares the single implemented `ui_prompt(label, value)` (it declared a three-argument form neither implementation provided), and the seam holds only what the core calls - `ui_tabStripInfo`, `ui_hasDoc`, `ui_toast` and `ui_note_editor` are gone. The Linux UI polish still deferred is the captionless custom titlebar and the mark-level right-click menu, both documented in docs/linux.md ("What is not the same", "What is still missing"). |
 | C13 | Fixed: the sidecar tuple assertions now pin the exact strings ("hl=0,3,28,1", "pin=1,120.00,300.00,c5,a note, with a comma\nand a newline") and the pin page/xy/colour round trip. |
 | C14 | Fixed: a missing interop fixture is now a counted FAIL (not a skip, which produced a green pass=0 run); dirOf uses argv[3] instead of npos+1 wrapping to 0. |
 | C15 | Fixed: the restore check also requires the second launch to have read the document sidecar. |
@@ -106,7 +106,8 @@ the reference for semantic divergences. Findings below are deduplicated.
 | C29 | Fixed: the gate traps EXIT to remove its scratch dir, greps with -F, and guards python3 with an install hint. |
 | C30 | Fixed: clampScroll assertions now use exact page boundaries instead of a loose epsilon that accepted an off-by-one page. |
 
-C12 is the only finding deliberately deferred: it is Linux UI polish
-with no correctness or interop consequence, and is tracked as future work in
-`docs/linux.md`. Everything else is fixed and covered by a permanent check or
-a gate assertion.
+C12's seam defect is fixed. The two items it bundled as Linux UI polish - the
+captionless custom titlebar and the mark-level right-click menu - are the only
+work still deliberately deferred: no correctness or interop consequence, and
+tracked as future work in `docs/linux.md`. Everything else is fixed and covered
+by a permanent check or a gate assertion.

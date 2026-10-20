@@ -55,6 +55,11 @@ same `app.txt` keys. The escape tables match (`\n` in pin text, `\c` in stamp
 paths). The sidecar filename is the same FNV-1a hash of the UTF-16 path bytes,
 so even a shared config directory resolves to the same file on both platforms.
 
+`app.txt` is one shared file, so a Linux write keeps every key it does not own
+(the Windows reader's `titlebar=`, `updcheck=` and `updtag=`) verbatim and in its
+original order, then writes the Linux block: a launch on one platform never
+loses the other's preferences or its update-check clock.
+
 `tests/mnpdf-baked.pdf` is a PDF carrying mnpdf's own baked annotations
 (`/Source (mnpdf 0 45)` on a Highlight, `/Source (mnpdf)` on a Text note) - the
 exact shape `doSave()` writes on Windows. The test opens it and asserts the
@@ -84,8 +89,9 @@ drive the real binary:
   registered with `add_test`), built by `cmake --build`, run by
   `build-linux.sh` (a core regression fails the build) and by the gate's first
   layer. It covers open, geometry, selection, search, marks, undo/redo, the
-  sidecar round trip, save/bake and re-read, page surgery, merge, tabs, prefs,
-  the JPEG guard and the format interop.
+  sidecar round trip, save/bake and re-read, page surgery, merge, tabs, prefs
+  (including the `app.txt` keys only the Windows reader owns), the JPEG guard and
+  the format interop.
 - `scripts/linux-gate.sh`'s second layer runs the real binary on Xvfb and asserts
   on the pixels it paints (the page is mostly paper and carries text) and on the
   state files it writes.
@@ -98,7 +104,7 @@ quits after, so a pixel assertion needs no harness clicking a window.
 
 Measured on this machine (`/usr/bin/time`, and RSS sampled from `/proc`):
 
-- Headless core test, 143 checks including two full save/bake round trips:
+- Headless core test, 145 checks including two full save/bake round trips:
   **0.26 s wall, 15.1 MB peak RSS** (measured, `/usr/bin/time -v`).
 - The GUI with a 13-page document open, idle after 20 s: **98.6 MB RSS, steady
   state, no growth** (measured, sampled from `/proc/<pid>/status`). Of that,

@@ -21,7 +21,6 @@
 extern int ui_matchCount();
 extern int ui_matchActive();
 extern void ui_matchAt(int i, int* page, int* start, int* count);
-extern void ui_tabStripInfo(std::vector<std::wstring>& names, std::vector<int>& dirty, int& active);
 
 // ---- the back buffer ----
 static unsigned char* gBits = nullptr;

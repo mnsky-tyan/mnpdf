@@ -43,8 +43,12 @@ target_compile_options(mnpdf-core-test PRIVATE -O1 -Wall -Wno-unused-parameter)
 target_link_directories(mnpdf-core-test PRIVATE ${PDFIUM_ROOT}/lib)
 target_link_libraries(mnpdf-core-test PRIVATE pdfium)
 set_target_properties(mnpdf-core-test PROPERTIES BUILD_RPATH "$ORIGIN")
+# The scratch root lives in the build tree, never the shared /tmp: the suite
+# makes its own private run directory under it, so one run can never read another
+# run's leftover documents or state files.
 add_test(NAME core-test COMMAND mnpdf-core-test
-         ${CMAKE_CURRENT_SOURCE_DIR}/tests/arc.pdf /tmp ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+         ${CMAKE_CURRENT_SOURCE_DIR}/tests/arc.pdf ${CMAKE_CURRENT_BINARY_DIR}/core-test-scratch
+         ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 enable_testing()
 
 target_include_directories(mnpdf PRIVATE
