@@ -6,6 +6,10 @@
 #include <cstdio>
 #include <vector>
 
+// from sidecar.cpp: write one bundle's own sidecar (used by openPath, so unsaved
+// marks reach their sidecar before the bundle drops them)
+void writeSidecarForBundle(Doc* d);
+
 std::wstring gSigPlacing;   // a JPEG chosen, waiting for a click
 
 struct SaveFW : FPDF_FILEWRITE { std::vector<unsigned char>* out; };
@@ -55,9 +59,11 @@ static void clearDocState() {
     gHls.clear(); gPins.clear(); gSigs.clear(); gTomb.clear();
     gUndo.clear(); gRedo.clear();
     gDirty = false;
+    gSigPlacing.clear();                        // a half-finished placement dies here
 }
 
 bool openPath(const std::wstring& path) {
+    if (gDirty) writeSidecarForBundle(gViewTab);   // unsaved marks reach their sidecar before this bundle drops them
     std::string u8 = wideToUtf8(path);
     FPDF_DOCUMENT nd = FPDF_LoadDocument(u8.c_str(), nullptr);
     if (!nd) { ui_message("Could not open PDF", "mnpdf", false); return false; }
@@ -67,7 +73,6 @@ bool openPath(const std::wstring& path) {
     gPath = path;
     clearDocState();
     gPageCount = FPDF_GetPageCount(gDoc);
-    gPageTextPt.assign(gPageCount > 0 ? gPageCount : 1, 0.0);
     allocPageTables(gPageCount);
     for (int i = 0; i < gDocPages; i++) {
         FPDF_PAGE p = FPDF_LoadPage(gDoc, i);
@@ -300,21 +305,31 @@ bool looksLikeJpeg(const std::wstring& path) {
     std::vector<unsigned char> b;
     if (!readWholeFile(path, b)) return false;
     if (b.size() < 4 || b[0] != 0xFF || b[1] != 0xD8 || b[2] != 0xFF) return false;
+    bool sawFrame = false;                 // a SOF: nothing else says what the image is
+    int frameComps = 0;
+    unsigned char compIds[4] = { 0, 0, 0, 0 };
     bool sawScan = false;
     size_t i = 2;
     while (i + 1 < b.size()) {
         if (b[i] != 0xFF) return false;
+        // any number of 0xFF fill bytes may precede a marker (ITU T.81 B.1.1.2)
         size_t j = i + 1;
         while (j < b.size() && b[j] == 0xFF) j++;
         if (j >= b.size()) return false;
         unsigned char m = b[j];
         i = j + 1;
-        if (m == 0xD9) return sawScan;
-        if (m == 0x01 || (m >= 0xD0 && m <= 0xD7)) continue;
+        if (m == 0xD9) return sawScan;                          // EOI ends the image
+        if (m == 0x01 || (m >= 0xD0 && m <= 0xD7)) continue;    // TEM and restarts carry no length
         if (i + 1 >= b.size()) return false;
-        size_t len = ((size_t)b[i] << 8) | b[i + 1];
+        size_t len = ((size_t)b[i] << 8) | b[i + 1];            // a segment length counts itself
         if (len < 2 || i + len > b.size()) return false;
         size_t seg = i;
+        // SOF0-SOF15 less DHT/JPG/DAC: the frame header, which is what makes the
+        // stream a picture rather than a shape. A frame-less chain (SOI, a scan,
+        // entropy, EOI) reaches the loader, which reports success on it and dies
+        // at the first paint - and replaySigs re-places every stamp on every open,
+        // so it would crash again on every launch. The frame has to be here, and
+        // it has to describe something a decoder can hold.
         if (m >= 0xC0 && m <= 0xCF && m != 0xC4 && m != 0xC8 && m != 0xCC) {
             if (len < 8) return false;
             int nf = b[seg + 7];
@@ -322,22 +337,38 @@ bool looksLikeJpeg(const std::wstring& path) {
             unsigned h = ((unsigned)b[seg + 3] << 8) | b[seg + 4];
             unsigned w = ((unsigned)b[seg + 5] << 8) | b[seg + 6];
             if (w == 0 || h == 0 || (unsigned long long)w * h > 100000000ULL) return false;
+            sawFrame = true;
+            frameComps = nf;
+            for (int c = 0; c < nf; c++) compIds[c] = b[seg + 8 + 3 * c];
         }
         i += len;
         if (m != 0xDA) continue;
-        if (len < 6) return false;
+        // SOS: the scan names the components it reads, and every name has to be
+        // one the frame declared - a scan describing components the frame never
+        // declared decodes into nothing and dies the same way. A progressive
+        // picture scans a subset per SOS, so the counts need not be equal, only
+        // in range and correctly named.
+        if (!sawFrame || len < 6) return false;
+        int ns = b[seg + 2];
+        if (ns < 1 || ns > frameComps || len < (size_t)6 + 2 * (size_t)ns) return false;
+        for (int c = 0; c < ns; c++) {
+            unsigned char id = b[seg + 3 + 2 * c];
+            bool known = false;
+            for (int f = 0; f < frameComps; f++) if (compIds[f] == id) known = true;
+            if (!known) return false;
+        }
         sawScan = true;
         while (i < b.size()) {
             if (b[i] != 0xFF) { i++; continue; }
             size_t e = i + 1;
             while (e < b.size() && b[e] == 0xFF) e++;
-            if (e >= b.size()) { i = b.size(); break; }
-            if (b[e] == 0x00) { i = e + 1; continue; }
-            if (b[e] >= 0xD0 && b[e] <= 0xD7) { i = e + 1; continue; }
-            break;
+            if (e >= b.size()) { i = b.size(); break; }   // trailing FFs: no EOI follows
+            if (b[e] == 0x00) { i = e + 1; continue; }    // a stuffed byte, not a marker
+            if (b[e] >= 0xD0 && b[e] <= 0xD7) { i = e + 1; continue; }   // a restart
+            break;                                       // a marker ends the entropy run
         }
     }
-    return false;
+    return false;                                               // ran out before an EOI
 }
 
 static bool placeSigObj(const Sig& s) {

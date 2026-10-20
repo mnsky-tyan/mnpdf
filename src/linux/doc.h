@@ -38,8 +38,6 @@ using COLORREF = uint32_t;
 static const COLORREF CLR_INVALID = 0xFFFFFFFFu;
 
 // ---- constants (mirrors main.cpp) ----
-inline const char* const kAppVersion = "2.6.0";
-inline const char* const kRepoPath = "mnsky-tyan/mnpdf";
 static const double kSpotTolPt = 2.0;
 static const double kSpotTolBakePt = 1.5;
 static const double kStampBoundsTol = 0.25;
@@ -67,7 +65,6 @@ struct Tomb { int kind, page, start, count; double x, y; };
 // ---- per-document state: the bundle ----
 struct Doc {
     std::wstring path;
-    std::wstring prevPath;
     FPDF_DOCUMENT doc = nullptr;
     FPDF_PAGE page = nullptr;
     FPDF_TEXTPAGE textPage = nullptr;
@@ -80,7 +77,6 @@ struct Doc {
     double* prefixPt = nullptr;
     int* rot = nullptr;
     int docPages = 0;
-    std::vector<double> pageTextPt;
     double maxPageW = 0;
     double zoom = 1.0;
     int scrollX = 0, scrollY = 0;
@@ -124,7 +120,6 @@ extern int gDocCount;
 extern int gActiveDoc;
 #define gViewTab (gDocs[gActiveDoc])
 #define gPath     gViewTab->path
-#define gPrevPath gViewTab->prevPath
 #define gDoc      gViewTab->doc
 #define gPage     gViewTab->page
 #define gTextPage gViewTab->textPage
@@ -144,7 +139,6 @@ extern int gActiveDoc;
 #define gSelHead  gViewTab->selHead
 #define gSelAnchorPage gViewTab->selAnchorPage
 #define gSelHeadPage gViewTab->selHeadPage
-#define gPageTextPt gViewTab->pageTextPt
 #define gPageW   gViewTab->pageW
 #define gPageH   gViewTab->pageH
 #define gPrefixPt gViewTab->prefixPt
@@ -252,8 +246,6 @@ void allocPageTables(int pages);
 bool applyFitWidth();
 void fitWidth();
 void zoomAt(double factor, int cx, int cy);
-double rotWptD(int i);
-double rotHptD(int i);
 
 // document open/save
 // persistence (sidecar.cpp)
@@ -288,7 +280,6 @@ bool renderPageToBuffer(int page, int w, int h, std::vector<unsigned char>& out,
 
 // undo helpers shared with the platform layer
 void commitPinText(int idx, bool fresh, const std::wstring& text);
-bool applyFitWidth();
 
 bool openPath(const std::wstring& path);
 bool doSave();
@@ -303,5 +294,4 @@ std::string wideToUtf8(const std::wstring& s);
 // std::wstring (code points) <-> PDFium's UTF-16 (unsigned short), NUL-terminated
 std::vector<unsigned short> wideToU16(const std::wstring& s);
 std::wstring u16ToWide(const unsigned short* p, size_t n);
-std::string escapeField(const std::string& s, const char* esc, size_t nesc);
-std::string unescapeField(const std::string& s, const char* esc, size_t nesc);
+

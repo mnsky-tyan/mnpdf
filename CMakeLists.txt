@@ -25,6 +25,28 @@ add_executable(mnpdf
   src/linux/surgery.cpp
 )
 
+# The headless engine suite: links the platform-independent core and stubs the
+# ui_* seam, so the whole document engine is exercised with no display.
+add_executable(mnpdf-core-test
+  tests/core-test.cpp
+  src/linux/doc.cpp
+  src/linux/search.cpp
+  src/linux/sidecar.cpp
+  src/linux/opendoc.cpp
+  src/linux/surgery.cpp
+)
+target_include_directories(mnpdf-core-test PRIVATE
+  ${PDFIUM_ROOT}/include
+  src/linux
+)
+target_compile_options(mnpdf-core-test PRIVATE -O1 -Wall -Wno-unused-parameter)
+target_link_directories(mnpdf-core-test PRIVATE ${PDFIUM_ROOT}/lib)
+target_link_libraries(mnpdf-core-test PRIVATE pdfium)
+set_target_properties(mnpdf-core-test PROPERTIES BUILD_RPATH "$ORIGIN")
+add_test(NAME core-test COMMAND mnpdf-core-test
+         ${CMAKE_CURRENT_SOURCE_DIR}/tests/arc.pdf /tmp)
+enable_testing()
+
 target_include_directories(mnpdf PRIVATE
   ${GTK3_INCLUDE_DIRS}
   ${PDFIUM_ROOT}/include

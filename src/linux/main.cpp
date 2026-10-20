@@ -59,8 +59,6 @@ static GtkWidget* gSearchBar = nullptr;
 static GtkWidget* gSearchEntry = nullptr;
 static GtkWidget* gSearchLabel = nullptr;
 static double gScale = 1.0;
-static int gWinX = -1, gWinY = -1, gWinW = 1100, gWinH = 800;
-static bool gWinMax = false;
 static guint gSaveTimer = 0;
 static bool gDragging = false;         // a selection drag is live
 static bool gSbDragging = false;       // a scrollbar thumb drag is live
@@ -255,6 +253,7 @@ static void openNoteEditor(int idx, bool fresh) {
 void ui_note_editor(int pinIndex, int, int, const std::wstring&) { openNoteEditor(pinIndex, false); }
 
 // ---- tab lifecycle ----
+static void requestQuit();
 static void makeArea(GtkWidget** out);
 static void onAreaSize(GtkWidget*, GtkAllocation*, gpointer);
 
@@ -307,7 +306,7 @@ static void newTab() {
 }
 
 static void closeTab() {
-    if (gDocCount <= 1) { if (gWin) gtk_widget_destroy(gWin); return; }
+    if (gDocCount <= 1) { requestQuit(); return; }   // the last tab quits like closing the window
     settleActiveDoc();
     flushPageCache();
     int cur = gActiveDoc;
@@ -433,7 +432,7 @@ static void onMenuActivate(GtkMenuItem* mi, gpointer data) {
     case 109: gAutosave = !gAutosave; writeAppPref(); break;
     case 110: gtk_window_iconify(GTK_WINDOW(gWin)); break;
     case 111: if (gtk_window_is_maximized(GTK_WINDOW(gWin))) gtk_window_unmaximize(GTK_WINDOW(gWin)); else gtk_window_maximize(GTK_WINDOW(gWin)); break;
-    case 112: gtk_widget_destroy(gWin); break;
+    case 112: requestQuit(); break;
     case 113: doSave(); break;
     case 114: doSaveAs(); break;
     case 115: undoOp(); break;
@@ -687,7 +686,17 @@ static void onMotion(GtkWidget* w, GdkEventMotion* ev, gpointer) {
 static void onScroll(GtkWidget*, GdkEventScroll* ev, gpointer) {
     bool ctrl = (ev->state & GDK_CONTROL_MASK) != 0;
     double dy = (ev->direction == GDK_SCROLL_UP) ? -1 : (ev->direction == GDK_SCROLL_DOWN) ? 1 : 0;
+    if (ev->direction == GDK_SCROLL_SMOOTH) dy = -(ev->delta_y + ev->delta_x);   // Wayland: deltas
     if (dy == 0) return;
+    // smooth deltas arrive in small steps, so accumulate until a step is worth
+    // acting on; a discrete UP/DOWN event is already a whole step
+    static double sSmoothAcc = 0;
+    if (ev->direction == GDK_SCROLL_SMOOTH) {
+        sSmoothAcc += dy;
+        if (fabs(sSmoothAcc) < 1.0) return;
+        dy = sSmoothAcc > 0 ? 1 : -1;
+        sSmoothAcc = 0;
+    }
     if (ctrl) {
         zoomAt(dy < 0 ? 1.1 : 1 / 1.1, (int)ev->x, (int)ev->y);
     } else {
@@ -731,7 +740,7 @@ static gboolean onKey(GtkWidget*, GdkEventKey* ev, gpointer) {
     case GDK_KEY_minus: zoomAt(1 / 1.2, gClientW / 2, gClientH / 2); break;
     case GDK_KEY_Escape:
         if (gSearchOpen) toggleSearch(false);
-        else gtk_widget_destroy(gWin);
+        else requestQuit();
         break;
     default: return FALSE;
     }
@@ -815,10 +824,10 @@ static gboolean onShotIdle(gpointer) {
         printf("shot: %s (%dx%d)\n", path, ui_backbuf_w(), ui_backbuf_h());
     }
     if (getenv("MNPDF_SHOT_EXIT")) {
-        settleActiveDoc();
-        writeAllSidecars();
-        writeAppPref();
-        gtk_main_quit();
+        // through the REAL quit path, so a suite that sets this exercises the
+        // same save logic the Esc key, the menu Quit and the window close use -
+        // a seam that saved on its own would hide a broken quit path
+        requestQuit();
     }
     return G_SOURCE_REMOVE;
 }
@@ -845,6 +854,14 @@ static gboolean onWindowDelete(GtkWidget*, GdkEvent*, gpointer) {
     } else writeAllSidecars();
     writeAppPref();
     return FALSE;
+}
+
+// the one quit path for every in-app exit: the WM close runs this through the
+// delete-event, and the menu Quit, Esc and the last tab's close must reach the
+// SAME save logic, or a quit with autosave off drops unsaved marks. Written out
+// as gtk_widget_destroy three times before it lived here.
+static void requestQuit() {
+    if (!onWindowDelete(nullptr, nullptr, nullptr)) gtk_widget_destroy(gWin);
 }
 
 static void onWindowConfigure(GtkWidget*, GdkEventConfigure* ev, gpointer) {

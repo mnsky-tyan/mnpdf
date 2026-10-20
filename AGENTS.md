@@ -8,7 +8,8 @@ Two platform builds live in this repository:
 - **Windows** (`src/main.cpp`, `build.bat`) - the original Win32 + GDI build,
   shipped as `mnpdf-win-x64-<tag>.zip`.
 - **Linux** (`src/linux/`, `build-linux.sh`) - the same document engine on GTK3 +
-  cairo, shipped as `mnpdf-linux-x64-<tag>.tar.gz`. See `docs/linux.md`.
+  cairo, built into `build-linux/mnpdf`. There is no Linux release packaging yet.
+  See `docs/linux.md`.
 
 Both write the same sidecar and preference formats, so a document marked up on
 one is understood by the other.
@@ -16,34 +17,52 @@ one is understood by the other.
 ## Repo wiki
 
 ```
-src/main.cpp          the whole Windows application (Win32 + GDI + GDI+)
-src/linux/            the Linux port: one directory per concern
-  doc.h               shared core state: Doc bundle, palette, geometry, undo,
-                      the PDFium-facing API surface every module sees
-  doc.cpp             state, geometry, palette, page cache, selection, marks,
-                      undo/redo (ported from main.cpp)
-  render.cpp          the screen-sized back buffer, overlays, night mode,
-                      print raster (GTK/cairo replaces GDI)
-  search.cpp          find: runSearch, nextMatch, match remapping
-  sidecar.cpp         per-document sidecar, app.txt prefs, last.txt
-  opendoc.cpp         open, save/bake, signature stamps, the JPEG guard
-  surgery.cpp         delete/move page, merge, split (FPDF_ImportPages)
-  main.cpp            the GTK3 platform layer and the ui_* seam
-  ui.h                the platform seam: what the core may ask the UI for
-  probe.cpp           toolchain probe: PDFium renders before the app is built
-tests/core-test.cpp  headless test of the whole document engine
-tests/mnpdf-baked.pdf  a PDF carrying mnpdf's own baked annotations, for the
-                      Windows->Linux format interop check
-scripts/linux-gate.sh  drives the real binary on Xvfb and asserts on the pixels
-                      it paints and the state files it writes
-third_party/pdfium/     Windows PDFium (headers, import lib, DLL, license)
+src/main.cpp             the whole Windows application (Win32 + GDI + GDI+)
+src/linux/               the Linux port: one directory per concern
+  doc.h                  shared core state: Doc bundle, palette, geometry,
+                         undo, and the API surface every module sees
+  doc.cpp                state, geometry, palette, page cache, selection,
+                         marks, undo/redo (ported from main.cpp)
+  render.cpp             the screen-sized back buffer, overlays, night mode,
+                         print raster (GTK/cairo replaces GDI)
+  search.cpp             find: runSearch, nextMatch, match remapping
+  sidecar.cpp            per-document sidecar, app.txt prefs, last.txt
+  opendoc.cpp            open, save/bake, signature stamps, the JPEG guard
+  surgery.cpp            delete/move page, merge, split (FPDF_ImportPages)
+  main.cpp               the GTK3 platform layer and the ui_* seam
+  ui.h                   the platform seam: what the core may ask the UI for
+  probe.cpp              toolchain probe: PDFium renders before the app is built
+tests/core-test.cpp      the headless engine suite (CMake target
+                         mnpdf-core-test); stub UI, no display needed
+tests/mnpdf-baked.pdf    a PDF carrying mnpdf's own baked annotations, for the
+                         Windows->Linux format interop check
+tests/arc.pdf            the default fixture the suites open (13 pages)
+tests/arc-annot.pdf      a fixture carrying annotations
+tests/sig-sample.jpg     a real signature JPEG, used by the refusals test
+tests/lib.ps1            shared Windows suite harness (window lookup, launch)
+tests/watchdog.ps1        Windows suite watchdog
+scripts/linux-gate.sh    the Linux gate: builds, runs the headless engine suite,
+                         then drives the real binary on Xvfb
+scripts/gate-common.ps1  shared Windows gate recipe (one pass/fail rule)
+scripts/gate-test.sh     the Windows gate's WSL entry point
+scripts/test-ci.ps1      the Windows/CI entry point (same nine suites)
+scripts/suites.txt       the Windows gate's suite roster
+scripts/make-release-zip.ps1  the Windows release ZIP
+build.bat                the Windows build recipe
+build-linux.sh           the Linux build recipe (cmake, plus the PDFium probe
+                         and the engine suite first)
+CMakeLists.txt           the Linux build, including the mnpdf-core-test target
+.github/workflows/ci.yml the Windows CI (test-ci.ps1 on a Windows runner)
+docs/linux.md            the Linux port: decisions, format contract, tests,
+                         measured resource cost
+docs/reviews/            codebase review reports (dated per pass)
+test-*.ps1               the Windows feature suites (drive the real binary)
+select-msg-test.ps1      a Windows suite driving the selection path
+README.md / README.txt   the user README; README.txt is the version contract
+PDFIUM-LICENSE.txt       the PDFium license, shipped in release ZIPs
+mnpdf.ico, mnpdf.rc, resource.h   the Windows icon resource
+third_party/pdfium/        Windows PDFium (headers, import lib, DLL, license)
 third_party/pdfium-linux/  Linux PDFium (headers, libpdfium.so, license)
-build.bat              Windows build recipe
-build-linux.sh         Linux build recipe (cmake + the PDFium probe first)
-CMakeLists.txt         the Linux build
-.github/workflows/ci.yml  Windows CI (test-ci.ps1 on a Windows runner)
-test-*.ps1             the Windows feature suites (drive the real binary)
-scripts/test-ci.ps1    Windows/CI entry point
 ```
 
 ## Building

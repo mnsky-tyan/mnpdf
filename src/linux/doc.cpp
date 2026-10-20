@@ -131,33 +131,6 @@ std::string wideToUtf8(const std::wstring& s) {
     return out;
 }
 
-// escape/unescape the sidecar field encodings (\\ and per-field control chars)
-std::string escapeField(const std::string& s, const char* esc, size_t nesc) {
-    std::string out;
-    for (char ch : s) {
-        bool isEsc = false;
-        for (size_t k = 0; k + 1 < nesc; k += 2) if (esc[k] == ch) { isEsc = true; break; }
-        if (isEsc) { out += '\\'; out += ch; }
-        else if (ch == '\\') { out += '\\'; out += '\\'; }
-        else out += ch;
-    }
-    return out;
-}
-
-std::string unescapeField(const std::string& s, const char* esc, size_t nesc) {
-    std::string out;
-    for (size_t i = 0; i < s.size(); i++) {
-        if (s[i] == '\\' && i + 1 < s.size()) {
-            char nx = s[i+1];
-            bool known = (nx == '\\');
-            for (size_t k = 0; k + 1 < nesc; k += 2) if (esc[k] == nx) { known = true; break; }
-            if (known) { out += nx; i++; continue; }
-        }
-        out += s[i];
-    }
-    return out;
-}
-
 // ---- geometry ----
 double clampZoom(double z) { return z < 0.25 ? 0.25 : (z > 8.0 ? 8.0 : z); }
 int docWpx() { return (int)(gMaxPageW * gZoom); }
@@ -278,6 +251,10 @@ void flushPageCache() {
         gPcPage[k] = nullptr;
         gPcIndex[k] = -1;
         gPcOwner[k] = nullptr;
+    }
+    for (int d = 0; d < gDocCount; d++) {       // every bundle aliased the shared cache
+        gDocs[d]->page = nullptr;
+        gDocs[d]->textPage = nullptr;
     }
 }
 
@@ -413,11 +390,12 @@ void undoOp() {
         break;
     case 5: pinSetTextAt(op.pinIdx, op.textFrom); break;
     case 6: rotApply(op.rotPage, op.rotFrom); break;
-    case 7: { int i = pinIndexOf(op.pinVal, op.hlTo); if (i >= 0) { gPins[i].color = op.hlFrom; } }
+    case 7: { int i = pinIndexOf(op.pinVal, op.hlTo); if (i >= 0) { gPins[i].color = op.hlFrom; op.pinIdx = i; } }
         break;
     }
     gRedo.push_back(op);      // the op moves to the redo stack: undo/redo walk it back and forth
-    markSave();
+    markDirty();                                   // the undone state is unsaved work too
+    markSave();                                    // sidecar follows the undone state
     renderPage();
 }
 
@@ -437,11 +415,18 @@ void redoOp() {
     case 4: pinEraseAt(op.pinIdx); break;
     case 5: pinSetTextAt(op.pinIdx, op.textTo); break;
     case 6: rotApply(op.rotPage, op.rotTo); break;
-    case 7: { int i = pinIndexOf(op.pinVal, op.hlFrom); if (i >= 0) { gPins[i].color = op.hlTo; } }
+    case 7: {                                     // pinrecolor: the pin undo repainted, else that colour
+            int i = -1;
+            if (op.pinIdx >= 0 && op.pinIdx < (int)gPins.size()
+                && pinSame(gPins[op.pinIdx], op.pinVal) && gPins[op.pinIdx].color == op.hlFrom) i = op.pinIdx;
+            if (i < 0) i = pinIndexOf(op.pinVal, op.hlFrom);
+            if (i >= 0) gPins[i].color = op.hlTo;
+        }
         break;
     }
     gUndo.push_back(op);       // symmetrically, redo hands the op back to the undo stack
-    markSave();
+    markDirty();                                   // the redone state is unsaved work too
+    markSave();                                    // sidecar follows the redone state
     renderPage();
 }
 

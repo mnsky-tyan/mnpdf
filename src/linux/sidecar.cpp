@@ -72,14 +72,26 @@ std::string appDir() {
     return dir;
 }
 
-// FNV-1a over the UTF-16 bytes of the path, as the Windows app hashes it
+// FNV-1a over the UTF-16 bytes of the path, as the Windows app hashes it: a
+// wchar_t is 16-bit there, so a non-BMP code point contributes its surrogate
+// PAIR (4 bytes), and this must hash the same units or the two platforms would
+// name the same document's sidecar differently.
+static void hashUnit(uint64_t& h, unsigned short c) {
+    h = (h ^ (unsigned char)(c & 0xff)) * 1099511628211ULL;
+    h = (h ^ (unsigned char)((c >> 8) & 0xff)) * 1099511628211ULL;
+}
 static uint64_t pathHash(const std::wstring& path) {
     uint64_t h = 1469598103934665603ULL;
-    for (size_t i = 0; i <= path.size(); i++) {
-        unsigned short c = (i < path.size()) ? (unsigned short)path[i] : 0;
-        h = (h ^ (unsigned char)(c & 0xff)) * 1099511628211ULL;
-        h = (h ^ (unsigned char)((c >> 8) & 0xff)) * 1099511628211ULL;
+    for (size_t i = 0; i < path.size(); i++) {
+        uint32_t cp = (uint32_t)path[i];
+        if (cp < 0x10000) { hashUnit(h, (unsigned short)cp); }
+        else {
+            cp -= 0x10000;
+            hashUnit(h, (unsigned short)(0xD800 + (cp >> 10)));
+            hashUnit(h, (unsigned short)(0xDC00 + (cp & 0x3FF)));
+        }
     }
+    hashUnit(h, 0);                              // the terminator Windows hashes too
     return h;
 }
 
@@ -106,6 +118,9 @@ static bool readLine(FILE* fp, std::vector<char>& buf) {
     buf[len] = 0;
     return any;
 }
+
+static void writeSidecarFor(Doc* d);
+void writeSidecarForBundle(Doc* d) { writeSidecarFor(d); }
 
 static void writeSidecarFor(Doc* d) {
     if (!d || d->path.empty() || !d->doc) return;
@@ -276,6 +291,11 @@ void restoreSidecar(const std::wstring& path) {
 
 // exposed for the headless test (and nothing else needs it)
 
+// ---- saved window geometry (app.txt) ----
+// It lives here because sidecar.cpp owns app.txt; main.cpp only consumes it.
+int gWinX = -1, gWinY = -1, gWinW = 1100, gWinH = 800;
+bool gWinMax = false;
+
 // ---- app prefs (app.txt) ----
 void loadAppPref() {
     FILE* fp = fopen((appDir() + "/app.txt").c_str(), "rb");
@@ -290,6 +310,13 @@ void loadAppPref() {
         else if (sscanf(line, "hlcolor=%d", &iv) == 1) gHlDefault = (iv >= 0 && iv < kPalCount) ? iv : 0;
         else if (sscanf(line, "pincolor=%d", &iv) == 1) gPinDefault = (iv >= 0 && iv < kPalCount) ? iv : 0;
         else if (sscanf(line, "palnext=%d", &iv) == 1) gPalNext = (iv >= 0 && iv < kPalCustom) ? iv : 0;
+        // geometry is bounded the same way the Windows reader bounds it: a value
+        // a window cannot have leaves the field at its default
+        else if (sscanf(line, "winx=%d", &iv) == 1) { if (iv >= -100000 && iv <= 100000) gWinX = iv; }
+        else if (sscanf(line, "winy=%d", &iv) == 1) { if (iv >= -100000 && iv <= 100000) gWinY = iv; }
+        else if (sscanf(line, "winw=%d", &iv) == 1) { if (iv > 0 && iv <= 32767) gWinW = iv; }
+        else if (sscanf(line, "winh=%d", &iv) == 1) { if (iv > 0 && iv <= 32767) gWinH = iv; }
+        else if (sscanf(line, "winmax=%d", &iv) == 1) gWinMax = iv != 0;
         else if (strncmp(line, "pal", 3) == 0 && line[4] == '=') {
             unsigned int r2, g2, b2;
             if (sscanf(line + 5, "%2x%2x%2x", &r2, &g2, &b2) == 3) {

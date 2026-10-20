@@ -76,15 +76,19 @@ for "Hello" silently became a search for "H".
 
 ## Tests
 
-Two layers, mirroring how the Windows suites drive the real binary:
+Two layers, both run by `scripts/linux-gate.sh`, mirroring how the Windows suites
+drive the real binary:
 
 - `tests/core-test.cpp` links the platform-independent modules and exercises the
-  engine with stubbed UI: 119 checks over open, geometry, selection, search,
-  marks, undo/redo, the sidecar round trip, save/bake and re-read, page surgery,
-  merge, tabs, prefs, the JPEG guard and the format interop.
-- `scripts/linux-gate.sh` runs the real binary on Xvfb and asserts on the pixels
-  it paints (the page is mostly paper and carries text) and on the state files
-  it writes.
+  engine with stubbed UI. It is a real CMake target (`mnpdf-core-test`,
+  registered with `add_test`), built by `cmake --build`, run by
+  `build-linux.sh` (a core regression fails the build) and by the gate's first
+  layer. It covers open, geometry, selection, search, marks, undo/redo, the
+  sidecar round trip, save/bake and re-read, page surgery, merge, tabs, prefs,
+  the JPEG guard and the format interop.
+- `scripts/linux-gate.sh`'s second layer runs the real binary on Xvfb and asserts
+  on the pixels it paints (the page is mostly paper and carries text) and on the
+  state files it writes.
 
 The app exposes the same kind of seam the Windows suites use: `MNPDF_SHOT`
 writes its back buffer to a PNG after the first render, and `MNPDF_SHOT_EXIT`
@@ -97,10 +101,12 @@ Measured on this machine (`/usr/bin/time`, and RSS sampled from `/proc`):
 - Headless core test, 119 checks including two full save/bake round trips:
   **0.49 s wall, 14.8 MB peak RSS** (measured, `/usr/bin/time`).
 - The GUI with a 13-page document open, idle after 20 s: **98.6 MB RSS, steady
-  state, no growth** (measured, sampled from `/proc/<pid>/status`). PDFium itself
-  is ~8 MB of that; GTK is the rest. The only allocation that scales with the
-  window is one client-sized BGRA buffer, the same discipline as the Windows
-  build, and the print path allocates exactly one page raster at a time.
+  state, no growth** (measured, sampled from `/proc/<pid>/status`). Of that,
+  the vendored `libpdfium.so` file itself is 7.9 MB (measured, `ls`); how much of
+  it is resident is an estimate, and GTK accounts for the rest. The only
+  allocation that scales with the window is one client-sized BGRA buffer, the same
+  discipline as the Windows build, and the print path allocates exactly one page
+  raster at a time.
 
 ## What is still missing
 

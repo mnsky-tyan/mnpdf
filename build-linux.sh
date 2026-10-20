@@ -25,5 +25,18 @@ echo "PDFIUM OK"
 
 # 2. the app
 cmake -S . -B build-linux -DCMAKE_BUILD_TYPE=Release "$@" >/dev/null
-cmake --build build-linux -j"$(nproc)"
+cmake --build build-linux -j"$(nproc)" >/dev/null
+
+# 3. the headless engine suite is part of the build: a core regression fails the
+#    build here, not three steps later in a gate that may not be run
+if ! LD_LIBRARY_PATH=build-linux timeout 300 build-linux/mnpdf-core-test \
+      tests/arc.pdf /tmp > /tmp/mnpdf-core-test.$$ 2>&1; then
+  echo "BUILD FAILED: the headless engine suite did not pass:" >&2
+  tail -20 /tmp/mnpdf-core-test.$$ >&2
+  rm -f /tmp/mnpdf-core-test.$$
+  exit 1
+fi
+grep -E "^pass=" /tmp/mnpdf-core-test.$$
+rm -f /tmp/mnpdf-core-test.$$
+
 echo "BUILD OK: build-linux/mnpdf"

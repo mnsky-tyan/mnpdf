@@ -7,6 +7,11 @@
 #include <string>
 
 double ui_scale();                       // device pixels per design pixel (GTK scale factor)
+
+// saved window geometry: sidecar.cpp owns it (app.txt); the window layer consumes
+// it at startup and updates it on configure/state changes
+extern int gWinX, gWinY, gWinW, gWinH;
+extern bool gWinMax;
 // request a redraw of the current view
 void ui_invalidate();
 

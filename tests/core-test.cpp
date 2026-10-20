@@ -38,6 +38,7 @@ bool ui_color_box(int& idx) { idx = kPalPreset; return false; }
 void ui_copy_text(const std::string& t) { gCopyCount++; gLastCopy = t; }
 void ui_note_editor(int, int, int, const std::wstring&) {}
 void refreshDrawers() {}
+extern int ui_matchActive();   // from search.cpp: which match is active
 void ui_windowRect(int* x, int* y, int* w, int* h, int* maxed) { *x = 0; *y = 0; *w = 800; *h = 600; *maxed = 0; }
 
 // render.cpp needs GTK/cairo; the test supplies the two render entry points.
@@ -51,6 +52,34 @@ bool ui_hasDoc() { return gDoc != nullptr; }
 
 // ---- test harness ----
 static int gPass = 0, gFail = 0;
+
+// count annotations in a PDF file; ours=true counts only the ones mnpdf writes
+// (their /Source starts with "mnpdf"), so a fixture's own annotations never
+// inflate the count
+static int countAnnots(const std::string& path, bool ours) {
+    FPDF_DOCUMENT d = FPDF_LoadDocument(path.c_str(), nullptr);
+    if (!d) return -1;
+    int total = 0;
+    int np = FPDF_GetPageCount(d);
+    for (int i = 0; i < np; i++) {
+        FPDF_PAGE p = FPDF_LoadPage(d, i);
+        if (!p) continue;
+        int na = FPDFPage_GetAnnotCount(p);
+        if (!ours) { total += na; FPDF_ClosePage(p); continue; }
+        for (int k = 0; k < na; k++) {
+            FPDF_ANNOTATION a = FPDFPage_GetAnnot(p, k);
+            if (!a) continue;
+            unsigned short src[64] = {0};
+            FPDFAnnot_GetStringValue(a, "Source", (FPDF_WCHAR*)src, sizeof(src));
+            std::wstring w = u16ToWide(src, 64);
+            if (w.compare(0, 5, L"mnpdf") == 0) total++;
+            FPDFPage_CloseAnnot(a);
+        }
+        FPDF_ClosePage(p);
+    }
+    FPDF_CloseDocument(d);
+    return total;
+}
 #define CHECK(cond, name) do { \
     if (cond) { gPass++; printf("  ok   %s\n", name); } \
     else { gFail++; printf("  FAIL %s   (line %d)\n", name, __LINE__); } \
@@ -61,9 +90,12 @@ static void resetGlobals() {
 }
 
 int main(int argc, char** argv) {
-    if (argc < 3) { fprintf(stderr, "usage: %s <arc.pdf> <scratch-dir>\n", argv[0]); return 2; }
+    if (argc < 3) { fprintf(stderr, "usage: %s <arc.pdf> <scratch-dir> [tests-dir]\n", argv[0]); return 2; }
     std::string pdf = argv[1], scratch = argv[2];
-    std::string dirOf = pdf.substr(0, pdf.find_last_of('/') + 1);
+    // the fixtures live next to the suite, which is not derivable from a bare
+    // filename argument (npos + 1 wraps to 0), so the runner names the directory
+    std::string dirOf = (argc > 3) ? argv[3] : "tests/";
+    if (!dirOf.empty() && dirOf.back() != '/') dirOf += '/';
     mkdir(scratch.c_str(), 0755);
     setenv("XDG_CONFIG_HOME", scratch.c_str(), 1);   // isolate all state writes
 
@@ -101,9 +133,11 @@ int main(int argc, char** argv) {
     CHECK(nchars > 0, "page has characters");
     // hit-test the middle of the page and check we resolve a char index
     int pg = -1;
+    // the fixture's page 0 carries body text across its middle, so a hit-test at
+    // the viewport centre must resolve a real character index, not a sentinel
     int idx = charIndexAtDoc(gClientW / 2, tabStripH() + docViewH() / 2, &pg);
-    CHECK(pg == 0 || pg == 1, "a click resolves to a page");
-    CHECK(idx >= 0 || idx == -2 || idx == -3 || idx == -1, "char index in a legal range");
+    CHECK(pg >= 0 && pg < gDocPages, "a click resolves to a page in range");
+    CHECK(idx >= 0, "a hit-test over body text resolves a real character");
     // page-space round trip
     {
         double px, py, qx, qy;
@@ -139,16 +173,16 @@ int main(int argc, char** argv) {
 
     printf("== search ==\n");
     {
-        // search for a word that is definitely in the page text
-        std::string needle = gLastCopy.substr(0, gLastCopy.find_first_of(" \r\n"));
-        if (needle.size() < 3) needle = "a";
+        // a fixed literal the fixture is known to contain (page 0's body text),
+        // not a word re-derived from text the code under test just produced
+        std::string needle = "Independent";
         gQuery = utf8ToWide(needle);
         runSearch();
         CHECK(searchCount() > 0, "search finds the query");
-        int before = gPageIndex;
+        int firstActive = ui_matchActive();
         nextMatch(1);
         CHECK(searchCount() > 0, "nextMatch keeps results");
-        (void)before;
+        CHECK(ui_matchActive() != firstActive, "nextMatch advances the active match");
         gQuery.clear();
         runSearch();
         CHECK(searchCount() == 0, "empty query clears matches");
@@ -180,6 +214,23 @@ int main(int argc, char** argv) {
         CHECK(gHls[0].color == 2, "redo re-applies the colour");
         redoOp();
         CHECK(gHls.empty(), "redo re-deletes (delete was the undone op)");
+    }
+
+    printf("== undo/redo leave the document savable (regression: missing markDirty) ==\n");
+    {
+        // a user's real sequence: add a mark, undo it, save. The file must show
+        // the undone state; without markDirty() the save was skipped entirely
+        // and the mark silently stayed in the file on disk.
+        gHls.clear(); gPins.clear(); gUndo.clear(); gRedo.clear(); gTomb.clear(); gDirty = false;
+        gSelAnchorPage = gSelHeadPage = 0; gSelAnchor = 3; gSelHead = 30;
+        applyHighlightFromSelection(0);
+        CHECK(gDirty, "adding a mark dirties the document");
+        undoOp();
+        CHECK(gDirty, "undo leaves the document dirty, so Save still writes");
+        CHECK(gHls.empty(), "the undo removed the mark");
+        redoOp();
+        CHECK(gDirty, "redo also leaves the document dirty");
+        CHECK(gHls.size() == 1, "the redo brought the mark back");
     }
 
     printf("== marks: overlapping highlight replaces, never stacks ==\n");
@@ -240,13 +291,13 @@ int main(int argc, char** argv) {
         CHECK(gZoom > z, "zoom in raises zoom");
         CHECK(!gFitWidth, "manual zoom ends fit-width");
         for (int i = 0; i < 40; i++) zoomAt(1.2, 500, 400);
-        CHECK(gZoom <= 8.0 + 1e-9, "zoom clamps at the ceiling");
+        CHECK(gZoom == 8.0, "zoom clamps to exactly the ceiling");
         for (int i = 0; i < 80; i++) zoomAt(1 / 1.2, 500, 400);
-        CHECK(gZoom >= 0.25 - 1e-9, "zoom clamps at the floor");
+        CHECK(gZoom == 0.25, "zoom clamps to exactly the floor");
         gZoom = 1.0;
         gScrollY = 999999;
         clampScroll();
-        CHECK(gScrollY <= docHpx() - docViewH(), "scroll clamps to the document bottom");
+        CHECK(gScrollY == docHpx() - docViewH(), "scroll clamps to exactly the document bottom");
         gScrollY = -500;
         clampScroll();
         CHECK(gScrollY == 0, "scroll clamps at the top");
@@ -272,10 +323,14 @@ int main(int argc, char** argv) {
         if (f) fclose(f);
         buf[got] = 0;
         CHECK(strstr(buf, "fmt=2") != nullptr, "sidecar carries the format version");
-        CHECK(strstr(buf, "zoom=1.75") != nullptr, "sidecar carries zoom");
+        CHECK(strstr(buf, "zoom=1.750000") != nullptr, "sidecar carries the exact zoom");
+        CHECK(strstr(buf, "fit=0") != nullptr, "sidecar records fit-width off after a manual zoom");
         CHECK(strstr(buf, "page=3") != nullptr, "sidecar carries the page (1-based)");
-        CHECK(strstr(buf, "hl=") != nullptr, "sidecar carries the highlight");
-        CHECK(strstr(buf, "pin=") != nullptr, "sidecar carries the pin");
+        // the exact tuples ARE the contract the Windows reader parses; a key
+        // without its fields would not round-trip
+        CHECK(strstr(buf, "hl=0,3,28,1") != nullptr, "the highlight tuple is exact (page,start,count,colour)");
+        CHECK(strstr(buf, "pin=1,120.00,300.00,c5,a note, with a comma\\nand a newline") != nullptr,
+              "the pin tuple is exact and its newline is escaped \\n");
         printf("       sidecar:\n");
         for (char* ln = strtok(buf, "\n"); ln; ln = strtok(nullptr, "\n")) printf("         %s\n", ln);
 
@@ -284,13 +339,18 @@ int main(int argc, char** argv) {
         std::wstring pinText = gPins.empty() ? L"" : gPins[0].text;
         int pinPage = gPins.empty() ? -1 : gPins[0].page;
         double pinX = gPins.empty() ? 0 : gPins[0].x, pinY = gPins.empty() ? 0 : gPins[0].y;
+        int pinColor = gPins.empty() ? -1 : gPins[0].color;
         CHECK(openPath(wpdf), "reopen the same file");
         CHECK(gHls.size() == nhl, "highlights restored from sidecar");
         CHECK(gPins.size() == npin, "pins restored from sidecar");
         CHECK(!gPins.empty() && gPins[0].text == pinText, "pin text survives the escape round trip");
         CHECK(fabs(gZoom - 1.75) < 1e-6, "zoom restored");
         CHECK(gPageIndex == 2, "page restored");
-        (void)pinPage; (void)pinX; (void)pinY;
+        // the pin's position and colour round trip too, not only its text
+        CHECK(!gPins.empty() && gPins[0].page == pinPage, "the pin's page survives");
+        CHECK(!gPins.empty() && fabs(gPins[0].x - pinX) < 0.01 && fabs(gPins[0].y - pinY) < 0.01,
+              "the pin's position survives");
+        CHECK(!gPins.empty() && gPins[0].color == pinColor, "the pin's colour survives");
     }
 
     printf("== save: bake marks into the PDF, then read them back ==\n");
@@ -302,20 +362,12 @@ int main(int argc, char** argv) {
         CHECK(stat(outpdf.c_str(), &st) == 0 && st.st_size > 1000, "saved file written to disk");
         CHECK(!gDirty, "document is clean after save");
 
-        // the saved file must carry real annotations
-        FPDF_DOCUMENT chk = FPDF_LoadDocument(outpdf.c_str(), nullptr);
-        CHECK(chk != nullptr, "saved file reopens in pdfium");
-        int totalAnnots = 0;
-        if (chk) {
-            int np = FPDF_GetPageCount(chk);
-            for (int i = 0; i < np; i++) {
-                FPDF_PAGE p = FPDF_LoadPage(chk, i);
-                if (p) { totalAnnots += FPDFPage_GetAnnotCount(p); FPDF_ClosePage(p); }
-            }
-            FPDF_CloseDocument(chk);
-        }
-        CHECK(totalAnnots >= 1, "highlights are baked as real annotations");
-        printf("       annotations in saved file: %d\n", totalAnnots);
+        // the saved file must carry the app's OWN annotations: the fixture
+        // already carries 56 of its own, so counting all annotations would pass
+        // even if the bake wrote nothing
+        int totalAnnots = countAnnots(outpdf, true);
+        CHECK(totalAnnots == 2, "exactly the highlight and the pin are baked as real annotations");
+        printf("       mnpdf annotations in saved file: %d\n", totalAnnots);
 
         // delete the sidecar so the marks can only come from the file itself
         remove(sidecarName.c_str());
@@ -329,18 +381,9 @@ int main(int argc, char** argv) {
         // force dirty so doSaveImpl writes even though nothing else changed
         markDirty();
         CHECK(doSaveImpl(utf8ToWide(out2)), "second save succeeds");
-        FPDF_DOCUMENT chk2 = FPDF_LoadDocument(out2.c_str(), nullptr);
-        int dupes = 0;
-        if (chk2) {
-            int np = FPDF_GetPageCount(chk2);
-            for (int i = 0; i < np; i++) {
-                FPDF_PAGE p = FPDF_LoadPage(chk2, i);
-                if (p) { dupes += FPDFPage_GetAnnotCount(p); FPDF_ClosePage(p); }
-            }
-            FPDF_CloseDocument(chk2);
-        }
+        int dupes = countAnnots(out2, true);
         CHECK(dupes == totalAnnots, "re-saving does not pile up duplicate annotations");
-        printf("       annotations after re-save: %d (was %d)\n", dupes, totalAnnots);
+        printf("       mnpdf annotations after re-save: %d (was %d)\n", dupes, totalAnnots);
     }
 
     printf("== page surgery: delete, move, split ==\n");
@@ -420,8 +463,12 @@ int main(int argc, char** argv) {
         // any foreign annotation alone.
         std::string baked = dirOf + "mnpdf-baked.pdf";
         struct stat st;
-        if (stat(baked.c_str(), &st) != 0) { printf("  SKIP (no %s)\n", baked.c_str()); }
-        else {
+        // a missing fixture is a failure, not a skip: these 12 checks are the
+        // only test of the Windows bake contract, and a silent skip would leave
+        // the suite green with them gone
+        if (stat(baked.c_str(), &st) != 0) {
+            gFail++; printf("  FAIL the interop fixture is missing (%s)\n", baked.c_str());
+        } else {
             CHECK(openPath(utf8ToWide(baked)), "open the file the Windows app would write");
             CHECK(gHls.size() == 1, "the baked highlight lifts into a live mark");
             CHECK(!gHls.empty() && gHls[0].start == 0 && gHls[0].count == 45, "its char range survives");
@@ -450,6 +497,23 @@ int main(int argc, char** argv) {
         if (f) { fputs("this is a text file pretending to be a picture", f); fclose(f); }
         CHECK(!looksLikeJpeg(notjpeg), "a fake .jpg is refused");
         CHECK(!looksLikeJpeg(utf8ToWide("/nonexistent/file.jpg")), "a missing file is refused");
+        // A frame-less chain (SOI, SOS, entropy, EOI - no SOF anywhere) and a
+        // scan naming a component the frame never declared both reach the loader
+        // and die at first paint, which replaySigs would then repeat on every
+        // open. Regression: an earlier port of the guard accepted both.
+        {
+            unsigned char frameless[] = {0xFF,0xD8,0xFF,0xDA,0x00,0x04,0x01,0x00,0x00,0x11,0x22,0x33,0xFF,0xD9};
+            unsigned char badcomp[] = {0xFF,0xD8,0xFF,0xC0,0x00,0x0B,0x00,0x08,0x00,0x08,0x03,0x01,0x11,0x00,
+                                       0x02,0x21,0x11,0xFF,0xDA,0x00,0x04,0x01,0x09,0x00,0xFF,0xD9};
+            FILE* fp = fopen((scratch + "/frameless.jpg").c_str(), "wb");
+            if (fp) { fwrite(frameless, 1, sizeof frameless, fp); fclose(fp); }
+            fp = fopen((scratch + "/badcomp.jpg").c_str(), "wb");
+            if (fp) { fwrite(badcomp, 1, sizeof badcomp, fp); fclose(fp); }
+            CHECK(!looksLikeJpeg(utf8ToWide(scratch + "/frameless.jpg")),
+                  "a frame-less JPEG chain is refused (would crash at first paint)");
+            CHECK(!looksLikeJpeg(utf8ToWide(scratch + "/badcomp.jpg")),
+                  "a scan naming an undeclared component is refused");
+        }
         // the real sample the Windows suite ships must pass
         CHECK(looksLikeJpeg(utf8ToWide(dirOf + "sig-sample.jpg")),
               "the sample signature JPEG is accepted");

@@ -42,7 +42,6 @@ static void adoptDoc(FPDF_DOCUMENT nd, int oldCount) {
     }
     delete[] oldRot;
     flushPageCache();
-    gPageTextPt.assign(gDocPages ? gDocPages : 1, 0.0);
     relayoutPages();
     if (gPageIndex >= gDocPages) gPageIndex = gDocPages - 1;
     if (gPageIndex < 0) gPageIndex = 0;
