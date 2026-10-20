@@ -205,7 +205,7 @@ bool ui_color_box(int& paletteIndex) {
 
 void ui_windowRect(int* x, int* y, int* w, int* h, int* maxed) {
     *x = gWinX; *y = gWinY; *w = gWinW; *h = gWinH;
-    *maxed = (gWinMax || gtk_window_is_maximized(GTK_WINDOW(gWin))) ? 1 : 0;
+    *maxed = gWinMax ? 1 : 0;
 }
 
 // ---- note editor: a dialog with a text view, committed on OK ----
@@ -671,7 +671,8 @@ static void onScroll(GtkWidget*, GdkEventScroll* ev, gpointer) {
         if (fabs(sSmoothAccX) < 1.0 && fabs(sSmoothAccY) < 1.0) return;
         dx = fabs(sSmoothAccX) >= 1.0 ? (sSmoothAccX > 0 ? 1 : -1) : 0;
         dy = fabs(sSmoothAccY) >= 1.0 ? (sSmoothAccY > 0 ? 1 : -1) : 0;
-        sSmoothAccX = 0; sSmoothAccY = 0;
+        if (dx) sSmoothAccX = 0;
+        if (dy) sSmoothAccY = 0;
     }
     if (ctrl) {
         if (dy) zoomAt(dy < 0 ? 1.1 : 1 / 1.1, (int)ev->x, (int)ev->y);

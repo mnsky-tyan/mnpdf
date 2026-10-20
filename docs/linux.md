@@ -128,7 +128,7 @@ quits after, so a pixel assertion needs no harness clicking a window.
 
 Measured on this machine (`/usr/bin/time`, and RSS sampled from `/proc`):
 
-- Headless core test, 145 checks including two full save/bake round trips:
+- Headless core test, 146 checks including two full save/bake round trips:
   **0.26 s wall, 15.1 MB peak RSS** (measured, `/usr/bin/time -v`).
 - The GUI with a 13-page document open, idle after 20 s: **98.6 MB RSS, steady
   state, no growth** (measured, sampled from `/proc/<pid>/status`). Of that,

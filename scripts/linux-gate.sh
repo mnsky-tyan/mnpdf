@@ -38,11 +38,11 @@ else
     if LD_LIBRARY_PATH=./build-linux timeout 300 "$BIN-core-test" "$PDF" "$ST2" ./tests \
          >"$ST2/log.txt" 2>&1; then
         ok "the headless engine suite passes ($(grep -o 'pass=[0-9]*' "$ST2/log.txt" | tail -1))"
+        rm -rf "$ST2"
     else
         bad "the headless engine suite failed; log kept at $ST2/log.txt"
         tail -15 "$ST2/log.txt"
     fi
-    rm -rf "$ST2"
 fi
 
 if ! command -v xvfb-run >/dev/null; then echo "gate: xvfb-run missing (apt install xvfb)" >&2; exit 1; fi
@@ -54,6 +54,8 @@ xvfb-run -a --server-args="-screen 0 1280x900x24" \
   timeout 30 "$BIN" "$PDF" >"$D/log.txt" 2>&1
 grep -qF -- "$OUT" "$D/log.txt"; chk $? "the app writes its own back buffer"
 [ -s "$OUT" ]; chk $? "the shot file has content"
+grep -q "Gtk-CRITICAL" "$D/log.txt"; [ $? -ne 0 ]
+chk $? "the MNPDF_SHOT_EXIT quit path emits no Gtk-CRITICAL"
 
 if ! command -v python3 >/dev/null; then
     bad "python3 missing (apt install python3 python3-pil) - pixel checks skipped"
