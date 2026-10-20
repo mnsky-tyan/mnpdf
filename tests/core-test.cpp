@@ -516,6 +516,7 @@ int main(int argc, char** argv) {
         FILE* pf = fopen(prefsPath.c_str(), "wb");
         if (pf) {
             fputs("tabstrip=1\ntitlebar=1\nautosave=1\nhlcolor=3\npincolor=1\nnight=0\n"
+                  "winx=100\nwiny=100\nwinw=1024\nwinh=768\nwinmax=0\npal0=112233\npalnext=1\n"
                   "updcheck=1700000000\nupdtag=v2.6.0\n", pf);
             fclose(pf);
         }
@@ -529,13 +530,26 @@ int main(int argc, char** argv) {
             while ((got = fread(buf, 1, sizeof buf, rf)) > 0) after.append(buf, got);
             fclose(rf);
         }
-        size_t pTitle = after.find("titlebar=1");
-        size_t pCheck = after.find("updcheck=1700000000");
-        size_t pTag = after.find("updtag=v2.6.0");
-        size_t pTab = after.find("tabstrip=");
+        // the merged file must read like a Windows-written app.txt: the Linux
+        // block in the Windows canonical key order, the keys Linux does not own
+        // carried after it in their original relative order
+        const char* canonical[] = { "tabstrip=", "autosave=", "hlcolor=", "pincolor=", "night=",
+                                    "winx=", "winy=", "winw=", "winh=", "winmax=",
+                                    "pal0=", "pal1=", "pal2=", "palnext=" };
+        size_t last = std::string::npos, at;
+        bool ordered = true;
+        for (const char* k : canonical) {
+            at = after.find(k);
+            if (at == std::string::npos) continue;
+            if (last != std::string::npos && at <= last) { ordered = false; break; }
+            last = at;
+        }
+        CHECK(ordered, "the Linux block is written in the Windows canonical key order");
+        size_t pTitle = after.find("titlebar=1"), pCheck = after.find("updcheck=1700000000"),
+               pTag = after.find("updtag=v2.6.0");
         CHECK(pTitle != std::string::npos && pCheck != std::string::npos && pTag != std::string::npos &&
-              pTitle < pCheck && pCheck < pTag && pTag < pTab,
-              "foreign keys survive a Linux write, in order, before the Linux block");
+              last != std::string::npos && pTitle > last && pTitle < pCheck && pCheck < pTag,
+              "the foreign keys are carried after the Linux block, in their original order");
         CHECK(after.find("night=") != std::string::npos && after.find("night=") == after.rfind("night="),
               "the Linux-owned block is written once, not appended to a copy");
     }

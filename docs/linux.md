@@ -40,6 +40,11 @@ paints the composited frame and draws its own scrollbars.
   on it.
 - **Note editor.** Windows floats a popup editor beside the pin; the Linux build
   uses a modal dialog. The text, the length limit and the undo op are the same.
+  An open editor is settled at a different moment: Windows commits an open note
+  box at a tab switch and at window close (`settleActiveDoc`, src/main.cpp:5277,
+  and the WM_CLOSE handler), while the Linux dialog is modal, so it must be
+  saved or cancelled before the switch can happen at all. Cancelling a NEW pin
+  drops it on both platforms.
 - **Thumbnail and outline drawers.** Not ported yet. The hook
   `refreshDrawers()` exists and is a no-op.
 - **Update check and install.** Not ported: it is WinHTTP, COM and
@@ -55,10 +60,18 @@ same `app.txt` keys. The escape tables match (`\n` in pin text, `\c` in stamp
 paths). The sidecar filename is the same FNV-1a hash of the UTF-16 path bytes,
 so even a shared config directory resolves to the same file on both platforms.
 
-`app.txt` is one shared file, so a Linux write keeps every key it does not own
-(the Windows reader's `titlebar=`, `updcheck=` and `updtag=`) verbatim and in its
-original order, then writes the Linux block: a launch on one platform never
-loses the other's preferences or its update-check clock.
+One divergence is deliberate and recorded rather than hidden: after an undone
+pin deletion the Linux engine puts the pin back in its original slot, where the
+Windows engine appends it back, so the `pin=` lines of the same edit history
+can be written in a different order on the two platforms. Every line carries
+its own page and position, so both readers parse either file and lift the same
+marks.
+
+`app.txt` is one shared file, so a Linux write emits its own keys in the
+Windows canonical order and carries every key it does not own (the Windows
+reader's `titlebar=`, `updcheck=` and `updtag=`) after them, verbatim and in
+their original order: a launch on one platform never loses the other's
+preferences or its update-check clock.
 
 `tests/mnpdf-baked.pdf` is a PDF carrying mnpdf's own baked annotations
 (`/Source (mnpdf 0 45)` on a Highlight, `/Source (mnpdf)` on a Text note) - the

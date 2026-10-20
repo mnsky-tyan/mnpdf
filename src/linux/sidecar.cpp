@@ -355,7 +355,6 @@ void writeAppPref() {
     }
     FILE* fp = fopen(path.c_str(), "wb");
     if (!fp) return;
-    for (const std::string& line : foreign) fprintf(fp, "%s\n", line.c_str());
     fprintf(fp, "tabstrip=%d\nautosave=%d\nhlcolor=%d\npincolor=%d\nnight=%d\n",
             gTabStrip ? 1 : 0, gAutosave ? 1 : 0, gHlDefault, gPinDefault, gNight ? 1 : 0);
     int x = 0, y = 0, w = 0, h = 0, mx = 0;
@@ -365,5 +364,6 @@ void writeAppPref() {
         if (gPalCustom[c] != CLR_INVALID)
             fprintf(fp, "pal%d=%02x%02x%02x\n", c, GetRValue(gPalCustom[c]), GetGValue(gPalCustom[c]), GetBValue(gPalCustom[c]));
     fprintf(fp, "palnext=%d\n", gPalNext);
+    for (const std::string& line : foreign) fprintf(fp, "%s\n", line.c_str());
     fclose(fp);
 }

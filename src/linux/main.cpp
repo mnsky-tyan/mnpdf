@@ -843,8 +843,8 @@ static void onWindowState(GtkWidget*, GdkEventWindowState* ev, gpointer) {
 // The saved frame comes back where the last session left it, bounded the way the
 // Windows reader bounds it (src/main.cpp, clampBox and MonitorFromRect): a rect
 // no monitor can see any more falls back to the default placement, and one that
-// only partly fits keeps its width and height with its top-left moved inside
-// that monitor's work area, so the caption strip and a resize border stay
+// only partly fits is moved inside the landing monitor's work area with its size
+// capped to that same area, so the caption strip and a resize border stay
 // reachable.
 static int clampBox(int pos, int size, int lo, int hi) {
     if (pos < lo) pos = lo;
@@ -853,34 +853,42 @@ static int clampBox(int pos, int size, int lo, int hi) {
     return pos;
 }
 
+// The landing monitor is picked against the WORK area - the same area the frame
+// is clamped into - so a saved rect cannot be shifted by a panel overlap the
+// pick ignored. The size is honored only up to what that area shows (Windows
+// caps a created window the same way), which also bounds the unsaved default.
 static void restoreWindowGeometry() {
-    // -1,-1 is the unsaved default loadAppPref leaves alone; any other pair is a
-    // position the user actually left the window at, negative ones included
-    // (a monitor can sit left of or above the primary).
+    GdkDisplay* dpy = gdk_display_get_default();
+    GdkMonitor* land = nullptr;
+    int best = 0;
     if (!(gWinX == -1 && gWinY == -1)) {
-        GdkDisplay* dpy = gdk_display_get_default();
-        GdkMonitor* land = nullptr;
-        int best = 0;
+        // -1,-1 is the unsaved default loadAppPref leaves alone; any other pair
+        // is a position the user actually left the window at, negative ones
+        // included (a monitor can sit left of or above the primary).
         int n = dpy ? gdk_display_get_n_monitors(dpy) : 0;
         for (int i = 0; i < n; i++) {
             GdkMonitor* m = gdk_display_get_monitor(dpy, i);
             if (!m) continue;
-            GdkRectangle g;
-            gdk_monitor_get_geometry(m, &g);
-            int l = gWinX > g.x ? gWinX : g.x;
-            int t = gWinY > g.y ? gWinY : g.y;
-            int r = (gWinX + gWinW < g.x + g.width) ? gWinX + gWinW : g.x + g.width;
-            int b = (gWinY + gWinH < g.y + g.height) ? gWinY + gWinH : g.y + g.height;
+            GdkRectangle wa;
+            gdk_monitor_get_workarea(m, &wa);
+            int l = gWinX > wa.x ? gWinX : wa.x;
+            int t = gWinY > wa.y ? gWinY : wa.y;
+            int r = (gWinX + gWinW < wa.x + wa.width) ? gWinX + gWinW : wa.x + wa.width;
+            int b = (gWinY + gWinH < wa.y + wa.height) ? gWinY + gWinH : wa.y + wa.height;
             int area = (r > l && b > t) ? (r - l) * (b - t) : 0;
             if (area > best) { best = area; land = m; }
         }
-        if (land) {                              // off every monitor: default placement
-            GdkRectangle wa;
-            gdk_monitor_get_workarea(land, &wa);
-            gtk_window_move(GTK_WINDOW(gWin), clampBox(gWinX, gWinW, wa.x, wa.x + wa.width),
-                                               clampBox(gWinY, gWinH, wa.y, wa.y + wa.height));
-        }
     }
+    GdkRectangle wa = { 0, 0, 0, 0 };
+    if (!land && dpy) land = gdk_display_get_monitor(dpy, 0);
+    if (land) {
+        gdk_monitor_get_workarea(land, &wa);
+        if (wa.width > 0 && gWinW > wa.width) gWinW = wa.width;
+        if (wa.height > 0 && gWinH > wa.height) gWinH = wa.height;
+    }
+    gtk_window_set_default_size(GTK_WINDOW(gWin), gWinW > 0 ? gWinW : 1100, gWinH > 0 ? gWinH : 800);
+    if (best > 0) gtk_window_move(GTK_WINDOW(gWin), clampBox(gWinX, gWinW, wa.x, wa.x + wa.width),
+                                               clampBox(gWinY, gWinH, wa.y, wa.y + wa.height));
     if (gWinMax) gtk_window_maximize(GTK_WINDOW(gWin));
 }
 
@@ -970,8 +978,7 @@ int main(int argc, char** argv) {
     gDocs[0] = new Doc();
 
     gWin = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-    gtk_window_set_default_size(GTK_WINDOW(gWin), gWinW > 0 ? gWinW : 1100, gWinH > 0 ? gWinH : 800);
-    restoreWindowGeometry();
+    restoreWindowGeometry();               // size, position and maximize from app.txt
     gtk_window_set_title(GTK_WINDOW(gWin), "mnpdf");
     gtk_window_set_icon_name(GTK_WINDOW(gWin), "application-pdf");
     g_signal_connect(gWin, "destroy", G_CALLBACK(gtk_main_quit), nullptr);

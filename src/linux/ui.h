@@ -1,7 +1,12 @@
 // Platform seam: what the portable core (doc.cpp/search.cpp/sidecar.cpp) is
 // allowed to ask the platform layer for. The Windows original inlines these as
 // GDI calls, straight into the "pure" functions; here they are one interface so
-// core.cpp never names a window, a DC or a widget.
+// core.cpp never names a window, a DC or a widget. Not every entry is a core
+// call, and each is named below: the core reaches ui_message, ui_save_file,
+// ui_pick_jpeg, ui_copy_text and ui_windowRect; ui_scale, ui_invalidate,
+// ui_set_title, ui_open_file, ui_prompt, ui_prompt_range and ui_color_box serve
+// the GTK layer itself; refreshDrawers is the declared hook for the drawers
+// that are not ported yet.
 #pragma once
 
 #include <string>
@@ -15,7 +20,8 @@ extern bool gWinMax;
 // request a redraw of the current view
 void ui_invalidate();
 
-// the drawers (thumbnails/outline) follow any change to the page list
+// the drawers (thumbnails/outline) follow any change to the page list; they are
+// not ported yet, so this is the declared hook for them - a no-op until they land
 void refreshDrawers();
 void ui_set_title(const std::string& t); // window/tab title
 
