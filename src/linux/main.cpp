@@ -652,23 +652,32 @@ static void onMotion(GtkWidget* w, GdkEventMotion* ev, gpointer) {
 
 static void onScroll(GtkWidget*, GdkEventScroll* ev, gpointer) {
     bool ctrl = (ev->state & GDK_CONTROL_MASK) != 0;
+    // GTK's scroll deltas read as content motion: a positive delta_y scrolls
+    // down, just as a discrete GDK_SCROLL_DOWN does (measured here: smooth
+    // delta_y = +1 raises a GtkScrolledWindow's vadjustment by the same step as
+    // DOWN). So the smooth path takes the deltas with no negation and that
+    // matches the discrete sign below; delta_x is a horizontal pan. The gate's
+    // Xvfb session only ever delivers discrete UP/DOWN events, so it cannot
+    // catch a sign error in this smooth path.
     double dy = (ev->direction == GDK_SCROLL_UP) ? -1 : (ev->direction == GDK_SCROLL_DOWN) ? 1 : 0;
-    if (ev->direction == GDK_SCROLL_SMOOTH) dy = -(ev->delta_y + ev->delta_x);   // Wayland: deltas
-    if (dy == 0) return;
+    double dx = 0;
+    if (ev->direction == GDK_SCROLL_SMOOTH) { dx = ev->delta_x; dy = ev->delta_y; }
+    if (dy == 0 && dx == 0) return;
     // smooth deltas arrive in small steps, so accumulate until a step is worth
     // acting on; a discrete UP/DOWN event is already a whole step
-    static double sSmoothAcc = 0;
+    static double sSmoothAccX = 0, sSmoothAccY = 0;
     if (ev->direction == GDK_SCROLL_SMOOTH) {
-        sSmoothAcc += dy;
-        if (fabs(sSmoothAcc) < 1.0) return;
-        dy = sSmoothAcc > 0 ? 1 : -1;
-        sSmoothAcc = 0;
+        sSmoothAccX += dx; sSmoothAccY += dy;
+        if (fabs(sSmoothAccX) < 1.0 && fabs(sSmoothAccY) < 1.0) return;
+        dx = fabs(sSmoothAccX) >= 1.0 ? (sSmoothAccX > 0 ? 1 : -1) : 0;
+        dy = fabs(sSmoothAccY) >= 1.0 ? (sSmoothAccY > 0 ? 1 : -1) : 0;
+        sSmoothAccX = 0; sSmoothAccY = 0;
     }
     if (ctrl) {
-        zoomAt(dy < 0 ? 1.1 : 1 / 1.1, (int)ev->x, (int)ev->y);
+        if (dy) zoomAt(dy < 0 ? 1.1 : 1 / 1.1, (int)ev->x, (int)ev->y);
     } else {
-        scrollByDy((int)(dy * 3 * 40));
-        markSave();
+        if (dy) { scrollByDy((int)(dy * 3 * 40)); markSave(); }
+        if (dx) { gScrollX += (int)(dx * 3 * 40); clampScroll(); }
         renderPage();
     }
 }

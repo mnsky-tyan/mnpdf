@@ -47,6 +47,11 @@ paints the composited frame and draws its own scrollbars.
   drops it on both platforms.
 - **Thumbnail and outline drawers.** Not ported yet. The hook
   `refreshDrawers()` exists and is a no-op.
+- **Window rect while maximized.** On Windows the saved `app.txt` rect is
+  `rcNormalPosition`, the pre-maximize frame; on Linux the configure handler
+  records the live allocation, so quitting while maximized writes the
+  maximized size. Relaunching maximized is correct on both; only the size the
+  window returns to on un-maximize differs.
 - **Update check and install.** Not ported: it is WinHTTP, COM and
   `ShellExecuteW`. The Linux build has no updater.
 - **Tabs are GtkNotebook pages**, and each tab's own document, zoom, scroll and
@@ -66,6 +71,12 @@ Windows engine appends it back, so the `pin=` lines of the same edit history
 can be written in a different order on the two platforms. Every line carries
 its own page and position, so both readers parse either file and lift the same
 marks.
+
+A quirk both engines inherit unchanged from the Windows original: undoing the
+deletion of a baked mark puts the mark back in memory but never removes its
+`dl=` tombstone, so a sidecar written in that state carries both the restored
+mark and the tombstone, and the tombstone is applied last on reload - the mark
+is gone again after a restart.
 
 `app.txt` is one shared file, so a Linux write emits its own keys in the
 Windows canonical order and carries every key it does not own (the Windows
