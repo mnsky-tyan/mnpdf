@@ -255,6 +255,22 @@ echo "== the command ids match the Windows command table =="
 # constants, copied from main.cpp's WM_COMMAND dispatch), never a second list
 # retyped here.
 E=$STATE/ids; mkdir -p "$E/cfg"
+# The menu has four shapes: a pin under the cursor, a highlight, a live
+# selection, and neither. The mark-specific commands exist only in their own
+# shape, so a dump over a bare document cannot see 116/117 (highlight) or
+# 131/132 (pin), and "Clear custom colours" (180) needs a custom colour to
+# exist. The app dumps every shape, but only for marks that are actually there,
+# so a sidecar seeds one highlight, one pin and one custom palette slot. The
+# sidecar name is the FNV-1a hash of the document path, which the first run
+# prints, so the seed cannot drift from it.
+xvfb-run -a --server-args="-screen 0 1280x900x24" \
+  env GDK_BACKEND=x11 XDG_CONFIG_HOME="$E/cfg" MNPDF_SHOT_EXIT=1 MNPDF_SHOT=/dev/null \
+  timeout 30 "$BIN" "$PDF" >/dev/null 2>&1
+hash=$(ls "$E/cfg/mnpdf/" 2>/dev/null | sed -n 's/^doc-\(.*\)\.txt$/\1/p' | head -1)
+[ -n "$hash" ] || { echo "gate: could not learn the sidecar hash" >&2; exit 1; }
+printf 'fmt=2\nzoom=1.5\nfit=1\npage=1\nhl=0,3,28,1\npin=1,120.00,300.00,c5,a note\n' \
+    > "$E/cfg/mnpdf/doc-$hash.txt"
+printf 'pal0=336699\n' >> "$E/cfg/mnpdf/app.txt"
 xvfb-run -a --server-args="-screen 0 1280x900x24" \
   env GDK_BACKEND=x11 XDG_CONFIG_HOME="$E/cfg" MNPDF_MENU_DUMP=1 \
   timeout 30 "$BIN" "$PDF" >"$E/menu.txt" 2>&1
@@ -267,33 +283,38 @@ lib = open(sys.argv[2], encoding="utf-8", errors="replace").read()
 cmd = {}
 for m in re.finditer(r'^\s*\$\{(CMD_[A-Z0-9_]+)\}\s*=\s*(\d+)', lib, re.M):
     cmd[m.group(1)] = int(m.group(2))
-# the Linux dump: "label: id", any depth
+# the Linux dump: "label: id", any depth, across every shape
 seen = {}
 for line in menu.splitlines():
     m = re.match(r'\s*(.*?): (\d+)\s*$', line)
     if m:
         seen[int(m.group(2))] = m.group(1)
-# The entries every context-menu state carries. The mark menus (a pin, a
-# highlight, a live selection under the pointer) only exist when one is there,
-# so a dump taken with nothing under the pointer cannot see them; the colour
-# families are derived from a base, so the table names only their first entry.
-core = [cmd[n] for n in (
+# The commands both readers must carry, by the name the Windows table gives
+# them. The colour families are derived from a base, so the table names only
+# their first entry; the mark entries are here because the seeded sidecar puts
+# a highlight and a pin in the document, which is what makes their menu shape
+# exist. CMD_COPY_HL_TEXT is here because a highlight's "Copy text" must copy
+# the highlight, a different command from copying the selection.
+required = [cmd[n] for n in (
     'CMD_OPEN', 'CMD_NEW_TAB', 'CMD_CLOSE_TAB', 'CMD_SAVE', 'CMD_SAVE_AS',
     'CMD_PRINT', 'CMD_AUTOSAVE', 'CMD_UNDO', 'CMD_REDO', 'CMD_FIND',
     'CMD_FIT_WIDTH', 'CMD_ZOOM_IN', 'CMD_ZOOM_OUT', 'CMD_ROTATE_CW',
     'CMD_ROTATE_CCW', 'CMD_THUMBS', 'CMD_OUTLINE', 'CMD_NIGHT', 'CMD_MERGE',
     'CMD_SPLIT', 'CMD_INSERT_SIG', 'CMD_CLEAR_SIGS', 'CMD_REOPEN_LAST',
     'CMD_HIDE_TABSTRIP', 'CMD_TITLEBAR', 'CMD_MINIMIZE', 'CMD_MAX_RESTORE',
-    'CMD_CHECK_UPDATES', 'CMD_QUIT')]
+    'CMD_CHECK_UPDATES', 'CMD_QUIT',
+    # the mark shapes, which the seeded highlight and pin make visible
+    'CMD_COPY_HL_TEXT', 'CMD_DELETE_HL', 'CMD_ADD_PIN', 'CMD_EDIT_PIN',
+    'CMD_DELETE_PIN', 'CMD_CLEAR_CUSTOM', 'CMD_CUSTOM_PIN_COLOR')]
 bad = ["id %d is a Windows command (%s) but the Linux menu has no such id" % (i, n)
-       for n, i in ((n, cmd[n]) for n in cmd if cmd[n] in core) if i not in seen]
-print("       windows commands: %d, of the %d every-state ids present: %d"
-      % (len(set(cmd.values())), len(core), sum(1 for i in core if i in seen)))
+       for n, i in ((n, cmd[n]) for n in cmd if cmd[n] in required) if i not in seen]
+print("       windows commands: %d, of the %d required ids present: %d"
+      % (len(set(cmd.values())), len(required), sum(1 for i in required if i in seen)))
 for b in bad:
     print("       " + b)
 sys.exit(1 if bad else 0)
 PY
-chk $? "the menu carries every Windows command id a context menu always shows"
+chk $? "the menu carries every Windows command id the dump can show"
 
 # and the ids are wired to behaviour, not only printed: driving one must do what
 # the Windows command does

@@ -686,15 +686,14 @@ static void dumpMenuShell(GtkWidget* shell, const char* title) {
 // once at startup, so it is dumped from the widgets themselves.
 static GtkWidget* gMenuBar = nullptr;
 
-static void onContextMenu(GtkWidget* w, GdkEventButton* ev) {
+static GtkWidget* buildContextMenu(int x, int y) {
     GtkWidget* menu = gtk_menu_new();
-    int x = (int)ev->x, y = (int)ev->y;
     int pg;
     int ci = charIndexAtDoc(x, y, &pg);
-    gMenuHlIdx = hlAt(pg, ci);
-    gMenuPinIdx = pinAt(x, y);
-    gMenuPinPage = -1;
-
+    // Only the page is used here. Which mark is under the pointer is decided by
+    // the caller: the dump needs to build a shape the pointer is not over, so
+    // the hit-test cannot live inside the builder.
+    (void)ci;
     auto add = [&](const char* label, int id) {
         GtkWidget* it = gtk_menu_item_new_with_label(label);
         g_signal_connect(it, "activate", G_CALLBACK(onMenuActivate), GINT_TO_POINTER(id));
@@ -808,17 +807,59 @@ static void onContextMenu(GtkWidget* w, GdkEventButton* ev) {
     sep();
     add("Check for updates", 170);
     add("Quit", 112);
-    // MNPDF_MENU_DUMP prints both menus and quits through the real quit path,
-    // so a suite can compare the Linux menu with the Windows one without
+    return menu;
+}
+
+// The menu has four shapes: a pin under the cursor, a highlight, a live
+// selection, and neither. The mark-specific commands exist only in their own
+// shape, so a dump that opens one menu at one point can never see them all:
+// with nothing under the pointer the highlight ids (116, 117) and the pin ids
+// (131, 132) are simply never built, and a parity check over that dump would
+// pass while half the Windows context menu went unverified. MNPDF_MENU_DUMP
+// therefore builds every shape in turn and prints each one.
+static void dumpEveryMenuShape() {
+    int savedHl = gMenuHlIdx, savedPin = gMenuPinIdx, savedPinPage = gMenuPinPage;
+    double savedX = gMenuPinX, savedY = gMenuPinY;
+    for (int shape = 0; shape < 4; shape++) {
+        gMenuHlIdx = gMenuPinIdx = gMenuPinPage = -1;
+        if (shape == 1 && !gHls.empty()) gMenuHlIdx = 0;
+        else if (shape == 2 && !gPins.empty()) gMenuPinIdx = 0;
+        if (shape == 1 && gMenuHlIdx < 0) continue;   // no highlights to show
+        if (shape == 2 && gMenuPinIdx < 0) continue;  // no pins to show
+        GtkWidget* menu = buildContextMenu(gClientW / 2, gClientH / 2);
+        printf("== context menu (shape %d) ==\n", shape);
+        GList* kids = gtk_container_get_children(GTK_CONTAINER(menu));
+        for (GList* k = kids; k; k = k->next)
+            if (GTK_IS_MENU_ITEM(k->data)) dumpMenuTree(GTK_WIDGET(k->data), 0);
+        g_list_free(kids);
+        gtk_widget_destroy(menu);
+    }
+    gMenuHlIdx = savedHl;
+    gMenuPinIdx = savedPin;
+    gMenuPinPage = savedPinPage;
+    gMenuPinX = savedX;
+    gMenuPinY = savedY;
+}
+
+static void onContextMenu(GtkWidget* w, GdkEventButton* ev) {
+    // MNPDF_MENU_DUMP prints every menu shape and quits through the real quit
+    // path, so a suite can compare the Linux menu with the Windows one without
     // clicking anything and without leaving the run half-settled
     if (getenv("MNPDF_MENU_DUMP")) {
         if (gMenuBar) dumpMenuShell(gMenuBar, "menu bar");
-        dumpMenuShell(menu, "context menu");
+        dumpEveryMenuShape();
         fflush(stdout);
-        gtk_widget_destroy(menu);
         requestQuit();
         return;
     }
+    // the hit-test belongs here, not in buildContextMenu: the dump needs
+    // to force a shape the pointer is not over
+    int pg;
+    int ci = charIndexAtDoc((int)ev->x, (int)ev->y, &pg);
+    gMenuHlIdx = hlAt(pg, ci);
+    gMenuPinIdx = pinAt((int)ev->x, (int)ev->y);
+    gMenuPinPage = -1;
+    GtkWidget* menu = buildContextMenu((int)ev->x, (int)ev->y);
     gtk_widget_show_all(menu);
     gtk_menu_popup_at_pointer(GTK_MENU(menu), (GdkEvent*)ev);
 }
