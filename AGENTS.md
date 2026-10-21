@@ -8,7 +8,8 @@ Two platform builds live in this repository:
 - **Windows** (`src/main.cpp`, `build.bat`) - the original Win32 + GDI build,
   shipped as `mnpdf-win-x64-<tag>.zip`.
 - **Linux** (`src/linux/`, `build-linux.sh`) - the same document engine on GTK3 +
-  cairo, built into `build-linux/mnpdf`. There is no Linux release packaging yet.
+  cairo, built into `build-linux/mnpdf`;
+  `scripts/make-release-tarball.sh` packages the release asset.
   See `docs/linux.md`.
 
 Both write the same sidecar and preference formats, so a document marked up on

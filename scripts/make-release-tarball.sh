@@ -25,7 +25,7 @@ fi
 
 [ -x build-linux/mnpdf ] || { echo "no build-linux/mnpdf; run ./build-linux.sh first" >&2; exit 1; }
 
-stage=build-linux/release-$tag
+stage=build-linux/mnpdf-linux-x64-$tag
 rm -rf "$stage"
 mkdir -p "$stage"
 
@@ -44,6 +44,12 @@ cp build-linux/mnpdf "$stage/mnpdf"
 [ -e README-linux.txt ] && cp README-linux.txt "$stage/README-linux.txt"
 
 out=build-linux/mnpdf-linux-x64-$tag.tar.gz
-tar -C "$stage" -czf "$out" .
+# The archive carries the tag directory, the way the published asset unpacks
+# (verified against v2.7.0: `tar tzf` lists mnpdf-linux-x64-v2.7.0/... first).
+# README-linux.txt says to run ./mnpdf "from this directory", so unpacking
+# straight into the reader's cwd would be wrong.
+parent=$(dirname "$stage")
+base=$(basename "$stage")
+tar -C "$parent" -czf "$out" "$base"
 echo "wrote $out ($(stat -c%s "$out") bytes)"
 echo "sha256 $(sha256sum "$out" | cut -d' ' -f1)"

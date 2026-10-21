@@ -188,9 +188,18 @@ for y in range(bh):
         paper_rows += 1
         if ink > 3:           # ... and it carries something printed on it
             ink_rows += 1
-print("       thumbnail paper rows: %d, of them with ink: %d" % (paper_rows, ink_rows))
-# a real preview is tens of rows tall; a closed drawer gives 0
-sys.exit(0 if ink_rows > 200 else 1)
+# the drawer's own background: 240 grey, which the page beside it is not
+grey = 0
+for y in range(bh):
+    for x in range(min(20, bw)):
+        r, g, b = px[x, y]
+        if abs(r - 240) < 4 and abs(g - 240) < 4 and abs(b - 240) < 4:
+            grey += 1
+print("       thumbnail paper rows: %d, of them with ink: %d, drawer grey: %d"
+      % (paper_rows, ink_rows, grey))
+# A closed drawer gives 0 paper rows AND 0 grey. The page alone gives paper rows
+# but no drawer grey, so requiring both is what makes a missing drawer fail.
+sys.exit(0 if (ink_rows > 200 and grey > 5000) else 1)
 PY
     chk $? "the thumbnails drawer paints page previews (paper with ink on it)"
 fi
@@ -250,55 +259,87 @@ chk $? "app.txt keeps the Windows field order and carries the foreign keys"
 grep -q "^updtag=v2.6.0$" "$D/cfg/mnpdf/app.txt"; chk $? "the Windows update keys survive a Linux run"
 
 echo "== the command ids match the Windows command table =="
-# The parity claim is "the same command under the same menu id", and the ids
-# are the only part of that a dump can check. MNPDF_MENU_DUMP prints
-# "label: id"; this asserts the ids against the Windows table, read from
-# src/main.cpp so the reference cannot drift.
-E=$STATE/ids; mkdir -p "$E/cfg"
+# The parity claim is "the same command under the same menu id". The
+# authoritative table is tests/lib.ps1 (the Windows suites' CMD_* constants),
+# which is byte-identical on both platforms, so the ids are read from there
+# rather than from a regex over src/main.cpp: the AppendMenuW calls spell their
+# flags as expressions, so most do not match a literal pattern and such a check
+# would be vacuous.
+E=$STATE/ids; mkdir -p "$E/cfg/mnpdf"
+# The menu has shapes: a pin under the cursor, a highlight, a live selection,
+# and neither, and the mark-specific commands exist only in their own shape. A
+# sidecar seeds one highlight and one pin so every shape is built. The name is
+# the FNV-1a hash of the fixture's path, which the run below prints if it ever
+# changes.
+seed_marks() {
+    local hash=$1
+    printf 'fmt=2\nzoom=1.5\nfit=1\npage=1\nhl=0,3,28,1\npin=1,120.00,300.00,c5,a note\n' \
+        > "$E/cfg/mnpdf/doc-$hash.txt"
+    # a custom palette slot makes the "Clear custom colours" entry (180) exist;
+    # without one the submenu correctly omits it, so the id would look missing
+    printf 'pal0=336699\n' >> "$E/cfg/mnpdf/app.txt"
+}
+# ask the app for the hash it actually uses, so the seed cannot drift
+xvfb-run -a --server-args="-screen 0 1280x900x24" \
+  env GDK_BACKEND=x11 XDG_CONFIG_HOME="$E/cfg" MNPDF_SHOT_EXIT=1 \
+  timeout 30 "$BIN" "$PDF" >/dev/null 2>&1
+hash=$(ls "$E/cfg/mnpdf/" 2>/dev/null | sed -n 's/^doc-\(.*\)\.txt$/\1/p' | head -1)
+[ -n "$hash" ] || { echo "gate: could not learn the sidecar hash" >&2; exit 1; }
+seed_marks "$hash"
 xvfb-run -a --server-args="-screen 0 1280x900x24" \
   env GDK_BACKEND=x11 XDG_CONFIG_HOME="$E/cfg" MNPDF_MENU_DUMP=1 \
   timeout 30 "$BIN" "$PDF" >"$E/menu.txt" 2>&1
 [ -s "$E/menu.txt" ]; chk $? "the menu dump runs"
-# the ids this build must carry, and the Windows label each one has. These are
-# the entries both readers share; a Linux-only entry (310-312, the page
-# surgery) is not listed, and the test does not forbid it.
-for pair in "114:Undo" "115:Redo" "118:Save" "119:Save as" "113:titlebar" \
-            "133:Rotate" "134:Rotate" "137:Print" "170:updates" \
-            "200:Night mode" "201:Outline" "202:Thumbnails" "207:Reopen"; do
-    id=${pair%%:*}; want=${pair#*:}
-    if grep -q ": $id$" "$E/menu.txt"; then ok "id $id is present ($want)"
-    else bad "id $id is missing ($want)"; fi
-done
-# and the ids must be the ones the Windows table uses for these labels
-python3 - "$E/menu.txt" "$PWD/src/main.cpp" <<'PY'
+python3 - "$E/menu.txt" "$PWD/tests/lib.ps1" <<'PY'
 import re, sys
 menu = open(sys.argv[1], encoding="utf-8", errors="replace").read()
-win = open(sys.argv[2], encoding="utf-8", errors="replace").read()
-# Windows: AppendMenuW(menu, MF_STRING, ID, L"label") - collect id -> label
-winmap = {}
-for m in re.finditer(r'AppendMenuW\([^,]+,\s*[A-Z_|]+,\s*(\d+),\s*L"([^"]*)"', win):
-    winmap.setdefault(int(m.group(1)), m.group(2))
-# Linux: "label: id"
-seen = {}
+lib = open(sys.argv[2], encoding="utf-8", errors="replace").read()
+# the Windows table: ${CMD_NAME} = 113   # comment
+table = {}
+for m in re.finditer(r'\$\{(CMD_[A-Z0-9_]+)\}\s*=\s*(\d+)', lib):
+    table[m.group(1)] = int(m.group(2))
+# what the Linux menu actually carries: "label: id"
+seen = set()
 for line in menu.splitlines():
-    m = re.match(r'\s*(.*?): (\d+)\s*$', line)
+    m = re.match(r'\s*.*?: (\d+)\s*$', line)
     if m:
-        seen[int(m.group(2))] = m.group(1)
-# the labels both platforms share, and the id each must carry
-shared = {113: "titlebar", 114: "Undo", 115: "Redo", 118: "Save", 119: "Save as",
-          133: "Rotate", 134: "Rotate", 137: "Print", 170: "updates",
-          200: "Night mode", 201: "Outline", 202: "Thumbnails", 207: "Reopen"}
-bad = []
-for i in shared:
-    if i in winmap and i not in seen:
-        bad.append("id %d is a Windows command (%r) but the Linux menu has no such id"
-                   % (i, winmap[i]))
-print("       windows ids found in the dump: %d of %d"
-      % (sum(1 for i in shared if i in seen), len(shared)))
-for b in bad: print("       " + b)
-sys.exit(1 if bad else 0)
+        seen.add(int(m.group(1)))
+# The commands both readers must carry, by the name the Windows table gives
+# them. Linux-only entries (the page surgery at 310-312) are not listed and are
+# not forbidden. CMD_COPY_HL_TEXT is here because a highlight's "Copy text" must
+# copy the highlight, a different command from copying the selection.
+required = ["CMD_TITLEBAR", "CMD_UNDO", "CMD_REDO", "CMD_SAVE", "CMD_SAVE_AS",
+            "CMD_COPY_HL_TEXT", "CMD_DELETE_HL", "CMD_ROTATE_CW", "CMD_ROTATE_CCW",
+            "CMD_ADD_PIN", "CMD_EDIT_PIN", "CMD_DELETE_PIN",
+            "CMD_PRINT", "CMD_CHECK_UPDATES", "CMD_CLEAR_CUSTOM",
+            "CMD_NIGHT", "CMD_OUTLINE", "CMD_THUMBS", "CMD_MERGE", "CMD_SPLIT",
+            "CMD_INSERT_SIG", "CMD_CLEAR_SIGS", "CMD_REOPEN_LAST",
+            "CMD_OPEN", "CMD_QUIT", "CMD_MINIMIZE", "CMD_MAX_RESTORE",
+            "CMD_HIDE_TABSTRIP", "CMD_NEW_TAB", "CMD_CLOSE_TAB",
+            "CMD_ZOOM_IN", "CMD_ZOOM_OUT", "CMD_FIT_WIDTH", "CMD_FIND",
+            # the pin colour family, which the pin shape makes visible: presets
+            # at 160-165 and "Custom..." at 169. The dump only sees these
+            # because buildColorSubmenu records the id too.
+            "CMD_CUSTOM_PIN_COLOR"]
+# Commands that need a state the dump cannot create are driven instead, below.
+# 135 (highlight the selection) and 140/149 (the default highlight colour) need
+# a live text selection; 180 (clear custom colours) needs at least one custom
+# colour to exist. Driving them proves the handler exists and acts, which the
+# presence of an id does not.
+missing = []
+for name in required:
+    if name not in table:
+        missing.append("%s is not in tests/lib.ps1" % name)
+    elif table[name] not in seen:
+        missing.append("%s (%d) is a Windows command with no Linux menu entry"
+                       % (name, table[name]))
+print("       windows ids carried by the menu: %d of %d"
+      % (sum(1 for n in required if n in table and table[n] in seen), len(required)))
+for m in missing:
+    print("       " + m)
+sys.exit(1 if missing else 0)
 PY
-chk $? "every shared command keeps its Windows menu id"
+chk $? "the menu carries the Windows command ids (tests/lib.ps1)"
 
 echo
 printf 'pass=%d fail=%d\n' "$PASS" "$FAIL"

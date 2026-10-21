@@ -51,6 +51,7 @@ bool versionIsNewer(const std::string& candidate) {
 struct HttpReply {
     std::string body;
     long status = 0;
+    CURLcode code = CURLE_OK;   // the transport result, for the failure text
 };
 
 static size_t writeToString(void* ptr, size_t size, size_t nmemb, void* userdata) {
@@ -72,19 +73,39 @@ static HttpReply httpGet(const std::string& url) {
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, ("mnpdf/" + std::string(gAppVersion)).c_str());
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
-    CURLcode code = curl_easy_perform(curl);
-    if (code == CURLE_OK) curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &r.status);
+    r.code = curl_easy_perform(curl);
+    if (r.code == CURLE_OK) curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &r.status);
     curl_easy_cleanup(curl);
     return r;
 }
 
+// The Linux counterpart of the Windows httpFailureText() (src/main.cpp:2594):
+// name the failure the reader can act on instead of one generic sentence for a
+// missing host, a refused connection and a timeout alike.
+static std::string httpFailureText(CURLcode code, long status) {
+    switch (code) {
+    case CURLE_COULDNT_RESOLVE_HOST: return "the host name could not be resolved";
+    case CURLE_COULDNT_CONNECT:      return "the connection was refused or dropped";
+    case CURLE_OPERATION_TIMEDOUT:   return "the connection timed out";
+    case CURLE_SSL_CONNECT_ERROR:
+    case CURLE_PEER_FAILED_VERIFICATION:
+                                     return "the secure connection to the host failed";
+    default: break;
+    }
+    if (code != CURLE_OK) return curl_easy_strerror(code);
+    if (status) return "the server answered HTTP " + std::to_string(status);
+    return "the server did not answer";
+}
+
 // ---- the releases list -----------------------------------------------------
 // A tiny scan for the fields the answer needs. The JSON is parsed by hand
-// because the answer only needs the tag, whether it is a prerelease and the
-// asset names, and a JSON library would be a dependency for three strings.
+// because the answer only needs the tag and the asset names, and a JSON library
+// would be a dependency for two strings. There is deliberately no "prerelease"
+// field: a Linux-only release IS a prerelease until its Windows archive ships,
+// so skipping prereleases would skip exactly the releases this check exists to
+// find.
 struct ReleaseInfo {
     std::string tag;
-    bool prerelease = false;
     bool hasLinuxAsset = false;
 };
 
@@ -101,20 +122,13 @@ static std::string jsonStringField(const std::string& json, const std::string& k
     return json.substr(q1 + 1, q2 - q1 - 1);
 }
 
-static bool jsonBoolField(const std::string& json, const std::string& key, size_t from) {
-    std::string needle = "\"" + key + "\"";
-    size_t k = json.find(needle, from);
-    if (k == std::string::npos) return false;
-    size_t colon = json.find(':', k + needle.size());
-    if (colon == std::string::npos) return false;
-    size_t p = json.find_first_not_of(" \t\r\n", colon + 1);
-    return p != std::string::npos && json.compare(p, 4, "true") == 0;
-}
-
-static std::vector<ReleaseInfo> fetchReleases() {
+static std::vector<ReleaseInfo> fetchReleases(std::string* why) {
     std::vector<ReleaseInfo> out;
     HttpReply r = httpGet(kRepoApi);
-    if (r.status != 200 || r.body.empty()) return out;
+    if (r.status != 200 || r.body.empty()) {
+        if (why) *why = httpFailureText(r.code, r.status);
+        return out;
+    }
     // one object per release: the list is a JSON array of objects
     size_t pos = 0;
     while (true) {
@@ -125,7 +139,6 @@ static std::vector<ReleaseInfo> fetchReleases() {
                                                         : r.body.substr(objStart, objEnd - objStart);
         ReleaseInfo ri;
         ri.tag = jsonStringField(obj, "tag_name", 0);
-        ri.prerelease = jsonBoolField(obj, "prerelease", 0);
         // the Linux archive is named after the tag, exactly as the release
         // workflow publishes it
         std::string want = "mnpdf-linux-x64-" + ri.tag + ".tar.gz";
@@ -152,9 +165,10 @@ struct UpdateResult {
 // newest such release.
 UpdateResult checkForUpdate() {
     UpdateResult res;
-    std::vector<ReleaseInfo> releases = fetchReleases();
+    std::string why;
+    std::vector<ReleaseInfo> releases = fetchReleases(&why);
     if (releases.empty()) {
-        res.error = "The update server did not answer.";
+        res.error = "The update check could not reach GitHub - " + why + ".";
         return res;
     }
     res.ok = true;
