@@ -259,10 +259,11 @@ E=$STATE/ids; mkdir -p "$E/cfg"
 # selection, and neither. The mark-specific commands exist only in their own
 # shape, so a dump over a bare document cannot see 116/117 (highlight) or
 # 131/132 (pin), and "Clear custom colours" (180) needs a custom colour to
-# exist. The app dumps every shape, but only for marks that are actually there,
-# so a sidecar seeds one highlight, one pin and one custom palette slot. The
-# sidecar name is the FNV-1a hash of the document path, which the first run
-# prints, so the seed cannot drift from it.
+# exist. The app dumps every shape and builds the selection shape itself, but a
+# mark shape only exists for a mark that is there, so a sidecar seeds one
+# highlight, one pin and one custom palette slot. The sidecar name is the
+# FNV-1a hash of the document path, which the first run prints, so the seed
+# cannot drift from it.
 xvfb-run -a --server-args="-screen 0 1280x900x24" \
   env GDK_BACKEND=x11 XDG_CONFIG_HOME="$E/cfg" MNPDF_SHOT_EXIT=1 MNPDF_SHOT=/dev/null \
   timeout 30 "$BIN" "$PDF" >/dev/null 2>&1
@@ -305,7 +306,9 @@ required = [cmd[n] for n in (
     'CMD_CHECK_UPDATES', 'CMD_QUIT',
     # the mark shapes, which the seeded highlight and pin make visible
     'CMD_COPY_HL_TEXT', 'CMD_DELETE_HL', 'CMD_ADD_PIN', 'CMD_EDIT_PIN',
-    'CMD_DELETE_PIN', 'CMD_CLEAR_CUSTOM', 'CMD_CUSTOM_PIN_COLOR')]
+    'CMD_DELETE_PIN', 'CMD_CLEAR_CUSTOM', 'CMD_CUSTOM_PIN_COLOR',
+    # the live-selection shape, which the dump builds itself
+    'CMD_COPY', 'CMD_HIGHLIGHT', 'CMD_DEFAULT_HL_YELLOW', 'CMD_CUSTOM_HL_COLOR')]
 bad = ["id %d is a Windows command (%s) but the Linux menu has no such id" % (i, n)
        for n, i in ((n, cmd[n]) for n in cmd if cmd[n] in required) if i not in seen]
 print("       windows commands: %d, of the %d required ids present: %d"

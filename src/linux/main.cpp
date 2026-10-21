@@ -816,16 +816,28 @@ static GtkWidget* buildContextMenu(int x, int y) {
 // with nothing under the pointer the highlight ids (116, 117) and the pin ids
 // (131, 132) are simply never built, and a parity check over that dump would
 // pass while half the Windows context menu went unverified. MNPDF_MENU_DUMP
-// therefore builds every shape in turn and prints each one.
+// therefore builds every shape in turn and prints each one. Each shape is made
+// by setting the state its branch reads, so the dump does not depend on the
+// pointer or on a mark the fixture happens to carry: shape 3 is a live
+// selection, the only state in which the Copy/Highlight and default-colour ids
+// (101, 135, 140, 149) exist at all.
 static void dumpEveryMenuShape() {
     int savedHl = gMenuHlIdx, savedPin = gMenuPinIdx, savedPinPage = gMenuPinPage;
     double savedX = gMenuPinX, savedY = gMenuPinY;
+    int savedSelA = gSelAnchor, savedSelH = gSelHead;
+    int savedSelAP = gSelAnchorPage, savedSelHP = gSelHeadPage;
     for (int shape = 0; shape < 4; shape++) {
         gMenuHlIdx = gMenuPinIdx = gMenuPinPage = -1;
+        clearSelection();
         if (shape == 1 && !gHls.empty()) gMenuHlIdx = 0;
         else if (shape == 2 && !gPins.empty()) gMenuPinIdx = 0;
+        else if (shape == 3 && gDoc) {
+            gSelAnchorPage = gSelHeadPage = gPageIndex;
+            gSelAnchor = 0; gSelHead = 1;
+        }
         if (shape == 1 && gMenuHlIdx < 0) continue;   // no highlights to show
         if (shape == 2 && gMenuPinIdx < 0) continue;  // no pins to show
+        if (shape == 3 && !gDoc) continue;            // no page to select on
         GtkWidget* menu = buildContextMenu(gClientW / 2, gClientH / 2);
         printf("== context menu (shape %d) ==\n", shape);
         GList* kids = gtk_container_get_children(GTK_CONTAINER(menu));
@@ -839,6 +851,8 @@ static void dumpEveryMenuShape() {
     gMenuPinPage = savedPinPage;
     gMenuPinX = savedX;
     gMenuPinY = savedY;
+    gSelAnchor = savedSelA; gSelHead = savedSelH;
+    gSelAnchorPage = savedSelAP; gSelHeadPage = savedSelHP;
 }
 
 static void onContextMenu(GtkWidget* w, GdkEventButton* ev) {
