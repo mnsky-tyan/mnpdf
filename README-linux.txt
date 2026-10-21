@@ -23,4 +23,4 @@ readers up on the same documents.
 DIFFERENCES FROM THE WINDOWS BUILD
 Printing uses the GTK print dialog instead of the Windows one. The note editor
 is a modal dialog rather than a popup beside the pin. The update check reports
-what is available and opens the release page; it does not install for you.
+what is available; it does not open the release page and does not install.

@@ -376,7 +376,10 @@ static void hlRecolorAt(int page, int start, int count, int color) {
     for (Hl& h : gHls) if (h.page == page && h.start == start && h.count == count) { h.color = color; break; }
 }
 static void rotApply(int page, int rot) {
-    if (gRot && page >= 0 && page < gDocPages) { gRot[page] = rot; relayoutPages(); clampScroll(); ensureActivePage(); }
+    if (gRot && page >= 0 && page < gDocPages) {
+        gRot[page] = rot; relayoutPages(); clampScroll(); ensureActivePage();
+        refreshDrawers();          // that drawer row shows a different picture now
+    }
 }
 
 void pushOp(const Op& op) { gUndo.push_back(op); gRedo.clear(); markDirty(); markSave(); }
@@ -531,6 +534,7 @@ void rotatePage(int page, int dir) {
     op.rotTo = gRot[page];
     relayoutPages(); clampScroll(); ensureActivePage();
     pushOp(op);
+    refreshDrawers();              // the Windows build drops that row's picture here
     renderPage();
 }
 

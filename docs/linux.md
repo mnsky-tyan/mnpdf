@@ -68,8 +68,8 @@ paints the composited frame and draws its own scrollbars.
   that endpoint names the Windows asset. The port asks the releases API for the
   newest release that actually carries `mnpdf-linux-x64-<tag>.tar.gz` and
   compares versions with the Windows rules. See "The parity work" above for
-  the asset that publishes that name. There is no Linux install step yet: the
-  check reports what is available and hands the reader the release page.
+  the asset that publishes that name. There is no Linux install step: the
+  check reports what is available and does not open the release page.
 - **Tabs are GtkNotebook pages**, and each tab's own document, zoom, scroll and
   marks live in its `Doc` bundle exactly as on Windows.
 
@@ -164,7 +164,8 @@ The Windows build's print dialog is replaced by the GtkPrintOperation dialog.
 The update check differs in one deliberate way: the Windows app reads
 GitHub's `/releases/latest` and downloads `mnpdf-win-x64-<tag>.zip` by name,
 while this one asks the releases API for the newest release that actually
-carries a Linux archive - see "The update check" below.
+carries a Linux archive - see "The update check" below. That check does not
+open the release page and does not install: it reports what is available.
 
 ## The parity work (2026-10-21)
 
@@ -195,9 +196,10 @@ the same nesting and the same "This document has no bookmarks." fallback.
 One GTK detail worth recording, because it is invisible until the drawer is
 missing: a widget packed into a box that has already negotiated its size keeps
 a 1-px allocation until BOTH the strip and the window are told to lay
-themselves out again and the request is then drained. Without that, the
-drawer is created, visible, and invisible on screen. Measured with a GtkBox
-probe of the app's own shape (menu bar, strip, overlay).
+themselves out again. Without that, the drawer is created, visible, and
+invisible on screen. Measured with a GtkBox probe of the app's own shape (menu
+bar, strip, overlay). The layout itself is left to the main loop, so a command
+handler never runs one from inside itself.
 
 **The colours.** Windows offers a colour submenu wherever a colour is chosen -
 a mark, a default, a pin - with the six presets, the reader's own slots, a way
@@ -221,7 +223,9 @@ is the Windows one. So the port asks the releases API for the list and picks
 the newest release that actually carries
 `mnpdf-linux-x64-<tag>.tar.gz`, then compares versions with the Windows rules
 (src/main.cpp:2334). The request runs on its own thread and is bounded by a
-timeout, so a slow network cannot freeze the window.
+timeout, so a slow network cannot freeze the window, and the answer is dropped
+if the window is already quitting. There is no Linux install step: the check
+reports what is available and does not open the release page.
 
 The version the port reports is generated at build time from the Windows
 `kAppVersion` constant (CMakeLists.txt reads src/main.cpp), so the two readers
@@ -232,11 +236,15 @@ app.txt.
 
 `MNPDF_CMD` drives one command by its menu id, the way the Windows suites post
 WM_COMMAND, so a suite can assert on chrome the page back buffer never holds.
+It runs on its own turn of the main loop and the picture is taken on the next
+one, so a drawer a command opened is laid out before it is captured.
 `MNPDF_SHOT_WINDOW` captures the whole window instead of only the page buffer.
-`MNPDF_MENU_DUMP` prints the menu tree as text, each entry as `label: id`, which
-is how the parity comparison is made without clicking anything: the dump is
-asserted against the Windows command table in src/main.cpp, so a missing or
-reworded command fails the gate.
+`MNPDF_MENU_DUMP` prints the menu bar and the context menu as text, each entry
+as `label: id`, then quits through the app's own quit path. The dump is
+asserted against the command table the Windows suites already own
+(`tests/lib.ps1`'s `CMD_*` ids), so a missing command or a wrong id fails the
+gate; the gate then drives ids 113, 200 and 302 and asserts what each wrote to
+app.txt.
 
 `MNPDF_SHOT_EXIT` is a fourth seam, and it is a window-level one rather than a
 fourth independent thing: it appends the quit command to whatever else the run
@@ -245,30 +253,33 @@ for a command and a quit drives the command and then quits.
 
 ## Releasing
 
-`.github/workflows/release.yml` builds both platforms from a `v*` tag and
-publishes them as one release. The Windows asset is not optional even for a
-Linux release: the Windows app discovers updates through GitHub's
-`/releases/latest` and then fetches `mnpdf-win-x64-<tag>.zip` by name
-(`src/main.cpp:2572`), so a release carrying only a Linux archive would tell
-every installed Windows copy that a newer version exists and then fail to
-download it. Both assets are therefore asserted to exist before the release is
-created.
+A release is one GitHub release carrying both platform assets. The Windows
+asset is not optional even for a Linux release: the Windows app discovers
+updates through GitHub's `/releases/latest` and then fetches
+`mnpdf-win-x64-<tag>.zip` by name (`src/main.cpp:2572`), so a release carrying
+only a Linux archive would tell every installed Windows copy that a newer
+version exists and then fail to download it. Both assets therefore have to be
+attached to the same release.
 
 Cutting one:
 
 ```sh
-# the tag, kAppVersion and README.txt must agree or the contract job fails, so
-# bump both: kAppVersion in src/main.cpp and the first line of README.txt
+# the tag, kAppVersion and README.txt must agree, so bump both: kAppVersion
+# in src/main.cpp and the first line of README.txt
+./build.bat                                     # -> build\mnpdf.exe
+powershell -File scripts/make-release-zip.ps1   # -> build\mnpdf-win-x64-v2.7.0.zip
+./build-linux.sh
+./scripts/make-release-tarball.sh               # -> build-linux/mnpdf-linux-x64-v2.7.0.tar.gz
 git commit -am "release: v2.7.0" && git push origin main
 git tag v2.7.0 && git push origin v2.7.0
 ```
 
 The Linux asset is a plain tarball, and `scripts/make-release-tarball.sh`
-produces exactly the layout that is published: the binary, the vendored
-`libpdfium.so` (found through an `$ORIGIN` rpath), `README.txt`,
-`PDFIUM-LICENSE.txt` and `README-linux.txt`, named
-`mnpdf-linux-x64-<tag>.tar.gz`. It needs no install step and no root; the
-system dependencies are GTK3, which every desktop already has, and libcurl
-(`libcurl4-openssl-dev` to build, `libcurl.so.4` at runtime) for the update
-check. `ldd` on the unpacked binary resolves `libpdfium.so` from beside it, so
-there is no `LD_LIBRARY_PATH` to set.
+produces exactly the layout that is published: a `mnpdf-linux-x64-<tag>/`
+directory holding the binary, the vendored `libpdfium.so` (found through an
+`$ORIGIN` rpath), `README.txt`, `PDFIUM-LICENSE.txt` and `README-linux.txt`.
+It needs no install step and no root; the system dependencies are GTK3, which
+every desktop already has, and libcurl (`libcurl4-openssl-dev` to build,
+`libcurl.so.4` at runtime) for the update check. `ldd` on the unpacked binary
+resolves `libpdfium.so` from beside it, so there is no `LD_LIBRARY_PATH` to
+set.

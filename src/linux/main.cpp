@@ -42,7 +42,6 @@ extern void splitExport(const std::wstring& target, const std::string& range, bo
 extern void pickSignatureImage();
 extern void clearSignatures();
 extern void commitSigPlacement(int page, double sx, double sy);
-extern void refreshDrawers();
 extern std::wstring gSigPlacing;
 extern bool looksLikeJpeg(const std::wstring&);
 extern bool sidecarPending();
@@ -65,6 +64,7 @@ static GtkWidget* gSearchLabel = nullptr;
 static double gScale = 1.0;
 static guint gSaveTimer = 0;
 static bool gDragging = false;         // a selection drag is live
+static bool gShuttingDown = false;     // the quit path has committed; drop late results
 static bool gSbDragging = false;       // a scrollbar thumb drag is live
 static int gSbWhich = 0;               // 1 = vertical, 2 = horizontal
 static int gSbGrab = 0;                // pointer offset inside the thumb
@@ -231,18 +231,16 @@ static void onMenuActivate(GtkMenuItem* mi, gpointer data);
 // Windows offers the same menu wherever a colour is chosen: the six presets,
 // the reader's own custom slots, a way to hand the slots back, and a way to
 // type a new one (src/main.cpp:3952 colorSubmenu). The ids differ only in
-// their base, so one builder serves all four places: the preset entries start
-// at presetBase, the custom slots at customBase, and customId opens the
-// #rrgggb box for that kind of mark.
-                                              // 0 = a highlight, 1 = a pin,
-                                              // 2 = the default highlight,
-                                              // 3 = the default pin
-
+// their base, so one builder serves all four places: a highlight is
+// 120/126/136, the default highlight 140/146/149, a pin 150/156/159 and the
+// default pin 160/166/169 (presets, custom slots, Custom...), and customId is
+// the last of the three for that kind of mark.
 static GtkWidget* buildColorSubmenu(int current, int presetBase, int customBase, int customId) {
     GtkWidget* sub = gtk_menu_new();
     auto entry = [&](const char* label, int id) {
         GtkWidget* it = gtk_menu_item_new_with_label(label);
         g_signal_connect(it, "activate", G_CALLBACK(onMenuActivate), GINT_TO_POINTER(id));
+        g_object_set_data(G_OBJECT(it), "cmd-id", GINT_TO_POINTER(id));
         gtk_menu_shell_append(GTK_MENU_SHELL(sub), it);
     };
     for (int c = 0; c < kPalPreset; c++) {
@@ -295,6 +293,9 @@ struct UpdateOutcome {
 
 static gboolean showUpdateResult(gpointer data) {
     UpdateOutcome* o = (UpdateOutcome*)data;
+    // the window may be gone by the time the answer lands: a quit destroys it,
+    // and a dialog parented to a destroyed window would abort the run
+    if (gShuttingDown) { delete o; return G_SOURCE_REMOVE; }
     std::string current = gAppVersion;
     if (!o->ok) {
         ui_message(o->error.empty() ? "The update check failed." : o->error, "mnpdf", false);
@@ -618,8 +619,9 @@ static void onMenuActivate(GtkMenuItem* mi, gpointer data) {
     }
     case 300: addTab(L""); break;
     case 301: closeTab(); break;
-    case 302: { bool vis = gtk_notebook_get_show_tabs(GTK_NOTEBOOK(gNotebook));
-                gtk_notebook_set_show_tabs(GTK_NOTEBOOK(gNotebook), !vis); } break;
+    case 302: gTabStrip = !gTabStrip;
+              gtk_notebook_set_show_tabs(GTK_NOTEBOOK(gNotebook), gTabStrip);
+              writeAppPref(); break;
     case 113: toggleTitlebar(); break;
     case 135: {   // highlight the current selection with the default colour
         applyHighlightFromSelection(gHlDefault);
@@ -671,6 +673,19 @@ static void dumpMenuTree(GtkWidget* item, int depth) {
     }
 }
 
+static void dumpMenuShell(GtkWidget* shell, const char* title) {
+    printf("== %s ==\n", title);
+    GList* kids = gtk_container_get_children(GTK_CONTAINER(shell));
+    for (GList* k = kids; k; k = k->next)
+        if (GTK_IS_MENU_ITEM(k->data)) dumpMenuTree(GTK_WIDGET(k->data), 0);
+    g_list_free(kids);
+}
+
+// Every entry the app can post is built with its Windows id attached, so the
+// dump covers the menu bar as well as the context menu. The menu bar is built
+// once at startup, so it is dumped from the widgets themselves.
+static GtkWidget* gMenuBar = nullptr;
+
 static void onContextMenu(GtkWidget* w, GdkEventButton* ev) {
     GtkWidget* menu = gtk_menu_new();
     int x = (int)ev->x, y = (int)ev->y;
@@ -689,7 +704,7 @@ static void onContextMenu(GtkWidget* w, GdkEventButton* ev) {
     auto sep = [&]() { gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new()); };
 
     if (gMenuPinIdx >= 0) {
-        add("Edit note", 131);
+        add("Edit text", 131);
         {
             GtkWidget* it = gtk_menu_item_new_with_label("Color");
             gtk_menu_item_set_submenu(GTK_MENU_ITEM(it),
@@ -740,15 +755,7 @@ static void onContextMenu(GtkWidget* w, GdkEventButton* ev) {
     add("Save as...", 119);
     sep();
     add("Print...", 137);
-    {
-        // Windows draws a tick next to Autosave when it is on (MF_CHECKED). A
-        // GtkCheckMenuItem flips itself on activate, so the handler would undo
-        // it again - the tick is set here and the handler only records the
-        // state, which is why it is a plain item with a drawn tick instead.
-        GtkWidget* it = gtk_menu_item_new_with_label(gAutosave ? "Autosave ✓" : "Autosave");
-        g_signal_connect(it, "activate", G_CALLBACK(onMenuActivate), GINT_TO_POINTER(109));
-        gtk_menu_shell_append(GTK_MENU_SHELL(menu), it);
-    }
+    add(gAutosave ? "Autosave ✓" : "Autosave", 109);
     sep();
     add("Undo", 114);
     add("Redo", 115);
@@ -779,7 +786,9 @@ static void onContextMenu(GtkWidget* w, GdkEventButton* ev) {
         };
         addAdv("Thumbnails", 202);
         addAdv("Outline panel", 201);
-        addAdv(gNight ? "Day mode" : "Night mode", 200);
+        // the Windows label with a tick when on, the same way Autosave carries
+        // one; "Day mode" is a word the Windows build never shows
+        addAdv(gNight ? "Night mode ✓" : "Night mode", 200);
         gtk_menu_shell_append(GTK_MENU_SHELL(advSub), gtk_separator_menu_item_new());
         addAdv("Merge PDFs...", 205);
         addAdv("Split pages...", 206);
@@ -795,19 +804,20 @@ static void onContextMenu(GtkWidget* w, GdkEventButton* ev) {
     add(gTitlebar ? "Hide titlebar" : "Show titlebar", 113);
     sep();
     add("Minimize", 110);
-    add("Maximize / restore", 111);
+    add(gtk_window_is_maximized(GTK_WINDOW(gWin)) ? "Restore" : "Maximize", 111);
     sep();
     add("Check for updates", 170);
     add("Quit", 112);
-    // MNPDF_MENU_DUMP prints the menu tree and exits, so a suite can compare
-    // the Linux menu with the Windows one without clicking anything
+    // MNPDF_MENU_DUMP prints both menus and quits through the real quit path,
+    // so a suite can compare the Linux menu with the Windows one without
+    // clicking anything and without leaving the run half-settled
     if (getenv("MNPDF_MENU_DUMP")) {
-        GList* kids = gtk_container_get_children(GTK_CONTAINER(menu));
-        for (GList* k = kids; k; k = k->next)
-            if (GTK_IS_MENU_ITEM(k->data)) dumpMenuTree(GTK_WIDGET(k->data), 0);
-        g_list_free(kids);
+        if (gMenuBar) dumpMenuShell(gMenuBar, "menu bar");
+        dumpMenuShell(menu, "context menu");
         fflush(stdout);
-        exit(0);
+        gtk_widget_destroy(menu);
+        requestQuit();
+        return;
     }
     gtk_widget_show_all(menu);
     gtk_menu_popup_at_pointer(GTK_MENU(menu), (GdkEvent*)ev);
@@ -1073,16 +1083,27 @@ static gboolean onSaveTick(gpointer) {
 // the back buffer to a PNG when MNPDF_SHOT names a path, and quit when
 // MNPDF_SHOT_EXIT is set - so a suite can assert on the pixels the app paints
 // with no display and no harness clicking.
-static gboolean onShotIdle(gpointer) {
-    // MNPDF_CMD drives one command by its menu id before the shot is taken, the
-    // same way the Windows suites post WM_COMMAND: the drawers, the titlebar
-    // toggle and the night mode all change what is painted, so a suite that can
-    // only take a picture of the start state cannot assert on them at all.
+//
+// A command is driven on its own turn of the main loop and the picture is taken
+// on the next one: a drawer opened by the command is then allocated by the
+// normal layout pass, and no callback drains the loop from inside itself.
+static gboolean onShotIdle(gpointer);
+
+static gboolean onCommandIdle(gpointer) {
+    // MNPDF_CMD drives one command by its menu id, the same way the Windows
+    // suites post WM_COMMAND: the drawers, the titlebar toggle and the night
+    // mode all change what is painted, so a suite that can only take a picture
+    // of the start state cannot assert on them at all.
     const char* cmd = getenv("MNPDF_CMD");
     if (cmd && *cmd) {
         int id = atoi(cmd);
         if (id > 0) onMenuActivate(nullptr, GINT_TO_POINTER(id));
     }
+    g_timeout_add(400, onShotIdle, nullptr);
+    return G_SOURCE_REMOVE;
+}
+
+static gboolean onShotIdle(gpointer) {
     // MNPDF_MENU_DUMP opens the right-click menu where the pointer is, so the
     // menu tree can be printed and compared with the Windows one
     if (getenv("MNPDF_MENU_DUMP")) {
@@ -1156,6 +1177,7 @@ static gboolean onWindowDelete(GtkWidget*, GdkEvent*, gpointer) {
         writeAllSidecars();
     } else writeAllSidecars();
     writeAppPref();
+    gShuttingDown = true;
     return FALSE;
 }
 
@@ -1203,12 +1225,30 @@ static int gThumbDrawnFor = -1;               // which page gThumbPix holds
 struct BmEntry { std::wstring title; int page; int depth; };
 static std::vector<BmEntry> gBmList;
 static int gBmSel = -1;
+static int gBmScroll = 0;
+
+static int thumbListHeight() {
+    int total = 0;
+    for (int hh : gThumbHs) total += hh + kThumbGap;
+    return total;
+}
+
+// a shorter page list (a delete, a merge, a new document) must not leave the
+// drawer scrolled past its own end, which paints an empty panel with the pages
+// still there and no way to tell
+static void clampThumbScroll() {
+    int view = gThumbArea ? gtk_widget_get_allocated_height(gThumbArea) : 0;
+    int maxScroll = thumbListHeight() - view;
+    if (maxScroll < 0) maxScroll = 0;
+    if (gThumbScroll < 0) gThumbScroll = 0;
+    if (gThumbScroll > maxScroll) gThumbScroll = maxScroll;
+}
 
 static void layoutThumbs() {
     gThumbHs.clear();
     gThumbPix.clear();
     gThumbDrawnFor = -1;
-    if (!gDoc) return;
+    if (!gDoc) { gThumbScroll = 0; return; }
     for (int i = 0; i < gDocPages; i++) {
         double ar = (gPageH[i] > 0 && gPageW[i] > 0) ? gPageH[i] / gPageW[i] : 1.3;
         int h = (int)(kThumbW * ar + 0.5);
@@ -1216,12 +1256,7 @@ static void layoutThumbs() {
         if (h > 400) h = 400;
         gThumbHs.push_back(h);
     }
-}
-
-static int thumbListHeight() {
-    int total = 0;
-    for (int hh : gThumbHs) total += hh + kThumbGap;
-    return total;
+    clampThumbScroll();
 }
 
 // client y -> page index under it, or -1 (same arithmetic as thumbAt)
@@ -1299,20 +1334,24 @@ static gboolean onThumbPress(GtkWidget*, GdkEventButton* ev, gpointer) {
 }
 
 static gboolean onThumbScrollEv(GtkWidget*, GdkEventScroll* ev, gpointer) {
-    GtkAllocation al;
-    gtk_widget_get_allocation(gThumbArea, &al);
     int dy = 0;
     if (ev->direction == GDK_SCROLL_UP) dy = -1;
     else if (ev->direction == GDK_SCROLL_DOWN) dy = 1;
-    else if (ev->direction == GDK_SCROLL_SMOOTH) dy = (int)ev->delta_y;
+    else if (ev->direction == GDK_SCROLL_SMOOTH) {
+        // a touchpad sends fractions of a step, so accumulate until one is worth
+        // acting on; truncating each delta would swallow every event and leave
+        // the drawer unscrollable on the one device that scrolls smoothly
+        static double acc = 0;
+        acc += ev->delta_y;
+        if (fabs(acc) < 1.0) return TRUE;
+        dy = acc > 0 ? 1 : -1;
+        acc = 0;
+    }
     if (!dy) return TRUE;
     // the same positive-is-forward convention the document itself uses; see the
     // scroll probe note in docs/linux.md
     gThumbScroll += dy * 60;
-    int maxScroll = thumbListHeight() - al.height;
-    if (maxScroll < 0) maxScroll = 0;
-    if (gThumbScroll < 0) gThumbScroll = 0;
-    if (gThumbScroll > maxScroll) gThumbScroll = maxScroll;
+    clampThumbScroll();
     gtk_widget_queue_draw(gThumbArea);
     return TRUE;
 }
@@ -1347,8 +1386,19 @@ static void collectBookmarks(FPDF_BOOKMARK bm, int depth) {
 static void buildBmList() {
     gBmList.clear();
     gBmSel = -1;
+    gBmScroll = 0;
     if (!gDoc) return;
     collectBookmarks(FPDFBookmark_GetFirstChild(gDoc, nullptr), 0);
+}
+
+// a bookmark list longer than the panel scrolls; a document with hundreds of
+// entries would otherwise have every row below the viewport unreachable
+static void clampBmScroll() {
+    int view = gOutlineArea ? gtk_widget_get_allocated_height(gOutlineArea) : 0;
+    int maxScroll = (int)gBmList.size() * kBmRow + 8 - view;
+    if (maxScroll < 0) maxScroll = 0;
+    if (gBmScroll < 0) gBmScroll = 0;
+    if (gBmScroll > maxScroll) gBmScroll = maxScroll;
 }
 
 static gboolean onOutlineDraw(GtkWidget*, cairo_t* cr, gpointer) {
@@ -1364,26 +1414,46 @@ static gboolean onOutlineDraw(GtkWidget*, cairo_t* cr, gpointer) {
         cairo_show_text(cr, "This document has no bookmarks.");
         return TRUE;
     }
-    int y = 4;
+    int y = 4 - gBmScroll;
     for (size_t i = 0; i < gBmList.size(); i++) {
-        if (y > al.height) break;
+        int rowTop = y;
+        y += kBmRow;
+        if (y < 0) continue;
+        if (rowTop > al.height) break;
         if ((int)i == gBmSel) {
             cairo_set_source_rgb(cr, 0.83, 0.83, 0.83);
-            cairo_rectangle(cr, 0, y, al.width, kBmRow);
+            cairo_rectangle(cr, 0, rowTop, al.width, kBmRow);
             cairo_fill(cr);
         }
         cairo_set_source_rgb(cr, 0.1, 0.1, 0.1);
         std::string t = wideToUtf8(gBmList[i].title);
-        cairo_move_to(cr, 4 + gBmList[i].depth * 12, y + 13);
+        cairo_move_to(cr, 4 + gBmList[i].depth * 12, rowTop + 13);
         cairo_show_text(cr, t.c_str());
-        y += kBmRow;
     }
+    return TRUE;
+}
+
+static gboolean onOutlineScrollEv(GtkWidget*, GdkEventScroll* ev, gpointer) {
+    int dy = 0;
+    if (ev->direction == GDK_SCROLL_UP) dy = -1;
+    else if (ev->direction == GDK_SCROLL_DOWN) dy = 1;
+    else if (ev->direction == GDK_SCROLL_SMOOTH) {
+        static double acc = 0;
+        acc += ev->delta_y;
+        if (fabs(acc) < 1.0) return TRUE;
+        dy = acc > 0 ? 1 : -1;
+        acc = 0;
+    }
+    if (!dy) return TRUE;
+    gBmScroll += dy * kBmRow * 3;
+    clampBmScroll();
+    gtk_widget_queue_draw(gOutlineArea);
     return TRUE;
 }
 
 static gboolean onOutlinePress(GtkWidget*, GdkEventButton* ev, gpointer) {
     if (ev->button != GDK_BUTTON_PRIMARY) return FALSE;
-    int idx = ((int)ev->y - 4) / kBmRow;
+    int idx = ((int)ev->y - 4 + gBmScroll) / kBmRow;
     if (idx >= 0 && idx < (int)gBmList.size()) {
         gBmSel = idx;
         if (gBmList[idx].page >= 0) openPageAt(gBmList[idx].page);
@@ -1418,18 +1488,15 @@ static void toggleThumbDrawer() {
     gtk_box_pack_start(GTK_BOX(gDrawerBox), gThumbDrawer, FALSE, FALSE, 0);
     gtk_box_reorder_child(GTK_BOX(gDrawerBox), gThumbDrawer, 0);
     // The strip has already negotiated a size once, so a child added afterwards
-    // is not part of that negotiation and keeps a 1-px allocation until the strip
-    // is told to lay itself out again. Measured with a GtkBox probe: without this
-    // call the drawer stays invisible while the reader keeps the full width.
-    // A child added to a box that has already negotiated its size keeps a 1-px
-    // allocation until BOTH the strip and the window are told to lay themselves
-    // out again, and the request is then drained. Measured with a GtkBox probe
-    // (menu bar + strip + overlay, the app's own shape): queueing only the strip
-    // leaves the drawer invisible while the reader keeps the full width.
+    // is not part of that negotiation and keeps a 1-px allocation until BOTH the
+    // strip and the window are told to lay themselves out again. Measured with a
+    // GtkBox probe of the app's own shape (menu bar + strip + overlay): queueing
+    // only the strip leaves the drawer invisible while the reader keeps the full
+    // width. The layout itself is left to the main loop - draining it here would
+    // re-enter pending callbacks from a callback, and the test seam already waits
+    // for a layout pass before it takes its picture.
     gtk_widget_queue_resize(gDrawerBox);
     gtk_widget_queue_resize(gWin);
-    while (gtk_events_pending()) gtk_main_iteration();
-
 }
 
 static void toggleOutlineDrawer() {
@@ -1443,9 +1510,10 @@ static void toggleOutlineDrawer() {
     gOutlineDrawer = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_widget_set_size_request(gOutlineDrawer, kOutlineW, -1);
     gOutlineArea = gtk_drawing_area_new();
-    gtk_widget_add_events(gOutlineArea, GDK_BUTTON_PRESS_MASK);
+    gtk_widget_add_events(gOutlineArea, GDK_BUTTON_PRESS_MASK | GDK_SCROLL_MASK);
     g_signal_connect(gOutlineArea, "draw", G_CALLBACK(onOutlineDraw), nullptr);
     g_signal_connect(gOutlineArea, "button-press-event", G_CALLBACK(onOutlinePress), nullptr);
+    g_signal_connect(gOutlineArea, "scroll-event", G_CALLBACK(onOutlineScrollEv), nullptr);
     gtk_box_pack_start(GTK_BOX(gOutlineDrawer), gOutlineArea, TRUE, TRUE, 0);
     // shown before packing, same reason as the thumbnails drawer
     gtk_widget_show_all(gOutlineDrawer);
@@ -1456,13 +1524,19 @@ static void toggleOutlineDrawer() {
     // same post-add relayout as the thumbnails drawer; see that comment
     gtk_widget_queue_resize(gDrawerBox);
     gtk_widget_queue_resize(gWin);
-    while (gtk_events_pending()) gtk_main_iteration();
 }
 
 // the Windows app calls this after anything that changes the pages under the
 // drawers (delete, move, rotate, a new document)
 void refreshDrawers() {
-    if (gThumbDrawer) { layoutThumbs(); gThumbSel = gPageIndex; gtk_widget_queue_draw(gThumbArea); }
+    if (gThumbDrawer) {
+        layoutThumbs();
+        // Windows replaces the selection only when the page it named is gone
+        // (src/main.cpp:4967), so an edit never silently retargets the page the
+        // next delete acts on
+        if (gThumbSel < 0 || gThumbSel >= gDocPages) gThumbSel = gPageIndex;
+        gtk_widget_queue_draw(gThumbArea);
+    }
     if (gOutlineDrawer) { buildBmList(); gtk_widget_queue_draw(gOutlineArea); }
 }
 
@@ -1492,9 +1566,9 @@ static void clearCustomColours() {
     bool any = false;
     for (int c = 0; c < kPalCustom; c++) if (gPalCustom[c] != CLR_INVALID) { any = true; break; }
     if (!any) return;
-    if (!ui_message("Clear your custom colours?\n\nMarks that use one fall back to the "
-                    "preset for that kind - a highlight to yellow, a pin to red.",
-                    "mnpdf", true)) return;
+    if (ui_message("Clear your custom colours?\n\nMarks that use one fall back to the "
+                   "preset for that kind - a highlight to yellow, a pin to red.",
+                   "mnpdf", true) != UI_MSGBOX_YES) return;
     for (int c = 0; c < kPalCustom; c++) gPalCustom[c] = CLR_INVALID;
     // a default that named a cleared slot would draw the fallback colour anyway,
     // so point the defaults at the preset for their kind from the start
@@ -1513,6 +1587,7 @@ static void clearCustomColours() {
 // SAME save logic, or a quit with autosave off drops unsaved marks. Written out
 // as gtk_widget_destroy three times before it lived here.
 static void requestQuit() {
+    if (gShuttingDown) return;                 // the quit path already committed
     if (!onWindowDelete(nullptr, nullptr, nullptr)) gtk_widget_destroy(gWin);
 }
 
@@ -1576,21 +1651,21 @@ static void restoreWindowGeometry() {
     if (gWinMax) gtk_window_maximize(GTK_WINDOW(gWin));
 }
 
-static void onOpenActivate(GtkMenuItem*, gpointer) {
-    std::string f = ui_open_file();
-    if (!f.empty()) openPath(utf8ToWide(f));
-}
-
 static void installMenuBar(GtkWidget* box) {
     GtkWidget* bar = gtk_menu_bar_new();
+    gMenuBar = bar;
     GtkWidget* file = gtk_menu_item_new_with_mnemonic("_File");
     GtkWidget* fileMenu = gtk_menu_new();
+    // every entry carries its Windows command id, the same way the context
+    // menu does, so the parity dump can check the menu bar too
     auto mi = [](const char* label, GCallback cb, gpointer data) {
         GtkWidget* it = gtk_menu_item_new_with_mnemonic(label);
         g_signal_connect(it, "activate", cb, data);
+        int id = GPOINTER_TO_INT(data);
+        if (id) g_object_set_data(G_OBJECT(it), "cmd-id", GINT_TO_POINTER(id));
         return it;
     };
-    GtkWidget* open = mi("_Open...", G_CALLBACK(onOpenActivate), nullptr);
+    GtkWidget* open = mi("_Open...", G_CALLBACK(onMenuActivate), GINT_TO_POINTER(107));
     gtk_menu_shell_append(GTK_MENU_SHELL(fileMenu), open);
     gtk_menu_shell_append(GTK_MENU_SHELL(fileMenu), mi("_Save", G_CALLBACK(onMenuActivate), GINT_TO_POINTER(118)));
     gtk_menu_shell_append(GTK_MENU_SHELL(fileMenu), mi("Save _as...", G_CALLBACK(onMenuActivate), GINT_TO_POINTER(119)));
@@ -1776,19 +1851,21 @@ int main(int argc, char** argv) {
 
     gSaveTimer = g_timeout_add(800, onSaveTick, nullptr);
     gtk_widget_grab_focus(gCurArea);
-    // The shot has to wait for the window to be mapped AND for the drawers a
-    // command opened to be allocated: an idle callback fires before the first
-    // size negotiation, so a drawer created by MNPDF_CMD would be captured at
-    // zero width. A short timeout runs after the layout pass instead.
-    // The seams are independent: MNPDF_CMD drives a command, MNPDF_SHOT
-    // writes a picture, MNPDF_SHOT_EXIT quits, MNPDF_MENU_DUMP prints the menu.
+    // The seams are independent: MNPDF_CMD drives a command, MNPDF_SHOT writes
+    // a picture, MNPDF_SHOT_EXIT quits, MNPDF_MENU_DUMP prints the menu.
     // Registering only for MNPDF_SHOT (as this did) meant a run that asked for
     // a command and a quit but no picture did neither, which is how a broken
     // seam hides; MNPDF_MENU_DUMP was missing for the same reason and made the
     // dump silently print nothing.
-    if (getenv("MNPDF_SHOT") || getenv("MNPDF_SHOT_EXIT") || getenv("MNPDF_CMD")
-        || getenv("MNPDF_MENU_DUMP"))
-        g_timeout_add(getenv("MNPDF_CMD") ? 400 : 0, onShotIdle, nullptr);
+    //
+    // A command runs on its own turn of the loop, after the window has been
+    // mapped and laid out, and the picture is taken on the following one: a
+    // drawer the command opened has then been allocated by the normal layout
+    // pass, so nothing has to drain the loop from inside a callback.
+    if (getenv("MNPDF_CMD"))
+        g_timeout_add(400, onCommandIdle, nullptr);
+    else if (getenv("MNPDF_SHOT") || getenv("MNPDF_SHOT_EXIT") || getenv("MNPDF_MENU_DUMP"))
+        g_timeout_add(0, onShotIdle, nullptr);
     gtk_main();
 
     if (gSaveTimer) g_source_remove(gSaveTimer);

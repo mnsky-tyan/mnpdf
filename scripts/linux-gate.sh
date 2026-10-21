@@ -250,55 +250,65 @@ chk $? "app.txt keeps the Windows field order and carries the foreign keys"
 grep -q "^updtag=v2.6.0$" "$D/cfg/mnpdf/app.txt"; chk $? "the Windows update keys survive a Linux run"
 
 echo "== the command ids match the Windows command table =="
-# The parity claim is "the same command under the same menu id", and the ids
-# are the only part of that a dump can check. MNPDF_MENU_DUMP prints
-# "label: id"; this asserts the ids against the Windows table, read from
-# src/main.cpp so the reference cannot drift.
+# The parity claim is "the same command under the same menu id". The reference
+# is the command table the Windows suites already own (tests/lib.ps1's CMD_*
+# constants, copied from main.cpp's WM_COMMAND dispatch), never a second list
+# retyped here.
 E=$STATE/ids; mkdir -p "$E/cfg"
 xvfb-run -a --server-args="-screen 0 1280x900x24" \
   env GDK_BACKEND=x11 XDG_CONFIG_HOME="$E/cfg" MNPDF_MENU_DUMP=1 \
   timeout 30 "$BIN" "$PDF" >"$E/menu.txt" 2>&1
 [ -s "$E/menu.txt" ]; chk $? "the menu dump runs"
-# the ids this build must carry, and the Windows label each one has. These are
-# the entries both readers share; a Linux-only entry (310-312, the page
-# surgery) is not listed, and the test does not forbid it.
-for pair in "114:Undo" "115:Redo" "118:Save" "119:Save as" "113:titlebar" \
-            "133:Rotate" "134:Rotate" "137:Print" "170:updates" \
-            "200:Night mode" "201:Outline" "202:Thumbnails" "207:Reopen"; do
-    id=${pair%%:*}; want=${pair#*:}
-    if grep -q ": $id$" "$E/menu.txt"; then ok "id $id is present ($want)"
-    else bad "id $id is missing ($want)"; fi
-done
-# and the ids must be the ones the Windows table uses for these labels
-python3 - "$E/menu.txt" "$PWD/src/main.cpp" <<'PY'
+python3 - "$E/menu.txt" "$PWD/tests/lib.ps1" <<'PY'
 import re, sys
 menu = open(sys.argv[1], encoding="utf-8", errors="replace").read()
-win = open(sys.argv[2], encoding="utf-8", errors="replace").read()
-# Windows: AppendMenuW(menu, MF_STRING, ID, L"label") - collect id -> label
-winmap = {}
-for m in re.finditer(r'AppendMenuW\([^,]+,\s*[A-Z_|]+,\s*(\d+),\s*L"([^"]*)"', win):
-    winmap.setdefault(int(m.group(1)), m.group(2))
-# Linux: "label: id"
+lib = open(sys.argv[2], encoding="utf-8", errors="replace").read()
+# the Windows command table: ${CMD_NAME} = <id>
+cmd = {}
+for m in re.finditer(r'^\s*\$\{(CMD_[A-Z0-9_]+)\}\s*=\s*(\d+)', lib, re.M):
+    cmd[m.group(1)] = int(m.group(2))
+# the Linux dump: "label: id", any depth
 seen = {}
 for line in menu.splitlines():
     m = re.match(r'\s*(.*?): (\d+)\s*$', line)
     if m:
         seen[int(m.group(2))] = m.group(1)
-# the labels both platforms share, and the id each must carry
-shared = {113: "titlebar", 114: "Undo", 115: "Redo", 118: "Save", 119: "Save as",
-          133: "Rotate", 134: "Rotate", 137: "Print", 170: "updates",
-          200: "Night mode", 201: "Outline", 202: "Thumbnails", 207: "Reopen"}
-bad = []
-for i in shared:
-    if i in winmap and i not in seen:
-        bad.append("id %d is a Windows command (%r) but the Linux menu has no such id"
-                   % (i, winmap[i]))
-print("       windows ids found in the dump: %d of %d"
-      % (sum(1 for i in shared if i in seen), len(shared)))
-for b in bad: print("       " + b)
+# The entries every context-menu state carries. The mark menus (a pin, a
+# highlight, a live selection under the pointer) only exist when one is there,
+# so a dump taken with nothing under the pointer cannot see them; the colour
+# families are derived from a base, so the table names only their first entry.
+core = [cmd[n] for n in (
+    'CMD_OPEN', 'CMD_NEW_TAB', 'CMD_CLOSE_TAB', 'CMD_SAVE', 'CMD_SAVE_AS',
+    'CMD_PRINT', 'CMD_AUTOSAVE', 'CMD_UNDO', 'CMD_REDO', 'CMD_FIND',
+    'CMD_FIT_WIDTH', 'CMD_ZOOM_IN', 'CMD_ZOOM_OUT', 'CMD_ROTATE_CW',
+    'CMD_ROTATE_CCW', 'CMD_THUMBS', 'CMD_OUTLINE', 'CMD_NIGHT', 'CMD_MERGE',
+    'CMD_SPLIT', 'CMD_INSERT_SIG', 'CMD_CLEAR_SIGS', 'CMD_REOPEN_LAST',
+    'CMD_HIDE_TABSTRIP', 'CMD_TITLEBAR', 'CMD_MINIMIZE', 'CMD_MAX_RESTORE',
+    'CMD_CHECK_UPDATES', 'CMD_QUIT')]
+bad = ["id %d is a Windows command (%s) but the Linux menu has no such id" % (i, n)
+       for n, i in ((n, cmd[n]) for n in cmd if cmd[n] in core) if i not in seen]
+print("       windows commands: %d, of the %d every-state ids present: %d"
+      % (len(set(cmd.values())), len(core), sum(1 for i in core if i in seen)))
+for b in bad:
+    print("       " + b)
 sys.exit(1 if bad else 0)
 PY
-chk $? "every shared command keeps its Windows menu id"
+chk $? "the menu carries every Windows command id a context menu always shows"
+
+# and the ids are wired to behaviour, not only printed: driving one must do what
+# the Windows command does
+drive() {   # drive <id> <key=value> -> 0 when app.txt holds it
+    local id=$1 want=$2
+    rm -rf "$D/cfg$id"; mkdir -p "$D/cfg$id"
+    xvfb-run -a --server-args="-screen 0 1280x900x24" \
+      env GDK_BACKEND=x11 XDG_CONFIG_HOME="$D/cfg$id" MNPDF_CMD="$id" MNPDF_SHOT_EXIT=1 \
+      timeout 30 "$BIN" "$PDF" >"$D/log$id.txt" 2>&1
+    grep -q "^$want$" "$D/cfg$id/mnpdf/app.txt"
+}
+D=$STATE/ids-behave; mkdir -p "$D"
+drive 113 titlebar=0; chk $? "driving id 113 hides the titlebar (titlebar=0)"
+drive 200 night=1;   chk $? "driving id 200 turns night mode on (night=1)"
+drive 302 tabstrip=0; chk $? "driving id 302 hides the tab strip (tabstrip=0)"
 
 echo
 printf 'pass=%d fail=%d\n' "$PASS" "$FAIL"
