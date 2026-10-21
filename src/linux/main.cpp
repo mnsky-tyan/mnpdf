@@ -54,7 +54,8 @@ extern int ui_backbuf_h();
 // the update check (update.cpp): the blocking half, run on a worker thread
 extern const char* gAppVersion;
 bool updateCheckBlocking(std::string& latestTag, bool& newer, std::string& error);
-bool updateCheckNow(std::string& latestTag, bool& newer, std::string& error);
+bool updateCheckNow(std::string& latestTag, bool& newer, std::string& error,
+                    std::string& currentTag, bool& currentIsNewer);
 
 // ---- platform state ----
 static GtkWidget* gWin = nullptr;
@@ -295,6 +296,8 @@ struct UpdateOutcome {
     std::string latestTag;
     bool newer = false;
     std::string error;
+    std::string currentTag;      // the release GitHub calls current
+    bool currentIsNewer = false;
 };
 
 static gboolean showUpdateResult(gpointer data) {
@@ -303,8 +306,17 @@ static gboolean showUpdateResult(gpointer data) {
     if (!o->ok) {
         ui_message(o->error.empty() ? "The update check failed." : o->error, "mnpdf", false);
     } else if (o->newer) {
-        ui_message("mnpdf " + o->latestTag + " is available.\n\nYou are running " + current + ".",
-                   "mnpdf update available", false);
+        std::string msg = "mnpdf " + o->latestTag + " is available.\n\nYou are running " + current + ".";
+        // The release GitHub calls current is a different release from the
+        // newest one with a Linux archive: a Linux-only release is a
+        // prerelease until its Windows archive ships, and /releases/latest
+        // skips prereleases. When the two differ, the reader is told about
+        // both rather than left to wonder why the current release is not the
+        // one on offer.
+        if (o->currentIsNewer && o->currentTag != o->latestTag) {
+            msg += "\n\nGitHub's current release is " + o->currentTag + ".";
+        }
+        ui_message(msg, "mnpdf update available", false);
     } else {
         ui_message("You are running the newest version (" + current + ").", "mnpdf update", false);
     }
@@ -315,12 +327,14 @@ static gboolean showUpdateResult(gpointer data) {
 static void runUpdateCheck() {
     std::thread([]() {
         UpdateOutcome* o = new UpdateOutcome();
-        std::string latest, error;
-        bool newer = false;
-        if (updateCheckNow(latest, newer, error)) {
+        std::string latest, error, cur;
+        bool newer = false, curNewer = false;
+        if (updateCheckNow(latest, newer, error, cur, curNewer)) {
             o->ok = true;
             o->latestTag = latest;
             o->newer = newer;
+            o->currentTag = cur;
+            o->currentIsNewer = curNewer;
         } else {
             o->ok = false;
             o->error = error;

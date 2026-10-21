@@ -296,6 +296,20 @@ xvfb-run -a --server-args="-screen 0 1280x900x24" \
 grep -q "^updtag=v2.6.0$" "$U/cfg/mnpdf/app.txt"
 chk $? "an update check inside the hour does not ask again"
 
+echo "== the update check asks the web host, not the API =="
+# The Windows build reads the tag off the web host, never api.github.com,
+# because that host's unauthenticated quota is shared with every other
+# client behind the same IP and answers "API rate limit exceeded" once it is
+# spent (src/main.cpp:2430-2432). The port must not inherit that problem.
+# the check looks at the URL constants, not the whole file: the file's comment
+# mentions api.github.com to explain why it does not use it
+if grep -E '^static const (char\*|std::string) k[A-Za-z]*Url' src/linux/update.cpp \
+     | grep -q 'api.github.com'; then
+    bad "the update check still uses api.github.com"
+else ok "the update check does not use the API's shared quota"; fi
+grep -q "releases/latest" src/linux/update.cpp
+chk $? "the update check reads the tag the way the Windows build does"
+
 echo "== the command ids match the Windows command table =="
 # The parity claim is "the same command under the same menu id". The
 # authoritative table is tests/lib.ps1 (the Windows suites' CMD_* constants),
