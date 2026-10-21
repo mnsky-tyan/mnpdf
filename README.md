@@ -217,7 +217,8 @@ copy, and an update that fails with a reason.
 ## Repository layout
 
 ```
-src/main.cpp          the whole application
+src/main.cpp          the whole Windows application
+src/linux/            the Linux port (see docs/linux.md)
 mnpdf.rc              the icon resource
 resource.h
 third_party/pdfium/   PDFium headers, import library, DLL and license

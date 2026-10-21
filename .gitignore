@@ -1,8 +1,10 @@
 build/
+build-linux/
 shot*.png
-AGENTS.md
 .no-mistakes.yaml
 # agent-side notes and research: kept out of the repository on purpose, the
 # reader ships from the root files
-docs/
+# NB: AGENTS.md and docs/ are NOT ignored on purpose - AGENTS.md carries the
+# repo wiki every agent is required to keep true, and docs/linux.md documents
+# the Linux build. A rule that hides the map nobody can then follow was a bug.
 research/
