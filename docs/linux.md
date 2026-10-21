@@ -138,6 +138,26 @@ Measured on this machine (`/usr/bin/time`, and RSS sampled from `/proc`):
   discipline as the Windows build, and the print path allocates exactly one page
   raster at a time.
 
+## Running the gate on this port
+
+The review pipeline that guards this port needs two settings that live outside
+the repository, so they are recorded here:
+
+- **The review agent's summarizer budget.** A review of this port runs for
+  hours and builds a session far larger than a 16384-token summary can
+  describe. The summarizer then stops mid-summary ("generation hit the token
+  cap"), the session cannot be compacted, and the pipeline agent dies with
+  `pi compaction failed`. The fix is in `~/.pi/agent/settings.json`:
+
+  ```json
+  { "compaction": { "modelOverrides": {
+      "magpie/group/never-stuck": { "reserveTokens": 65400 } } } }
+  ```
+
+  `reserveTokens` is both the compaction trigger threshold and the summarizer's
+  output budget, so this raises the summary's room without touching how the
+  model is chosen.
+
 ## What is still missing
 
 Thumbnail and outline drawers, the update check, and a proper right-click menu
