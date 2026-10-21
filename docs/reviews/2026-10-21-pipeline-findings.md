@@ -1,8 +1,9 @@
 # mnpdf Linux port - the pipeline review findings, in full
 
-Every finding the no-mistakes pipeline raised about the Linux port, with the
-commit that fixed it and the evidence. Captured 2026-10-21 when the pipeline was
-held for a rebuild.
+Every finding the no-mistakes pipeline raised about the Linux port while it was
+held for a rebuild, with the commit that fixed it and the evidence. Captured
+2026-10-21; the review rounds that ran after the hold are not repeated here -
+their fixes are in `21326d5`.
 
 Companion files in this directory:
 

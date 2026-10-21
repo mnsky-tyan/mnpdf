@@ -977,7 +977,7 @@ static void printDrawPage(GtkPrintOperation* op, GtkPrintContext* ctx, int pageN
     double ph = gtk_print_context_get_height(ctx);
     // a zero-area target would paint nothing and still report success, so it fails
     // the job like an unallocatable raster does (Windows bounds the same case with
-    // resX > 0 ? resX : 1, src/main.cpp:2214)
+    // resX > 0 ? resX : 1, src/main.cpp:2215)
     if (pw <= 0 || ph <= 0) {
         *failed = true;
         gtk_print_operation_cancel(op);

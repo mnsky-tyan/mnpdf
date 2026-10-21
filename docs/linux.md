@@ -14,10 +14,11 @@ readers behave the same on the same input.
 
 The seam is `src/linux/ui.h`. On Windows those calls are inlined GDI calls made
 straight from the "pure" functions (`renderPage()` writes into an `HDC`,
-`messageBox()` takes an `HWND`). On Linux the core calls `ui_invalidate()`,
-`ui_message()`, `ui_open_file()` and never names a widget. That is also what
-makes the headless test possible: `tests/core-test.cpp` supplies stubs and drives
-the engine with no display at all.
+`messageBox()` takes an `HWND`). On Linux the core calls `ui_message()` and
+`ui_save_file()` and never names a widget; `ui.h` names, for every seam member,
+whether the core or the GTK layer calls it. That is also what makes the
+headless test possible: `tests/core-test.cpp` supplies stubs and drives the
+engine with no display at all.
 
 ### The scroll model is deliberate, not a shortcut
 
@@ -41,7 +42,7 @@ paints the composited frame and draws its own scrollbars.
 - **Note editor.** Windows floats a popup editor beside the pin; the Linux build
   uses a modal dialog. The text, the length limit and the undo op are the same.
   An open editor is settled at a different moment: Windows commits an open note
-  box at a tab switch and at window close (`settleActiveDoc`, src/main.cpp:5277,
+  box at a tab switch and at window close (`settleActiveDoc`, src/main.cpp:5279,
   and the WM_CLOSE handler), while the Linux dialog is modal, so it must be
   saved or cancelled before the switch can happen at all. Cancelling a NEW pin
   drops it on both platforms.
@@ -126,8 +127,8 @@ drive the real binary:
   (including the `app.txt` keys only the Windows reader owns), the JPEG guard and
   the format interop.
 - `scripts/linux-gate.sh`'s second layer runs the real binary on Xvfb and asserts
-  on the pixels it paints (the page is mostly paper and carries text) and on the
-  state files it writes.
+  on the pixels it paints (the page is mostly paper and carries text), on the
+  state files it writes, and on the quit path logging no `Gtk-CRITICAL`.
 
 The app exposes the same kind of seam the Windows suites use: `MNPDF_SHOT`
 writes its back buffer to a PNG after the first render, and `MNPDF_SHOT_EXIT`

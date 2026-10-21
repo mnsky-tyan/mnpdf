@@ -3,7 +3,7 @@ Scope: Linux port (src/linux, tests/core-test.cpp, tests/mnpdf-baked.pdf,
 scripts/linux-gate.sh, build-linux.sh, CMakeLists.txt, docs/linux.md, AGENTS.md,
 .gitignore) | Review units: 4 (core engine, UI/platform layer, test+build+docs,
 cross-scope) | Candidate: b59e104 on linux-port
-Summary: 30 findings (5 High, 14 Medium, 11 Low)
+Summary: 30 findings (6 High, 13 Medium, 11 Low)
 
 Method: the core and test/build units were reviewed by independent read-only
 auditors carrying the verbatim auditor + scope contracts; the UI/platform unit
@@ -108,6 +108,6 @@ the reference for semantic divergences. Findings below are deduplicated.
 
 C12's seam defect is fixed. The two items it bundled as Linux UI polish - the
 captionless custom titlebar and the mark-level right-click menu - are the only
-work still deliberately deferred: no correctness or interop consequence, and
-tracked as future work in `docs/linux.md`. Everything else is fixed and covered
-by a permanent check or a gate assertion.
+work this review leaves deliberately deferred: no correctness or interop
+consequence, and tracked as future work in `docs/linux.md`. Everything else is
+fixed and covered by a permanent check or a gate assertion.
