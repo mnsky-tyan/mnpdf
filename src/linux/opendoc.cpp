@@ -70,6 +70,9 @@ bool openPath(const std::wstring& path) {
     flushPageCache();
     if (gDoc) FPDF_CloseDocument(gDoc);
     gDoc = nd;
+    // Windows records the outgoing document here too (src/main.cpp:3650), so
+    // "Reopen last document" can step back to it.
+    if (!gPath.empty() && gPath != path) gPrevPath = gPath;
     gPath = path;
     clearDocState();
     gPageCount = FPDF_GetPageCount(gDoc);

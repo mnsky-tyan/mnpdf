@@ -65,6 +65,9 @@ struct Tomb { int kind, page, start, count; double x, y; };
 // ---- per-document state: the bundle ----
 struct Doc {
     std::wstring path;
+    // the path this tab showed before the current one: "Reopen last document"
+    // goes back to it. Mirrors Windows' gViewTab->prevPath (src/main.cpp:244).
+    std::wstring prevPath;
     FPDF_DOCUMENT doc = nullptr;
     FPDF_PAGE page = nullptr;
     FPDF_TEXTPAGE textPage = nullptr;
@@ -120,6 +123,9 @@ extern int gDocCount;
 extern int gActiveDoc;
 #define gViewTab (gDocs[gActiveDoc])
 #define gPath     gViewTab->path
+// the document this tab showed before the current one, for "Reopen last
+// document" (Windows: gViewTab->prevPath, src/main.cpp:244)
+#define gPrevPath gViewTab->prevPath
 #define gDoc      gViewTab->doc
 #define gPage     gViewTab->page
 #define gTextPage gViewTab->textPage
@@ -168,6 +174,7 @@ extern int gClientW, gClientH;
 extern bool gNight;
 extern bool gTabStrip;
 extern bool gAutosave;
+extern bool gTitlebar;
 extern bool gSearchOpen;
 extern std::wstring gQuery;
 

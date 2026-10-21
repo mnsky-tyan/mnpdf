@@ -146,6 +146,91 @@ RC=$?
 ls "$D"/mnpdf/doc-*.txt >/dev/null 2>&1
 [ $? -ne 0 ]; chk $? "no sidecar is written for a file that never opened"
 
+echo "== the Advanced cascade: thumbnails, outline, night mode =="
+D=$STATE/advanced; mkdir -p "$D"
+# MNPDF_CMD drives one command by its menu id, the way the Windows suites post
+# WM_COMMAND, so a suite can assert on chrome the page back buffer never holds.
+shot_for() {   # shot_for <id> <file> -> 0 on success
+    local id=$1 out=$2
+    rm -rf "$D/cfg$id"; mkdir -p "$D/cfg$id"
+    xvfb-run -a --server-args="-screen 0 1280x900x24" \
+      env GDK_BACKEND=x11 XDG_CONFIG_HOME="$D/cfg$id" MNPDF_CMD="$id" \
+          MNPDF_SHOT="$out" MNPDF_SHOT_WINDOW=1 MNPDF_SHOT_EXIT=1 \
+      timeout 30 "$BIN" "$PDF" >"$D/log$id.txt" 2>&1
+}
+shot_for 202 "$D/thumbs.png"
+[ -s "$D/thumbs.png" ]; chk $? "the thumbnails drawer opens (Advanced > Thumbnails)"
+if [ -s "$D/thumbs.png" ] && command -v python3 >/dev/null; then
+    # the drawer strip is the leftmost band of the window; a thumbnail column
+    # means many small dark pixels down that band, where a plain page would be
+    # almost entirely white
+    python3 - "$D/thumbs.png" <<'PY'
+import sys
+from PIL import Image
+im = Image.open(sys.argv[1]).convert("RGB")
+w, h = im.size
+band = im.crop((0, 30, min(130, w), h))
+dark = sum(1 for p in band.getdata() if p[0] < 200 and p[1] < 200 and p[2] < 200)
+print("       thumbnail band dark pixels: %d" % dark)
+sys.exit(0 if dark > 500 else 1)
+PY
+    chk $? "the thumbnails drawer paints a column of page previews"
+fi
+shot_for 201 "$D/outline.png"
+[ -s "$D/outline.png" ]; chk $? "the outline drawer opens (Advanced > Outline panel)"
+if [ -s "$D/outline.png" ] && command -v python3 >/dev/null; then
+    python3 - "$D/outline.png" <<'PY'
+import sys
+from PIL import Image
+im = Image.open(sys.argv[1]).convert("RGB")
+w, h = im.size
+band = im.crop((max(0, w - 240), 0, w, h))
+dark = sum(1 for p in band.getdata() if p[0] < 200 and p[1] < 200 and p[2] < 200)
+print("       outline band dark pixels: %d" % dark)
+sys.exit(0 if dark > 200 else 1)
+PY
+    chk $? "the outline drawer lists the document's bookmarks"
+fi
+
+echo "== the titlebar toggle, and it survives a relaunch =="
+D=$STATE/titlebar; mkdir -p "$D"
+rm -rf "$D/cfg"; mkdir -p "$D/cfg"
+xvfb-run -a --server-args="-screen 0 1280x900x24" \
+  env GDK_BACKEND=x11 XDG_CONFIG_HOME="$D/cfg" MNPDF_CMD=113 MNPDF_SHOT_EXIT=1 \
+  timeout 30 "$BIN" "$PDF" >"$D/log1.txt" 2>&1
+grep -q "^titlebar=0$" "$D/cfg/mnpdf/app.txt"; chk $? "hiding the titlebar is recorded in app.txt"
+# a relaunch must come back captionless, not with the default caption
+xvfb-run -a --server-args="-screen 0 1280x900x24" \
+  env GDK_BACKEND=x11 XDG_CONFIG_HOME="$D/cfg" MNPDF_SHOT="$D/again.png" MNPDF_SHOT_EXIT=1 \
+  timeout 30 "$BIN" "$PDF" >"$D/log2.txt" 2>&1
+grep -q "^titlebar=0$" "$D/cfg/mnpdf/app.txt"; chk $? "the captionless state survives a relaunch"
+
+echo "== the Windows app.txt field order is kept =="
+D=$STATE/order; mkdir -p "$D"
+# a hand-written app.txt with the Windows keys, including the ones Linux does
+# not own, so the merge is exercised the way a shared directory exercises it
+mkdir -p "$D/cfg/mnpdf"
+printf 'tabstrip=1\ntitlebar=1\nautosave=1\nhlcolor=0\npincolor=5\nnight=0\nupdcheck=1700000000\nupdtag=v2.6.0\n' > "$D/cfg/mnpdf/app.txt"
+xvfb-run -a --server-args="-screen 0 1280x900x24" \
+  env GDK_BACKEND=x11 XDG_CONFIG_HOME="$D/cfg" MNPDF_SHOT_EXIT=1 MNPDF_SHOT=/dev/null \
+  timeout 30 "$BIN" "$PDF" >"$D/log.txt" 2>&1
+# titlebar= must land in the Linux block (right after tabstrip=), and the
+# foreign keys must be carried after it in their original order
+python3 - "$D/cfg/mnpdf/app.txt" <<'PY'
+import sys
+lines = [l.strip() for l in open(sys.argv[1]) if l.strip()]
+def idx(k):
+    for i, l in enumerate(lines):
+        if l.startswith(k):
+            return i
+    return -1
+order = [idx("tabstrip="), idx("titlebar="), idx("autosave="), idx("updcheck="), idx("updtag=")]
+print("       app.txt order: %s" % order)
+sys.exit(0 if all(o >= 0 for o in order) and order == sorted(order) else 1)
+PY
+chk $? "app.txt keeps the Windows field order and carries the foreign keys"
+grep -q "^updtag=v2.6.0$" "$D/cfg/mnpdf/app.txt"; chk $? "the Windows update keys survive a Linux run"
+
 echo
 printf 'pass=%d fail=%d\n' "$PASS" "$FAIL"
 rm -rf "$STATE"

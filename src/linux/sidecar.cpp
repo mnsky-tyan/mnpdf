@@ -305,6 +305,7 @@ void loadAppPref() {
         char* line = lineBuf.data();
         int iv;
         if (sscanf(line, "tabstrip=%d", &iv) == 1) gTabStrip = iv != 0;
+        else if (sscanf(line, "titlebar=%d", &iv) == 1) gTitlebar = iv != 0;
         else if (sscanf(line, "autosave=%d", &iv) == 1) gAutosave = iv != 0;
         else if (sscanf(line, "night=%d", &iv) == 1) gNight = iv != 0;
         else if (sscanf(line, "hlcolor=%d", &iv) == 1) gHlDefault = (iv >= 0 && iv < kPalCount) ? iv : 0;
@@ -332,11 +333,13 @@ void loadAppPref() {
 extern void ui_windowRect(int* x, int* y, int* w, int* h, int* maxed);
 
 // The keys this writer owns. Everything else in app.txt belongs to another
-// reader of the same shared directory (Windows writes titlebar=, updcheck= and
+// reader of the same shared directory (Windows also writes updcheck= and
 // updtag=), so those lines are carried forward unchanged and in their original
-// order instead of being dropped by the rewrite.
+// order instead of being dropped by the rewrite. titlebar= is owned here too
+// now that the port implements it: the key is the Windows one and it is written
+// in the Windows order, so a shared app.txt means the same thing on both sides.
 static bool linuxAppKey(const char* line) {
-    static const char* kOwned[] = { "tabstrip=", "autosave=", "hlcolor=", "pincolor=", "night=",
+    static const char* kOwned[] = { "tabstrip=", "titlebar=", "autosave=", "hlcolor=", "pincolor=", "night=",
                                     "winx=", "winy=", "winw=", "winh=", "winmax=", "palnext=" };
     for (const char* k : kOwned)
         if (strncmp(line, k, strlen(k)) == 0) return true;
@@ -355,8 +358,10 @@ void writeAppPref() {
     }
     FILE* fp = fopen(path.c_str(), "wb");
     if (!fp) return;
-    fprintf(fp, "tabstrip=%d\nautosave=%d\nhlcolor=%d\npincolor=%d\nnight=%d\n",
-            gTabStrip ? 1 : 0, gAutosave ? 1 : 0, gHlDefault, gPinDefault, gNight ? 1 : 0);
+    // field order matches the Windows writer (src/main.cpp:3350):
+    // tabstrip, titlebar, autosave, hlcolor, pincolor, night
+    fprintf(fp, "tabstrip=%d\ntitlebar=%d\nautosave=%d\nhlcolor=%d\npincolor=%d\nnight=%d\n",
+            gTabStrip ? 1 : 0, gTitlebar ? 1 : 0, gAutosave ? 1 : 0, gHlDefault, gPinDefault, gNight ? 1 : 0);
     int x = 0, y = 0, w = 0, h = 0, mx = 0;
     ui_windowRect(&x, &y, &w, &h, &mx);
     if (w > 0 && h > 0) fprintf(fp, "winx=%d\nwiny=%d\nwinw=%d\nwinh=%d\nwinmax=%d\n", x, y, w, h, mx);

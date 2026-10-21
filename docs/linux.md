@@ -138,7 +138,7 @@ quits after, so a pixel assertion needs no harness clicking a window.
 
 Measured on this machine (`/usr/bin/time`, and RSS sampled from `/proc`):
 
-- Headless core test, 146 checks including two full save/bake round trips:
+- Headless core test, 154 checks including two full save/bake round trips:
   **0.26 s wall, 15.1 MB peak RSS** (measured, `/usr/bin/time -v`).
 - The GUI with a 13-page document open, idle after 20 s: **98.6 MB RSS, steady
   state, no growth** (measured, sampled from `/proc/<pid>/status`). Of that,
@@ -151,10 +151,82 @@ Measured on this machine (`/usr/bin/time`, and RSS sampled from `/proc`):
 
 ## What is still missing
 
-Thumbnail and outline drawers, the update check, and a proper right-click menu
-for a mark under the cursor (the context menu currently offers page-level
-actions; the pin and highlight entries exist and work). The Windows build's
-print dialog is replaced by the GtkPrintOperation dialog.
+The Windows build's print dialog is replaced by the GtkPrintOperation dialog.
+The update check differs in one deliberate way: the Windows app reads
+GitHub's `/releases/latest` and downloads `mnpdf-win-x64-<tag>.zip` by name,
+while this one asks the releases API for the newest release that actually
+carries a Linux archive - see "The update check" below.
+
+## The parity work (2026-10-21)
+
+The port now carries the same command set as the Windows build, under the same
+menu ids, so the two readers can be driven the same way.
+
+**Advanced.** Windows keeps everything past plain reading in an "Advanced"
+cascade (src/main.cpp:5449). The port has the same cascade in the menu bar and
+in the right-click menu: Thumbnails, Outline panel, Night mode, Merge PDFs,
+Split pages, Insert signature, Clear signatures, Reopen last document.
+
+**The titlebar.** Windows clears `WS_CAPTION` and then re-implements
+`WM_NCCALCSIZE` and `WM_NCHITTEST` (src/main.cpp:5825, 6014), because
+removing the caption there also removes the frame's own drag and resize
+behaviour. GTK keeps the window manager in charge of all of that, so the port
+uses `gtk_window_set_decorated` and nothing else: the window still resizes,
+snaps and maximises, and only the caption strip goes. The state is the Windows
+`titlebar=` key in app.txt, written in the Windows field order, so a shared
+app.txt means the same thing on both sides.
+
+**The drawers.** The thumbnails and outline panels are side drawers beside the
+reader, the same place Windows puts them (src/main.cpp:4886 placeDrawer, side 0
+for the thumbnails and side 1 for the outline). The content is the same code
+path: a thumbnail is a page rasterized through `renderPageToBuffer`, and the
+outline is the bookmark tree collected with `FPDFBookmark_GetFirstChild`, with
+the same nesting and the same "This document has no bookmarks." fallback.
+
+One GTK detail worth recording, because it is invisible until the drawer is
+missing: a widget packed into a box that has already negotiated its size keeps
+a 1-px allocation until BOTH the strip and the window are told to lay
+themselves out again and the request is then drained. Without that, the
+drawer is created, visible, and invisible on screen. Measured with a GtkBox
+probe of the app's own shape (menu bar, strip, overlay).
+
+**The colours.** Windows offers a colour submenu wherever a colour is chosen -
+a mark, a default, a pin - with the six presets, the reader's own slots, a way
+to hand the slots back and a way to type a new one. The port has the same
+submenus, with the same id scheme (presets at 120/140/150/160, custom slots at
+126/146/156/166), so the same command carries the same number on both
+platforms.
+
+**The ids.** The whole command space was realigned with the Windows one: 118
+is Save, 119 is Save As, 114 is Undo, 115 is Redo, 113 is the titlebar toggle,
+133 and 134 are the rotations, 137 is Print, 170 is the update check, 180
+clears the custom colours. The entries Windows has no menu for - Delete this
+page, Move page up, Move page down - moved into a free range (310-312).
+
+**The update check.** This is the one place the port deliberately does not
+follow the Windows route. The Windows app reads `/releases/latest`, which
+answers with the newest NON-prerelease, and then fetches
+`mnpdf-win-x64-<tag>.zip` by name. A Linux-only release is a prerelease until
+the Windows archive is published beside it, and the asset that endpoint names
+is the Windows one. So the port asks the releases API for the list and picks
+the newest release that actually carries
+`mnpdf-linux-x64-<tag>.tar.gz`, then compares versions with the Windows rules
+(src/main.cpp:2334). The request runs on its own thread and is bounded by a
+timeout, so a slow network cannot freeze the window.
+
+The version the port reports is generated at build time from the Windows
+`kAppVersion` constant (CMakeLists.txt reads src/main.cpp), so the two readers
+can never claim different versions - which matters, because they share one
+app.txt.
+
+## The test seams
+
+`MNPDF_CMD` drives one command by its menu id, the way the Windows suites post
+WM_COMMAND, so a suite can assert on chrome the page back buffer never holds.
+`MNPDF_SHOT_WINDOW` captures the whole window instead of only the page buffer.
+`MNPDF_MENU_DUMP` prints the menu tree as text, which is how the parity
+comparison is made without clicking anything. All three are independent of each
+other; a run that asks for a command and a quit but no picture does both.
 
 ## Releasing
 

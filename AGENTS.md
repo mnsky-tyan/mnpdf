@@ -29,6 +29,7 @@ src/linux/               the Linux port: one directory per concern
   sidecar.cpp            per-document sidecar, app.txt prefs, last.txt
   opendoc.cpp            open, save/bake, signature stamps, the JPEG guard
   surgery.cpp            delete/move page, merge, split (FPDF_ImportPages)
+  update.cpp             the update check: the releases API, the version rules
   main.cpp               the GTK3 platform layer and the ui_* seam
   ui.h                   the platform seam: what the core may ask the UI for
   probe.cpp              toolchain probe: PDFium renders before the app is built

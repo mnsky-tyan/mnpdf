@@ -19,6 +19,11 @@ int gClientW = 0, gClientH = 0;
 bool gNight = false;
 bool gTabStrip = true;
 bool gAutosave = true;
+// the OS caption strip is shown, mirroring Windows' gTitlebar (src/main.cpp:341).
+// Hiding it on Linux uses gtk_window_set_decorated, which is the honest analogue
+// of clearing WS_CAPTION: the window manager still owns resizing and snapping,
+// so no WM_NCHITTEST reimplementation is needed as it was on Windows.
+bool gTitlebar = true;
 bool gSearchOpen = false;
 std::wstring gQuery;
 
