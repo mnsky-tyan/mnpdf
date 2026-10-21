@@ -96,12 +96,12 @@ the reference for semantic divergences. Findings below are deduplicated.
 | C19 | Fixed: the AGENTS.md wiki tree now lists tests/arc.pdf, arc-annot.pdf, sig-sample.jpg, lib.ps1, watchdog.ps1, gate-common.ps1, gate-test.sh, suites.txt, make-release-zip.ps1, docs/reviews, PDFIUM-LICENSE.txt, resource/icon files and the vendored dirs. |
 | C20 | Fixed: pin undo/redo pin the index before erasing so a re-insert lands at the same slot. |
 | C21 | Fixed: pathHash encodes non-BMP as UTF-16 surrogate pairs, matching the Windows hash. |
-| C22 | Fixed: kAppVersion/kRepoPath removed from doc.h (unused; README.txt stays the version contract). |
-| C23 | n/a after C22 removal; no dead constant remains in doc.h. |
+| C22 | Fixed: the duplicate applyFitWidth declaration removed; doc.h now declares it once. |
+| C23 | Fixed: rotWptD/rotHptD removed from doc.h (declared, never defined or called). |
 | C24 | Fixed: dead escapeField/unescapeField removed along with their declarations. |
-| C25 | Fixed: dead pageTextPt and the duplicate applyFitWidth declaration removed. |
-| C26 | Fixed: prevPath/gPrevPath removed (never read). |
-| C27 | Fixed: rotWptD/rotHptD removed (never called). |
+| C25 | Fixed: dead pageTextPt removed (assigned twice, never read). |
+| C26 | Fixed: kAppVersion/kRepoPath removed from doc.h (unused; README.txt stays the version contract). |
+| C27 | Fixed: prevPath/gPrevPath removed (never written or read). |
 | C28 | Fixed: the dead run_app helper was deleted from the gate. |
 | C29 | Fixed: the gate traps EXIT to remove its scratch dir, greps with -F, and guards python3 with an install hint. |
 | C30 | Fixed: clampScroll assertions now use exact page boundaries instead of a loose epsilon that accepted an off-by-one page. |

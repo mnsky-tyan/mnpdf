@@ -25,9 +25,10 @@ void ui_invalidate();
 void refreshDrawers();
 void ui_set_title(const std::string& t); // window/tab title
 
-// modal-ish message box (used by save failures and page-surgery refusals)
+// modal-ish message box (the quit prompt asks Yes/No/Cancel as Windows does;
+// save failures and page-surgery refusals use the info form)
 int ui_message(const std::string& text, const std::string& caption, bool yesno);
-enum { UI_MSGBOX_NO = 0, UI_MSGBOX_YES = 1 };
+enum { UI_MSGBOX_NO = 0, UI_MSGBOX_YES = 1, UI_MSGBOX_CANCEL = 2 };
 
 // file pickers; return "" when cancelled
 std::string ui_open_file();

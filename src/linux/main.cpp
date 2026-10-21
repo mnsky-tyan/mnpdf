@@ -106,12 +106,25 @@ int ui_message(const std::string& text, const std::string& caption, bool yesno) 
     GtkWidget* d = gtk_message_dialog_new(GTK_WINDOW(gWin),
         (GtkDialogFlags)(GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT),
         yesno ? GTK_MESSAGE_QUESTION : GTK_MESSAGE_INFO,
-        yesno ? GTK_BUTTONS_YES_NO : GTK_BUTTONS_OK,
-        "%s", text.c_str());
+        GTK_BUTTONS_NONE, "%s", text.c_str());
+    if (yesno) {
+        // the three Windows MB_YESNOCANCEL answers: No still writes the sidecar,
+        // Cancel keeps the window open and decides later
+        gtk_dialog_add_buttons(GTK_DIALOG(d), "_Cancel", GTK_RESPONSE_CANCEL,
+                               "_No", GTK_RESPONSE_NO, "_Yes", GTK_RESPONSE_YES, nullptr);
+        gtk_dialog_set_default_response(GTK_DIALOG(d), GTK_RESPONSE_YES);
+    } else {
+        gtk_dialog_add_button(GTK_DIALOG(d), "_OK", GTK_RESPONSE_OK);
+    }
     gtk_window_set_title(GTK_WINDOW(d), caption.c_str());
     gint r = gtk_dialog_run(GTK_DIALOG(d));
     gtk_widget_destroy(d);
-    return (r == GTK_RESPONSE_YES) ? UI_MSGBOX_YES : UI_MSGBOX_NO;
+    if (r == GTK_RESPONSE_YES) return UI_MSGBOX_YES;
+    // Escape and the window-manager close are Cancel, not No: dismissing a
+    // "Save changes?" must not quit, exactly as IDCANCEL on Windows
+    if (r == GTK_RESPONSE_CANCEL || r == GTK_RESPONSE_DELETE_EVENT || r == GTK_RESPONSE_NONE)
+        return UI_MSGBOX_CANCEL;
+    return UI_MSGBOX_NO;
 }
 
 // ---- file pickers ----
@@ -827,6 +840,7 @@ static gboolean onWindowDelete(GtkWidget*, GdkEvent*, gpointer) {
     if (gAutosave) writeAllSidecars();
     else if (gDirty) {
         int r = ui_message("Save changes?", "mnpdf", true);
+        if (r == UI_MSGBOX_CANCEL) return TRUE;   // keep working, decide later
         if (r == UI_MSGBOX_YES && !doSave()) return TRUE;
         writeAllSidecars();
     } else writeAllSidecars();
@@ -950,27 +964,71 @@ static void installMenuBar(GtkWidget* box) {
     gtk_box_pack_start(GTK_BOX(box), bar, FALSE, FALSE, 0);
 }
 
-// print: render each page clean (no annotations) and hand it to GtkPrintOperation
-static void printDrawPage(GtkPrintOperation*, GtkPrintContext* ctx, int pageNr, gpointer) {
+// print: render each page clean (no annotations) and hand it to GtkPrintOperation.
+// The one transient is a single page raster, bounded by the same pixel budget the
+// Windows print path uses (src/main.cpp:2068): a page larger than the budget is
+// shrunk to fit it, never refused, so it still prints.
+static const double kPrintPixelBudget = 16.0 * 1000.0 * 1000.0;
+
+static void printDrawPage(GtkPrintOperation* op, GtkPrintContext* ctx, int pageNr, gpointer data) {
+    bool* failed = (bool*)data;
     cairo_t* cr = gtk_print_context_get_cairo_context(ctx);
     double pw = gtk_print_context_get_width(ctx);
     double ph = gtk_print_context_get_height(ctx);
-    int w = (int)(pw * 2), h = (int)(ph * 2);
+    // a zero-area target would paint nothing and still report success, so it fails
+    // the job like an unallocatable raster does (Windows bounds the same case with
+    // resX > 0 ? resX : 1, src/main.cpp:2214)
+    if (pw <= 0 || ph <= 0) {
+        *failed = true;
+        gtk_print_operation_cancel(op);
+        return;
+    }
+    // The source box comes from the page's own size at a fixed 300 dpi, never
+    // from the printer's device resolution: at 300 dpi a 2481x3508 A4 raster is
+    // 1:1, at 600 dpi it is a 2x upscale, while sizing from the device would ask
+    // for ~139 MP and ~540 MP. Same rule and same numbers as src/main.cpp:2248.
+    int w = (int)(rotWpt(pageNr) * 300.0 / 72.0 + 0.5);
+    int h = (int)(rotHpt(pageNr) * 300.0 / 72.0 + 0.5);
+    double px = (double)w * h;
+    if (px > kPrintPixelBudget) {
+        double shrink = sqrt(kPrintPixelBudget / px);
+        w = (int)(w * shrink); h = (int)(h * shrink);
+    }
+    if (w < 1) w = 1;
+    if (h < 1) h = 1;
     std::vector<unsigned char> buf;
     int stride = 0;
-    if (!renderPageToBuffer(pageNr, w, h, buf, &stride)) return;
+    // a page that could not be rasterized aborts the job instead of emitting a
+    // blank sheet, so the print subsystem reports it as the Windows AbortDoc path
+    if (!renderPageToBuffer(pageNr, w, h, buf, &stride)) {
+        *failed = true;
+        gtk_print_operation_cancel(op);
+        return;
+    }
     cairo_surface_t* s = cairo_image_surface_create_for_data(buf.data(), CAIRO_FORMAT_ARGB32, w, h, stride);
-    cairo_scale(cr, pw / w, ph / h);
+    // fit inside the printable area, preserve the page's own aspect, centre it:
+    // a landscape page on portrait paper letterboxes rather than clipping
+    double scale = pw / w;
+    if (ph / h < scale) scale = ph / h;
+    double dw = w * scale, dh = h * scale;
+    cairo_save(cr);
+    cairo_translate(cr, (pw - dw) / 2.0, (ph - dh) / 2.0);
+    cairo_scale(cr, scale, scale);
     cairo_set_source_surface(cr, s, 0, 0);
     cairo_paint(cr);
+    cairo_restore(cr);
     cairo_surface_destroy(s);
 }
 
 static void doPrint() {
     if (!gDoc) return;
     GtkPrintOperation* op = gtk_print_operation_new();
+    // ask GTK for the print area in PostScript points, the unit rotWpt/rotHpt and
+    // cairo both work in, so the geometry above never sees device pixels
+    gtk_print_operation_set_unit(op, GTK_UNIT_POINTS);
     gtk_print_operation_set_n_pages(op, gDocPages);
-    g_signal_connect(op, "draw-page", G_CALLBACK(printDrawPage), nullptr);
+    bool printFailed = false;
+    g_signal_connect(op, "draw-page", G_CALLBACK(printDrawPage), &printFailed);
     GtkPrintOperationResult res = gtk_print_operation_run(op, GTK_PRINT_OPERATION_ACTION_PRINT_DIALOG, GTK_WINDOW(gWin), nullptr);
     if (res == GTK_PRINT_OPERATION_RESULT_ERROR) {
         GError* err = nullptr;
@@ -978,6 +1036,8 @@ static void doPrint() {
         if (err) g_error_free(err);
     }
     g_object_unref(op);
+    // a cancelled job returns CANCEL, not ERROR, so the stopped print is told here
+    if (printFailed) ui_message("A page could not be printed, so the job was stopped.", "mnpdf", false);
 }
 
 int main(int argc, char** argv) {

@@ -9,12 +9,12 @@ Companion files in this directory:
 - `2026-10-21-pipeline-findings.json` - the same findings, machine-readable,
   one entry per finding id with its description, severity, file and the run that
   reported it.
-- `2026-10-21-pipeline-daemon.log` - the gate daemon's own log for the whole
-  session, which records why each run ended (a global kernel OOM, a router
-  rotation to a provider that refuses this region, and two daemon restarts).
 
-The per-run raw pipeline output (`run-<id>-review-full.log`) is in the loop
-state directory, not in the repository, because it is machine-local.
+The gate daemon's own log for that session (the record of why each run ended: a
+global kernel OOM, a router rotation to a provider that refuses this region, and
+two daemon restarts) is pipeline telemetry, not project documentation, so it
+stays in the pipeline's state directory (`~/.no-mistakes/logs/daemon.log`) along
+with the per-run raw output (`run-<id>-review-full.log`).
 
 ## Summary
 

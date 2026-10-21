@@ -52,6 +52,12 @@ paints the composited frame and draws its own scrollbars.
   records the live allocation, so quitting while maximized writes the
   maximized size. Relaunching maximized is correct on both; only the size the
   window returns to on un-maximize differs.
+- **Units of the saved window size.** The same `winw`/`winh` keys mean a
+  different rectangle on the two platforms: Windows stores the whole frame from
+  `GetWindowPlacement` (caption and resize border included), Linux stores the
+  client size the window manager handed GTK. Each platform round-trips its own
+  value, so the file stays readable on both; a window sized on one just appears
+  a frame's worth larger or smaller on the other.
 - **Update check and install.** Not ported: it is WinHTTP, COM and
   `ShellExecuteW`. The Linux build has no updater.
 - **Tabs are GtkNotebook pages**, and each tab's own document, zoom, scroll and
@@ -93,9 +99,12 @@ marks lift back into live, undoable marks on Linux.
 
 `third_party/pdfium-linux/` holds the Linux build of PDFium (headers,
 `libpdfium.so`, BSD-3-Clause license), the counterpart of the Windows
-`third_party/pdfium/`. `build-linux.sh` renders `tests/arc.pdf` with it before
-compiling the app, so a broken vendored library fails at the real cause instead
-of at a linker error three hundred lines away.
+`third_party/pdfium/`. The two vendored builds are not the same version -
+Windows ships 155.0.8057.0, Linux 157.0.8100.0 - so an edge-case document can
+render a little differently on the two platforms; the port uses only long-stable
+PDFium APIs, so nothing here requires the newer build. `build-linux.sh` renders
+`tests/arc.pdf` with it before compiling the app, so a broken vendored library
+fails at the real cause instead of at a linker error three hundred lines away.
 
 PDFium's string API is UTF-16 (`unsigned short`), while `wchar_t` is 32-bit on
 Linux. The port converts explicitly at every boundary (`wideToU16`/`u16ToWide`)
@@ -136,27 +145,8 @@ Measured on this machine (`/usr/bin/time`, and RSS sampled from `/proc`):
   it is resident is an estimate, and GTK accounts for the rest. The only
   allocation that scales with the window is one client-sized BGRA buffer, the same
   discipline as the Windows build, and the print path allocates exactly one page
-  raster at a time.
-
-## Running the gate on this port
-
-The review pipeline that guards this port needs two settings that live outside
-the repository, so they are recorded here:
-
-- **The review agent's summarizer budget.** A review of this port runs for
-  hours and builds a session far larger than a 16384-token summary can
-  describe. The summarizer then stops mid-summary ("generation hit the token
-  cap"), the session cannot be compacted, and the pipeline agent dies with
-  `pi compaction failed`. The fix is in `~/.pi/agent/settings.json`:
-
-  ```json
-  { "compaction": { "modelOverrides": {
-      "magpie/group/never-stuck": { "reserveTokens": 65400 } } } }
-  ```
-
-  `reserveTokens` is both the compaction trigger threshold and the summarizer's
-  output budget, so this raises the summary's room without touching how the
-  model is chosen.
+  raster at a time, sized from the page's own box at 300 dpi and shrunk to the
+  same 16-megapixel budget the Windows print path applies.
 
 ## What is still missing
 

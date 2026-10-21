@@ -207,12 +207,11 @@ int ui_backbuf_w() { return gBufW; }
 int ui_backbuf_h() { return gBufH; }
 
 // print path: one page raster, no marks and no annotations (a print is a view
-// operation, exactly as on Windows). The pixel budget matches the Windows one.
-static const double kPrintPixelBudget = 16.0 * 1000.0 * 1000.0;
-
+// operation, exactly as on Windows). The caller sizes the raster, so the budget
+// it caps is applied where the size is chosen (see main.cpp's printDrawPage).
 bool renderPageToBuffer(int page, int w, int h, std::vector<unsigned char>& out, int* strideOut) {
     if (!gDoc || page < 0 || page >= gDocPages) return false;
-    if ((double)w * h * 4 > kPrintPixelBudget) return false;
+    if (w <= 0 || h <= 0) return false;
     FPDF_PAGE p = acquirePage(page);
     if (!p) return false;
     out.assign((size_t)w * h * 4, 0);
