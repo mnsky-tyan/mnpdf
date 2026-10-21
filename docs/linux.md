@@ -155,3 +155,29 @@ Thumbnail and outline drawers, the update check, and a proper right-click menu
 for a mark under the cursor (the context menu currently offers page-level
 actions; the pin and highlight entries exist and work). The Windows build's
 print dialog is replaced by the GtkPrintOperation dialog.
+
+## Releasing
+
+`.github/workflows/release.yml` builds both platforms from a `v*` tag and
+publishes them as one release. The Windows asset is not optional even for a
+Linux release: the Windows app discovers updates through GitHub's
+`/releases/latest` and then fetches `mnpdf-win-x64-<tag>.zip` by name
+(`src/main.cpp:2572`), so a release carrying only a Linux archive would tell
+every installed Windows copy that a newer version exists and then fail to
+download it. Both assets are therefore asserted to exist before the release is
+created.
+
+Cutting one:
+
+```sh
+# the tag, kAppVersion and README.txt must agree or the contract job fails, so
+# bump both: kAppVersion in src/main.cpp and the first line of README.txt
+git commit -am "release: v2.7.0" && git push origin main
+git tag v2.7.0 && git push origin v2.7.0
+```
+
+The Linux asset is a plain tarball: the binary, the vendored `libpdfium.so`
+found through an `$ORIGIN` rpath, and both licences. It needs no install step and
+no root, and the only system dependency is GTK3, which every desktop already
+has. `ldd` on the unpacked binary resolves `libpdfium.so` from beside it, so
+there is no `LD_LIBRARY_PATH` to set.
