@@ -258,6 +258,44 @@ PY
 chk $? "app.txt keeps the Windows field order and carries the foreign keys"
 grep -q "^updtag=v2.6.0$" "$D/cfg/mnpdf/app.txt"; chk $? "the Windows update keys survive a Linux run"
 
+echo "== the shared-preference role: a second window writes nothing =="
+# One app.txt is shared between the readers, so a second window must not
+# overwrite the first one's preferences. The Windows build claims a named mutex
+# for this (src/main.cpp:6138) and a secondary window writes neither app.txt
+# nor last.txt (src/main.cpp:3276, 3344).
+I=$STATE/instance; mkdir -p "$I/cfg/mnpdf"
+printf 'tabstrip=1\ntitlebar=1\nautosave=1\nhlcolor=0\npincolor=5\nnight=0\n' > "$I/cfg/mnpdf/app.txt"
+# the first instance holds the role for as long as it runs. It is given a
+# lifetime of its own and killed afterwards - a reader with no window to close
+# would otherwise run forever.
+xvfb-run -a --server-args="-screen 0 1280x900x24" \
+  env GDK_BACKEND=x11 XDG_CONFIG_HOME="$I/cfg" timeout 25 "$BIN" "$PDF" >"$I/first.log" 2>&1 &
+holder=$!
+sleep 6
+# the second one toggles the titlebar, which the primary would persist
+xvfb-run -a --server-args="-screen 0 1280x900x24" \
+  env GDK_BACKEND=x11 XDG_CONFIG_HOME="$I/cfg" MNPDF_CMD=113 MNPDF_SHOT_EXIT=1 \
+  timeout 30 "$BIN" "$PDF" >"$I/second.log" 2>&1
+# the holder is stopped rather than waited for: it has no window to close
+kill $holder 2>/dev/null
+wait $holder 2>/dev/null
+grep -q "^titlebar=1$" "$I/cfg/mnpdf/app.txt"
+chk $? "a second window does not overwrite the shared app.txt"
+
+echo "== the update check honours the Windows cooldown =="
+# The Windows build asks GitHub at most once an hour and stamps the attempt
+# into app.txt (kUpdateCheckIntervalMin, src/main.cpp:67). A check inside that
+# window must not make a request.
+U=$STATE/updcheck; mkdir -p "$U/cfg/mnpdf"
+printf 'tabstrip=1\ntitlebar=1\nautosave=1\nhlcolor=0\npincolor=5\nnight=0\nupdcheck=%s\nupdtag=v2.6.0\n' \
+    "$(date +%s)" > "$U/cfg/mnpdf/app.txt"
+xvfb-run -a --server-args="-screen 0 1280x900x24" \
+  env GDK_BACKEND=x11 XDG_CONFIG_HOME="$U/cfg" MNPDF_CMD=170 MNPDF_SHOT_EXIT=1 \
+  timeout 40 "$BIN" "$PDF" >"$U/log.txt" 2>&1
+# a cooled-down check must not have replaced the tag it read
+grep -q "^updtag=v2.6.0$" "$U/cfg/mnpdf/app.txt"
+chk $? "an update check inside the hour does not ask again"
+
 echo "== the command ids match the Windows command table =="
 # The parity claim is "the same command under the same menu id". The
 # authoritative table is tests/lib.ps1 (the Windows suites' CMD_* constants),

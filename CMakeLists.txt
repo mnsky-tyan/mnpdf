@@ -62,6 +62,7 @@ add_executable(mnpdf
   src/linux/opendoc.cpp
   src/linux/surgery.cpp
   src/linux/update.cpp
+  src/linux/instance.cpp
 )
 
 # The headless engine suite: links the platform-independent core and stubs the
@@ -75,6 +76,7 @@ add_executable(mnpdf-core-test
   src/linux/opendoc.cpp
   src/linux/surgery.cpp
   src/linux/update.cpp
+  src/linux/instance.cpp
   ${CMAKE_CURRENT_BINARY_DIR}/mnpdf-version.h
 )
 target_include_directories(mnpdf-core-test PRIVATE

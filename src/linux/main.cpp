@@ -54,6 +54,7 @@ extern int ui_backbuf_h();
 // the update check (update.cpp): the blocking half, run on a worker thread
 extern const char* gAppVersion;
 bool updateCheckBlocking(std::string& latestTag, bool& newer, std::string& error);
+bool updateCheckNow(std::string& latestTag, bool& newer, std::string& error);
 
 // ---- platform state ----
 static GtkWidget* gWin = nullptr;
@@ -316,7 +317,7 @@ static void runUpdateCheck() {
         UpdateOutcome* o = new UpdateOutcome();
         std::string latest, error;
         bool newer = false;
-        if (updateCheckBlocking(latest, newer, error)) {
+        if (updateCheckNow(latest, newer, error)) {
             o->ok = true;
             o->latestTag = latest;
             o->newer = newer;
@@ -1801,6 +1802,12 @@ int main(int argc, char** argv) {
     gtk_init(&argc, &argv);
     FPDF_InitLibrary();
 
+    // Claim the shared-preference role before anything reads the preferences:
+    // a secondary window must not write app.txt or last.txt, or a second
+    // reader would overwrite the first one's settings. The Windows build does
+    // the same with a named mutex (src/main.cpp:6138).
+    gPrimaryInstance = claimPrimaryInstance();
+
     loadAppPref();
     gDocs[0] = new Doc();
 
@@ -1886,6 +1893,10 @@ int main(int argc, char** argv) {
     }
     if (gIbeam) g_object_unref(gIbeam);
     if (gArrow) g_object_unref(gArrow);
+    // the shared-preference role is released here; the kernel would release it
+    // anyway when the process ends, but doing it explicitly keeps the window
+    // from looking primary while it is shutting down
+    releasePrimaryInstance();
     FPDF_DestroyLibrary();
     return 0;
 }

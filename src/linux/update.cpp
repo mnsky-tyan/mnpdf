@@ -19,6 +19,8 @@
 
 #include <curl/curl.h>
 
+#include <ctime>
+
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -150,6 +152,36 @@ static std::vector<ReleaseInfo> fetchReleases(std::string* why) {
     return out;
 }
 
+// ---- the cooldown ----------------------------------------------------------
+// The Windows build asks GitHub at most once an hour (kUpdateCheckIntervalMin,
+// src/main.cpp:67) and stamps the attempt - hit or miss - into app.txt, so
+// neither a launch nor a menu click can burn the API's unauthenticated quota.
+static const int kUpdateCheckIntervalMin = 60;
+
+static long long nowSeconds() { return (long long)time(nullptr); }
+
+// minutes since the last attempt, or -1 when there was none (or the clock
+// moved back)
+static int minutesSinceLastCheck() {
+    if (gLastUpdateCheck <= 0) return -1;
+    long long dt = nowSeconds() - gLastUpdateCheck;
+    if (dt < 0) return -1;
+    return (int)(dt / 60);
+}
+
+bool updateCheckCooling() {
+    int m = minutesSinceLastCheck();
+    return m >= 0 && m < kUpdateCheckIntervalMin;
+}
+
+// one attempt (hit or miss) stamps the clock, so the interval holds for the
+// next request whatever the outcome was
+void noteUpdateCheck(const std::string& tag) {
+    gLastUpdateCheck = nowSeconds();
+    if (!tag.empty()) gLastUpdateTag = tag;
+    writeAppPref();
+}
+
 // ---- the check -------------------------------------------------------------
 struct UpdateResult {
     bool ok = false;              // the check itself worked
@@ -195,5 +227,20 @@ bool updateCheckBlocking(std::string& latestTag, bool& newer, std::string& error
     }
     latestTag = r.latestTag;
     newer = r.newer;
+    return true;
+}
+
+// The command's half: it honours the cooldown and stamps the attempt, so
+// clicking "Check for updates" twice in a row makes one request, not two.
+bool updateCheckNow(std::string& latestTag, bool& newer, std::string& error) {
+    if (updateCheckCooling()) {
+        error = "The update check already ran less than an hour ago.";
+        return false;
+    }
+    if (!updateCheckBlocking(latestTag, newer, error)) {
+        noteUpdateCheck("");     // a failed attempt still counts
+        return false;
+    }
+    noteUpdateCheck(latestTag);
     return true;
 }

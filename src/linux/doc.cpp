@@ -348,6 +348,10 @@ void zoomAt(double factor, int cx, int cy) {
 
 // ---- undo engine ----
 void markDirty() { if (!gDirty) gDirty = true; }
+
+// the update check's state, the Windows format (src/main.cpp:142)
+long long gLastUpdateCheck = 0;
+std::string gLastUpdateTag;
 void markSave() { if (gAutosave) gSaveDirty = true; }
 bool sidecarPending() { return gSaveDirty; }
 void sidecarClearPending() { gSaveDirty = false; }
@@ -376,7 +380,13 @@ static void hlRecolorAt(int page, int start, int count, int color) {
     for (Hl& h : gHls) if (h.page == page && h.start == start && h.count == count) { h.color = color; break; }
 }
 static void rotApply(int page, int rot) {
-    if (gRot && page >= 0 && page < gDocPages) { gRot[page] = rot; relayoutPages(); clampScroll(); ensureActivePage(); }
+    if (gRot && page >= 0 && page < gDocPages) {
+        gRot[page] = rot; relayoutPages(); clampScroll(); ensureActivePage();
+        // the drawer row shows a different picture now. This is the path an
+        // undone rotation takes, so refreshing here covers undo as well as the
+        // command itself (the Windows build drops that row's picture too).
+        refreshDrawers();
+    }
 }
 
 void pushOp(const Op& op) { gUndo.push_back(op); gRedo.clear(); markDirty(); markSave(); }
@@ -531,6 +541,7 @@ void rotatePage(int page, int dir) {
     op.rotTo = gRot[page];
     relayoutPages(); clampScroll(); ensureActivePage();
     pushOp(op);
+    refreshDrawers();          // the rotated page's drawer row shows a new picture
     renderPage();
 }
 

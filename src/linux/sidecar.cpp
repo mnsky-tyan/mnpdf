@@ -159,9 +159,11 @@ void writeAllSidecars() {
     if (gViewTab && !gViewTab->path.empty()) writeLastDocument(gViewTab->path);
 }
 
-// last.txt is the document a plain launch reopens
+// last.txt is the document a plain launch reopens. It is shared, so only the
+// primary instance writes it: a second window on another document must not
+// change what the next plain launch brings back (src/main.cpp:3276).
 void writeLastDocument(const std::wstring& path) {
-    if (path.empty()) return;
+    if (!gPrimaryInstance || path.empty()) return;
     FILE* fp = fopen((appDir() + "/last.txt").c_str(), "wb");
     if (!fp) return;
     std::string u8 = wideToUtf8(path);
@@ -311,6 +313,11 @@ void loadAppPref() {
         else if (sscanf(line, "hlcolor=%d", &iv) == 1) gHlDefault = (iv >= 0 && iv < kPalCount) ? iv : 0;
         else if (sscanf(line, "pincolor=%d", &iv) == 1) gPinDefault = (iv >= 0 && iv < kPalCount) ? iv : 0;
         else if (sscanf(line, "palnext=%d", &iv) == 1) gPalNext = (iv >= 0 && iv < kPalCustom) ? iv : 0;
+        // the update check's own state. These keys were carried forward as
+        // foreign lines before; the port implements the check, so it owns them
+        // now, in the same format the Windows reader writes and reads.
+        else if (sscanf(line, "updcheck=%lld", &gLastUpdateCheck) == 1) { }
+        else if (strncmp(line, "updtag=", 7) == 0) gLastUpdateTag = line + 7;
         // geometry is bounded the same way the Windows reader bounds it: a value
         // a window cannot have leaves the field at its default
         else if (sscanf(line, "winx=%d", &iv) == 1) { if (iv >= -100000 && iv <= 100000) gWinX = iv; }
@@ -333,20 +340,27 @@ void loadAppPref() {
 extern void ui_windowRect(int* x, int* y, int* w, int* h, int* maxed);
 
 // The keys this writer owns. Everything else in app.txt belongs to another
-// reader of the same shared directory (Windows also writes updcheck= and
-// updtag=), so those lines are carried forward unchanged and in their original
-// order instead of being dropped by the rewrite. titlebar= is owned here too
-// now that the port implements it: the key is the Windows one and it is written
-// in the Windows order, so a shared app.txt means the same thing on both sides.
+// reader of the same shared directory, so those lines are carried forward
+// unchanged and in their original order instead of being dropped by the
+// rewrite. titlebar= is owned here now that the port implements it, and so are
+// updcheck= and updtag=, now that the port has the update check: every key is
+// the Windows one, written in the Windows order, so a shared app.txt means the
+// same thing on both sides.
 static bool linuxAppKey(const char* line) {
     static const char* kOwned[] = { "tabstrip=", "titlebar=", "autosave=", "hlcolor=", "pincolor=", "night=",
-                                    "winx=", "winy=", "winw=", "winh=", "winmax=", "palnext=" };
+                                    "winx=", "winy=", "winw=", "winh=", "winmax=", "palnext=",
+                                    "updcheck=", "updtag=" };
     for (const char* k : kOwned)
         if (strncmp(line, k, strlen(k)) == 0) return true;
     return strncmp(line, "pal", 3) == 0 && line[3] >= '0' && line[3] <= '9' && line[4] == '=';
 }
 
 void writeAppPref() {
+    // One shared app.txt: preferences and the saved window rect. A secondary
+    // window must not overwrite the primary's geometry or preferences with its
+    // own, so it writes nothing - the same rule the Windows build applies
+    // (src/main.cpp:3344).
+    if (!gPrimaryInstance) return;
     std::string path = appDir() + "/app.txt";
     std::vector<std::string> foreign;
     FILE* in = fopen(path.c_str(), "rb");
@@ -370,5 +384,10 @@ void writeAppPref() {
             fprintf(fp, "pal%d=%02x%02x%02x\n", c, GetRValue(gPalCustom[c]), GetGValue(gPalCustom[c]), GetBValue(gPalCustom[c]));
     fprintf(fp, "palnext=%d\n", gPalNext);
     for (const std::string& line : foreign) fprintf(fp, "%s\n", line.c_str());
+    // the update check's own state, in the Windows format: the timestamp of the
+    // last attempt and the newest tag ever seen. Both readers read them, so a
+    // shared app.txt means the same cooldown on both sides.
+    if (gLastUpdateCheck > 0)
+        fprintf(fp, "updcheck=%lld\nupdtag=%s\n", gLastUpdateCheck, gLastUpdateTag.c_str());
     fclose(fp);
 }
