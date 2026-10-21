@@ -35,10 +35,14 @@ paints the composited frame and draws its own scrollbars.
 
 - **Tab strip.** GtkNotebook draws it, so the canvas reserves no band for it.
   `tabStripH()` returns 0 and the ported code still calls it.
-- **Custom titlebar.** The Windows build can hide its caption and still be
-  dragged and resized from the edges; GTK has no equivalent hook, so the Linux
-  build always shows the standard frame. Nothing in the document engine depends
-  on it.
+- **Custom titlebar.** Windows hides its caption and then re-implements
+  `WM_NCCALCSIZE` and `WM_NCHITTEST`, because removing the caption there also
+  removes the frame's own drag and resize behaviour. GTK keeps the window
+  manager in charge of all of that, so the port uses
+  `gtk_window_set_decorated` and needs no hit-testing code: the window still
+  resizes, snaps and maximises, and only the caption strip goes. The state is
+  the Windows `titlebar=` key in app.txt, so a shared app.txt hides the
+  titlebar on both platforms.
 - **Note editor.** Windows floats a popup editor beside the pin; the Linux build
   uses a modal dialog. The text, the length limit and the undo op are the same.
   An open editor is settled at a different moment: Windows commits an open note
@@ -46,8 +50,6 @@ paints the composited frame and draws its own scrollbars.
   and the WM_CLOSE handler), while the Linux dialog is modal, so it must be
   saved or cancelled before the switch can happen at all. Cancelling a NEW pin
   drops it on both platforms.
-- **Thumbnail and outline drawers.** Not ported yet. The hook
-  `refreshDrawers()` exists and is a no-op.
 - **Window rect while maximized.** On Windows the saved `app.txt` rect is
   `rcNormalPosition`, the pre-maximize frame; on Linux the configure handler
   records the live allocation, so quitting while maximized writes the
@@ -59,8 +61,15 @@ paints the composited frame and draws its own scrollbars.
   client size the window manager handed GTK. Each platform round-trips its own
   value, so the file stays readable on both; a window sized on one just appears
   a frame's worth larger or smaller on the other.
-- **Update check and install.** Not ported: it is WinHTTP, COM and
-  `ShellExecuteW`. The Linux build has no updater.
+- **The update check.** It is the same feature, but it cannot follow the same
+  route. The Windows app reads `/releases/latest` - the newest
+  NON-prerelease - and fetches `mnpdf-win-x64-<tag>.zip` by name; a Linux-only
+  release is a prerelease until the Windows archive is published beside it, and
+  that endpoint names the Windows asset. The port asks the releases API for the
+  newest release that actually carries `mnpdf-linux-x64-<tag>.tar.gz` and
+  compares versions with the Windows rules. See "The parity work" above for
+  the asset that publishes that name. There is no Linux install step yet: the
+  check reports what is available and hands the reader the release page.
 - **Tabs are GtkNotebook pages**, and each tab's own document, zoom, scroll and
   marks live in its `Doc` bundle exactly as on Windows.
 
@@ -224,9 +233,15 @@ app.txt.
 `MNPDF_CMD` drives one command by its menu id, the way the Windows suites post
 WM_COMMAND, so a suite can assert on chrome the page back buffer never holds.
 `MNPDF_SHOT_WINDOW` captures the whole window instead of only the page buffer.
-`MNPDF_MENU_DUMP` prints the menu tree as text, which is how the parity
-comparison is made without clicking anything. All three are independent of each
-other; a run that asks for a command and a quit but no picture does both.
+`MNPDF_MENU_DUMP` prints the menu tree as text, each entry as `label: id`, which
+is how the parity comparison is made without clicking anything: the dump is
+asserted against the Windows command table in src/main.cpp, so a missing or
+reworded command fails the gate.
+
+`MNPDF_SHOT_EXIT` is a fourth seam, and it is a window-level one rather than a
+fourth independent thing: it appends the quit command to whatever else the run
+asked for. A run that asks only for a quit therefore quits, and a run that asks
+for a command and a quit drives the command and then quits.
 
 ## Releasing
 
@@ -248,8 +263,12 @@ git commit -am "release: v2.7.0" && git push origin main
 git tag v2.7.0 && git push origin v2.7.0
 ```
 
-The Linux asset is a plain tarball: the binary, the vendored `libpdfium.so`
-found through an `$ORIGIN` rpath, and both licences. It needs no install step and
-no root, and the only system dependency is GTK3, which every desktop already
-has. `ldd` on the unpacked binary resolves `libpdfium.so` from beside it, so
+The Linux asset is a plain tarball, and `scripts/make-release-tarball.sh`
+produces exactly the layout that is published: the binary, the vendored
+`libpdfium.so` (found through an `$ORIGIN` rpath), `README.txt`,
+`PDFIUM-LICENSE.txt` and `README-linux.txt`, named
+`mnpdf-linux-x64-<tag>.tar.gz`. It needs no install step and no root; the
+system dependencies are GTK3, which every desktop already has, and libcurl
+(`libcurl4-openssl-dev` to build, `libcurl.so.4` at runtime) for the update
+check. `ldd` on the unpacked binary resolves `libpdfium.so` from beside it, so
 there is no `LD_LIBRARY_PATH` to set.

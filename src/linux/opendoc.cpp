@@ -160,6 +160,9 @@ bool openPath(const std::wstring& path) {
     }
     clampScroll();
     renderPage();
+    // an open drawer follows the new document, the same place the Windows build
+    // refreshes it (src/main.cpp:3772)
+    refreshDrawers();
     writeSidecarNow();
     return true;
 }

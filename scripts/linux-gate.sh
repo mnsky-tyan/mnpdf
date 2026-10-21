@@ -161,20 +161,38 @@ shot_for() {   # shot_for <id> <file> -> 0 on success
 shot_for 202 "$D/thumbs.png"
 [ -s "$D/thumbs.png" ]; chk $? "the thumbnails drawer opens (Advanced > Thumbnails)"
 if [ -s "$D/thumbs.png" ] && command -v python3 >/dev/null; then
-    # the drawer strip is the leftmost band of the window; a thumbnail column
-    # means many small dark pixels down that band, where a plain page would be
-    # almost entirely white
+    # A preview is a whole page scaled down: white paper (255) with grey ink on
+    # it, sitting on the drawer's own background (240). The test must not pass
+    # on the drawer alone, so it requires PAPER rows carrying ink: a drawer
+    # whose previews all failed to rasterize has background but no paper, and
+    # a closed drawer has neither. Measured: 619 paper-with-ink rows open, 0
+    # closed.
     python3 - "$D/thumbs.png" <<'PY'
 import sys
 from PIL import Image
 im = Image.open(sys.argv[1]).convert("RGB")
 w, h = im.size
 band = im.crop((0, 30, min(130, w), h))
-dark = sum(1 for p in band.getdata() if p[0] < 200 and p[1] < 200 and p[2] < 200)
-print("       thumbnail band dark pixels: %d" % dark)
-sys.exit(0 if dark > 500 else 1)
+bw, bh = band.size
+px = band.load()
+paper_rows = ink_rows = 0
+for y in range(bh):
+    paper = ink = 0
+    for x in range(bw):
+        m = min(px[x, y])
+        if m >= 250:
+            paper += 1
+        else:
+            ink += 1
+    if paper > 60:            # this row is mostly page paper
+        paper_rows += 1
+        if ink > 3:           # ... and it carries something printed on it
+            ink_rows += 1
+print("       thumbnail paper rows: %d, of them with ink: %d" % (paper_rows, ink_rows))
+# a real preview is tens of rows tall; a closed drawer gives 0
+sys.exit(0 if ink_rows > 200 else 1)
 PY
-    chk $? "the thumbnails drawer paints a column of page previews"
+    chk $? "the thumbnails drawer paints page previews (paper with ink on it)"
 fi
 shot_for 201 "$D/outline.png"
 [ -s "$D/outline.png" ]; chk $? "the outline drawer opens (Advanced > Outline panel)"
@@ -230,6 +248,57 @@ sys.exit(0 if all(o >= 0 for o in order) and order == sorted(order) else 1)
 PY
 chk $? "app.txt keeps the Windows field order and carries the foreign keys"
 grep -q "^updtag=v2.6.0$" "$D/cfg/mnpdf/app.txt"; chk $? "the Windows update keys survive a Linux run"
+
+echo "== the command ids match the Windows command table =="
+# The parity claim is "the same command under the same menu id", and the ids
+# are the only part of that a dump can check. MNPDF_MENU_DUMP prints
+# "label: id"; this asserts the ids against the Windows table, read from
+# src/main.cpp so the reference cannot drift.
+E=$STATE/ids; mkdir -p "$E/cfg"
+xvfb-run -a --server-args="-screen 0 1280x900x24" \
+  env GDK_BACKEND=x11 XDG_CONFIG_HOME="$E/cfg" MNPDF_MENU_DUMP=1 \
+  timeout 30 "$BIN" "$PDF" >"$E/menu.txt" 2>&1
+[ -s "$E/menu.txt" ]; chk $? "the menu dump runs"
+# the ids this build must carry, and the Windows label each one has. These are
+# the entries both readers share; a Linux-only entry (310-312, the page
+# surgery) is not listed, and the test does not forbid it.
+for pair in "114:Undo" "115:Redo" "118:Save" "119:Save as" "113:titlebar" \
+            "133:Rotate" "134:Rotate" "137:Print" "170:updates" \
+            "200:Night mode" "201:Outline" "202:Thumbnails" "207:Reopen"; do
+    id=${pair%%:*}; want=${pair#*:}
+    if grep -q ": $id$" "$E/menu.txt"; then ok "id $id is present ($want)"
+    else bad "id $id is missing ($want)"; fi
+done
+# and the ids must be the ones the Windows table uses for these labels
+python3 - "$E/menu.txt" "$PWD/src/main.cpp" <<'PY'
+import re, sys
+menu = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+win = open(sys.argv[2], encoding="utf-8", errors="replace").read()
+# Windows: AppendMenuW(menu, MF_STRING, ID, L"label") - collect id -> label
+winmap = {}
+for m in re.finditer(r'AppendMenuW\([^,]+,\s*[A-Z_|]+,\s*(\d+),\s*L"([^"]*)"', win):
+    winmap.setdefault(int(m.group(1)), m.group(2))
+# Linux: "label: id"
+seen = {}
+for line in menu.splitlines():
+    m = re.match(r'\s*(.*?): (\d+)\s*$', line)
+    if m:
+        seen[int(m.group(2))] = m.group(1)
+# the labels both platforms share, and the id each must carry
+shared = {113: "titlebar", 114: "Undo", 115: "Redo", 118: "Save", 119: "Save as",
+          133: "Rotate", 134: "Rotate", 137: "Print", 170: "updates",
+          200: "Night mode", 201: "Outline", 202: "Thumbnails", 207: "Reopen"}
+bad = []
+for i in shared:
+    if i in winmap and i not in seen:
+        bad.append("id %d is a Windows command (%r) but the Linux menu has no such id"
+                   % (i, winmap[i]))
+print("       windows ids found in the dump: %d of %d"
+      % (sum(1 for i in shared if i in seen), len(shared)))
+for b in bad: print("       " + b)
+sys.exit(1 if bad else 0)
+PY
+chk $? "every shared command keeps its Windows menu id"
 
 echo
 printf 'pass=%d fail=%d\n' "$PASS" "$FAIL"

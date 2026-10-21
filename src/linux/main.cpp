@@ -234,7 +234,6 @@ static void onMenuActivate(GtkMenuItem* mi, gpointer data);
 // their base, so one builder serves all four places: the preset entries start
 // at presetBase, the custom slots at customBase, and customId opens the
 // #rrgggb box for that kind of mark.
-static int gColorTarget = 0;                 // what a custom colour applies to
                                               // 0 = a highlight, 1 = a pin,
                                               // 2 = the default highlight,
                                               // 3 = the default pin
@@ -626,11 +625,6 @@ static void onMenuActivate(GtkMenuItem* mi, gpointer data) {
         applyHighlightFromSelection(gHlDefault);
         break;
     }
-    case 401: {   // highlight with a chosen palette entry
-        int idx = -1;
-        if (ui_color_box(idx) && idx >= 0) applyHighlightFromSelection(idx);
-        break;
-    }
     case 130: {   // add pin here (point captured when the menu opened)
         if (gDoc && gMenuPinPage >= 0 && gMenuPinPage < gDocPages) {
             int idx = (int)gPins.size();
@@ -641,6 +635,13 @@ static void onMenuActivate(GtkMenuItem* mi, gpointer data) {
     }
     case 131: if (gMenuPinIdx >= 0) openNoteEditor(gMenuPinIdx, false); break;
     case 132: deletePin(gMenuPinIdx); break;
+    case 116: {   // copy the text of the menued highlight (Windows id 116)
+        if (gMenuHlIdx >= 0 && gMenuHlIdx < (int)gHls.size()) {
+            const Hl& h2 = gHls[gMenuHlIdx];
+            copyTextRange(h2.page, h2.start, h2.page, h2.start + h2.count - 1);
+        }
+        break;
+    }
     case 117: deleteHighlight(gMenuHlIdx); break;
     case 137: doPrint(); break;
     case 170: runUpdateCheck(); break;
@@ -657,7 +658,11 @@ static void dumpMenuTree(GtkWidget* item, int depth) {
     GtkWidget* label = gtk_bin_get_child(GTK_BIN(item));
     const char* text = label ? gtk_label_get_text(GTK_LABEL(label)) : "";
     for (int i = 0; i < depth; i++) printf("  ");
-    printf("%s\n", text);
+    // the id is what the parity claim is about, so print it beside the label:
+    // "Hide titlebar: 113" is checkable, "Hide titlebar" is not
+    int id = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(item), "cmd-id"));
+    if (id) printf("%s: %d\n", text, id);
+    else printf("%s\n", text);
     if (sub) {
         GList* kids = gtk_container_get_children(GTK_CONTAINER(sub));
         for (GList* k = kids; k; k = k->next)
@@ -678,6 +683,7 @@ static void onContextMenu(GtkWidget* w, GdkEventButton* ev) {
     auto add = [&](const char* label, int id) {
         GtkWidget* it = gtk_menu_item_new_with_label(label);
         g_signal_connect(it, "activate", G_CALLBACK(onMenuActivate), GINT_TO_POINTER(id));
+        g_object_set_data(G_OBJECT(it), "cmd-id", GINT_TO_POINTER(id));
         gtk_menu_shell_append(GTK_MENU_SHELL(menu), it);
     };
     auto sep = [&]() { gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new()); };
@@ -699,7 +705,7 @@ static void onContextMenu(GtkWidget* w, GdkEventButton* ev) {
                 buildColorSubmenu(gHls[gMenuHlIdx].color, 120, 126, 136));
             gtk_menu_shell_append(GTK_MENU_SHELL(menu), it);
         }
-        add("Copy text", 101);
+        add("Copy text", 116);
         add("Delete highlight", 117);
         sep();
     } else if (hasSelection()) {
@@ -768,6 +774,7 @@ static void onContextMenu(GtkWidget* w, GdkEventButton* ev) {
         auto addAdv = [&](const char* label, int id) {
             GtkWidget* it = gtk_menu_item_new_with_label(label);
             g_signal_connect(it, "activate", G_CALLBACK(onMenuActivate), GINT_TO_POINTER(id));
+            g_object_set_data(G_OBJECT(it), "cmd-id", GINT_TO_POINTER(id));
             gtk_menu_shell_append(GTK_MENU_SHELL(advSub), it);
         };
         addAdv("Thumbnails", 202);
@@ -785,7 +792,7 @@ static void onContextMenu(GtkWidget* w, GdkEventButton* ev) {
     }
     sep();
     add(gtk_notebook_get_show_tabs(GTK_NOTEBOOK(gNotebook)) ? "Hide tab strip" : "Show tab strip", 302);
-    add(gTitlebar ? "Hide titlebar" : "Show titlebar", 303);
+    add(gTitlebar ? "Hide titlebar" : "Show titlebar", 113);
     sep();
     add("Minimize", 110);
     add("Maximize / restore", 111);
@@ -1133,6 +1140,9 @@ static void onNotebookSwitch(GtkNotebook*, GtkWidget*, guint page, gpointer) {
     loadPage(gPageIndex);
     relayoutPages();
     clampScroll();
+    // an open drawer follows the new tab, the same place the Windows build
+    // refreshes it (src/main.cpp:5296)
+    refreshDrawers();
     renderPage();
 }
 
@@ -1770,11 +1780,14 @@ int main(int argc, char** argv) {
     // command opened to be allocated: an idle callback fires before the first
     // size negotiation, so a drawer created by MNPDF_CMD would be captured at
     // zero width. A short timeout runs after the layout pass instead.
-    // The three seams are independent: MNPDF_CMD drives a command, MNPDF_SHOT
-    // writes a picture, MNPDF_SHOT_EXIT quits. Registering only for MNPDF_SHOT
-    // (as this did) meant a run that asked for a command and a quit but no
-    // picture did neither, which is how a broken seam hides.
-    if (getenv("MNPDF_SHOT") || getenv("MNPDF_SHOT_EXIT") || getenv("MNPDF_CMD"))
+    // The seams are independent: MNPDF_CMD drives a command, MNPDF_SHOT
+    // writes a picture, MNPDF_SHOT_EXIT quits, MNPDF_MENU_DUMP prints the menu.
+    // Registering only for MNPDF_SHOT (as this did) meant a run that asked for
+    // a command and a quit but no picture did neither, which is how a broken
+    // seam hides; MNPDF_MENU_DUMP was missing for the same reason and made the
+    // dump silently print nothing.
+    if (getenv("MNPDF_SHOT") || getenv("MNPDF_SHOT_EXIT") || getenv("MNPDF_CMD")
+        || getenv("MNPDF_MENU_DUMP"))
         g_timeout_add(getenv("MNPDF_CMD") ? 400 : 0, onShotIdle, nullptr);
     gtk_main();
 

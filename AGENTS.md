@@ -71,7 +71,9 @@ third_party/pdfium-linux/  Linux PDFium (headers, libpdfium.so, license)
 
 ## Building
 
-Linux needs cmake, g++, GTK3 dev headers and the vendored PDFium:
+Linux needs cmake, g++, the GTK3 dev headers, libcurl
+(`libcurl4-openssl-dev`; the reader links `libcurl.so.4` at runtime for the
+update check) and the vendored PDFium:
 
 ```
 ./build-linux.sh        # -> build-linux/mnpdf (+ libpdfium.so beside it)
