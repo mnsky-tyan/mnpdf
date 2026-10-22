@@ -19,7 +19,7 @@ with the per-run raw output (`run-<id>-review-full.log`).
 
 ## Summary
 
-- 30 fixed, 2 deliberately deferred and documented, 0 still open.
+- 36 fixed, 4 deliberately deferred and documented, 0 still open.
 
 - The "-UNIMPLEMENTED" ids in the raw logs are the same defects re-reported after a
   daemon restart killed a fixer mid-round; they are folded into their base id here.
@@ -509,3 +509,76 @@ Fixed by giving the answered-but-nothing-readable outcome its own sentence:
 `checkForUpdate` now emits "The release feed listed no release this build
 could read." when the feed was fetched but yielded nothing usable, and the
 network-blame sentence only when `why` actually names a network failure.
+
+### MNPDF-LAUNCH-CHECK-MISSING (warning) - FIXED
+
+**Fixed in `25643e1`**
+
+the port ran its update check only from the "Check for updates" command.
+
+> The pipeline said:
+>
+> The update check is only reachable from this one handler (case 170, the
+> context-menu "Check for updates"), so the port never checks on launch. The
+> Windows build does: src/main.cpp:6286 runs startUpdateCheck(false) in WinMain
+> before the message loop - "notify only when a newer release exists",
+> rate-limited to one request per kUpdateCheckIntervalMin. Consequence: a Linux
+> reader is never told a new release exists unless they right-click and pick
+> the command, so the two readers do not feel the same.
+
+*File: `src/linux/main.cpp`*
+
+*Severity: warning - action requested: ask-user*
+
+The port now runs the same silent check before its main loop, with the two
+Windows silences: a check with nothing to say, or one that failed, says
+nothing, and a launch inside the cooldown says nothing even when the cached
+answer names a newer one (the cached answer is only surfaced by a click).
+MNPDF_NO_UPDATE skips only the launch check, so gate sections that are not
+about the update check stay off the network. The gate proves both halves by
+counting the toplevels the reader maps (xwininfo; a modal is a toplevel of
+its own, measured: 2 without a dialog, 3 with), and both checks were proven
+to fail by breaking each rule in turn.
+
+### MNPDF-CASCADE-STATE / MNPDF-RING-FOLLOW / MNPDF-ROT-CAPTURE / MNPDF-LOCK-DOCS / MNPDF-RECIPE-PUBLISH (round 10) - FIXED
+
+**Fixed in `732402e`**
+
+Five findings of the round-10 re-review were real against the head; all are
+closed by the same commit, and every other finding in that round's ledger
+was re-reported against a stale snapshot (verified one by one against the
+merged head: the colour entry, the cooldown cache answer, the stamp-on-cache,
+the worker-thread write, the prose asset scan, the tarball tag contract, the
+web-host trace check, the seam budget wait, the rotate-page semantics, the
+night label, the drawer keyboard path, the CMake fallback comment, and the
+F-series fixes).
+
+- **review-23** the Advanced cascade draws the Windows advancedMenu state
+  (src/main.cpp:5450-5464): drawer ticks while open, Night mode tick, and the
+  document tools grey out (Split also needs a second page, Clear signatures a
+  signature). The context cascade reads it at build time; the menu bar, built
+  once, is refreshed by refreshMenuLabels from every state change.
+- **review-21** a page move re-points the drawer's ring at the page that moved
+  (Windows movePage, src/main.cpp:4615-4620). Gate-proven: the selection band
+  sits at y=29 with the ring parked and y=175 after the move it selected, and
+  the check fails on the broken behaviour.
+- **review-22** the rotate capture is spent by the rotate that consumed it:
+  Windows's only rotate commands are the context popup's own
+  (src/main.cpp:5559), while the port also has them in the menu bar, where a
+  surviving capture would rotate a page the reader is no longer looking at.
+- **review-20** the single-writer guarantee is stated per platform
+  (docs/linux.md, README-linux.txt): the flock cannot see the Windows named
+  mutex and the mutex cannot see the flock.
+- **review-4** the release recipe carries the publishing step: one GitHub
+  release holds BOTH assets (`gh release create`), and a Linux-only release
+  stays a prerelease until the Windows zip ships, so /releases/latest keeps
+  naming a release a Windows reader can actually fetch.
+
+Declined, with reasons recorded for the next round:
+
+- **F19** (remove MNPDF_MENU_DUMP): declined - the dump is the mechanism the
+  gate's 40-id parity check reads, and it quits through the app's own quit
+  path, so the exit(0) concern it raised is already gone.
+- **F20** (keep row pictures through a refresh): declined - it is the same
+  documented one-raster divergence as F16 (docs/linux.md, "The one place the
+  port is cheaper than the Windows build").
