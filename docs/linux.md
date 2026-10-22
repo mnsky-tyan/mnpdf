@@ -276,6 +276,26 @@ the page the document happens to be showing, the way the Windows build does
 with `gMenuRotPage` (src/main.cpp:5514, :5748). A right-click on page 3
 rotates page 3 even when page 7 is on screen.
 
+### The one place the port is cheaper than the Windows build
+
+The thumbnail drawer keeps ONE page raster, where the Windows drawer keeps a
+picture per row (src/main.cpp:4805-4859). Scrolling down and back up
+re-rasterizes the rows that left the viewport, and each raster is a
+`FPDF_LoadPage` plus a `FPDF_RenderPageBitmap` on the UI thread inside the
+draw signal, so a 100-page document's drawer scrolls more slowly than the
+Windows one does.
+
+The trade was made on purpose: a picture per row for a 100-page document is
+100 page-sized bitmaps held at once, and the box this runs on has 15 GiB of RAM
+with about 10 GiB already in use. One raster costs one page. The Windows
+build's own row cache is not carried over until the port can hold it.
+
+Everything else about the drawer follows the Windows shape: a refresh rebuilds
+the row heights and keeps each row's picture unless the page count changed
+(refreshThumbDrawer, src/main.cpp:4813-4957), the selection stays on the page
+it named unless that page is gone (src/main.cpp:4964-4967), and the scroll
+offset is clamped when the list shrinks.
+
 ## The test seams
 
 `MNPDF_CMD` drives one command by its menu id, the way the Windows suites post

@@ -61,6 +61,7 @@ void noteUpdateCheck(const std::string& tag);
 static GtkWidget* gWin = nullptr;
 static GtkWidget* gMenuBar = nullptr;   // the menu bar, so its stateful labels can be refreshed
 static volatile bool gUpdateCheckRunning = false;   // a check is in flight on the worker thread
+static GMainLoop* gAppLoop = nullptr;   // the app's own loop, so it can be left on purpose
 static GtkWidget* gNotebook = nullptr;
 static GtkWidget* gCurArea = nullptr;
 static GtkWidget* gSearchBar = nullptr;
@@ -372,6 +373,12 @@ static gboolean showUpdateResult(gpointer data) {
 }
 
 static void runUpdateCheck() {
+    // A check that is already running is not started again. The cooldown is
+    // stamped only when the first answer comes back, so without this gate two
+    // clicks inside the request's own window would make two requests - and
+    // the request is a network call with a 5 s connect and a 15 s overall
+    // timeout.
+    if (gUpdateCheckRunning) return;
     gUpdateCheckRunning = true;
     std::thread([]() {
         UpdateOutcome* o = new UpdateOutcome();
@@ -1723,7 +1730,18 @@ static void requestQuit() {
 // really gone, whether it went down through the quit path or through the
 // window manager.
 static void onWindowDestroyed(GtkWidget*, gpointer) {
-    gtk_main_quit();
+    // The app's own loop, not gtk_main_quit(). gtk_main_quit() leaves the
+    // INNERMOST running loop, and a modal runs one of its own - so a window
+    // destroyed while a modal is up would have its quit consumed by the
+    // modal's loop, and the outer loop would keep running with no window and
+    // only the autosave timer left.
+    //
+    // Measured with a modal up and the window destroyed under it: one
+    // gtk_main_quit() answers "gtk_main_quit: assertion 'main_loops != NULL'
+    // failed" and the outer loop still has to be ended by hand; two of them
+    // assert twice and leave the outer loop running as well. Quitting the
+    // app's own GMainLoop ends exactly that loop, whatever else is running.
+    if (gAppLoop) g_main_loop_quit(gAppLoop);
 }
 
 static void onWindowConfigure(GtkWidget*, GdkEventConfigure* ev, gpointer) {
@@ -1964,9 +1982,8 @@ int main(int argc, char** argv) {
     restoreWindowGeometry();               // size, position and maximize from app.txt
     gtk_window_set_title(GTK_WINDOW(gWin), "mnpdf");
     gtk_window_set_icon_name(GTK_WINDOW(gWin), "application-pdf");
-    g_signal_connect(gWin, "destroy", G_CALLBACK(gtk_main_quit), nullptr);
     g_signal_connect(gWin, "delete-event", G_CALLBACK(onWindowDelete), nullptr);
-    // the window's destroy signal leaves the outer main loop: without it a
+    // the window's destroy signal ends the app's own loop: without it a
     // modal's nested loop can end while the outer one keeps running, and the
     // process hangs with no window and only the autosave timer left
     g_signal_connect(gWin, "destroy", G_CALLBACK(onWindowDestroyed), nullptr);
@@ -2031,7 +2048,12 @@ int main(int argc, char** argv) {
     if (getenv("MNPDF_SHOT") || getenv("MNPDF_SHOT_EXIT") || getenv("MNPDF_CMD")
         || getenv("MNPDF_MENU_DUMP"))
         g_timeout_add(getenv("MNPDF_CMD") ? 400 : 0, onShotIdle, nullptr);
-    gtk_main();
+    // the app's own loop, so the window's destroy signal can end it on
+    // purpose - see onWindowDestroyed
+    gAppLoop = g_main_loop_new(nullptr, FALSE);
+    g_main_loop_run(gAppLoop);
+    g_main_loop_unref(gAppLoop);
+    gAppLoop = nullptr;
 
     if (gSaveTimer) g_source_remove(gSaveTimer);
     writeAllSidecars();

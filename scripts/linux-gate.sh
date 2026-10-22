@@ -310,8 +310,14 @@ chk $? "an update check inside the hour does not ask again"
 # second time. GTK answers that with a critical, which the log carries.
 # Measured: before the guard, the log carried
 #   gtk_widget_destroy: assertion 'GTK_IS_WIDGET (widget)' failed
+#
+# The same run also covers the quit path: a window destroyed under a modal
+# must leave the app's own loop, not gtk_main_quit's, because gtk_main_quit
+# leaves the INNERMOST loop and a modal runs one of its own. That answers
+# "gtk_main_quit: assertion 'main_loops != NULL' failed".
 if grep -q "Gtk-CRITICAL" "$U/log.txt"; then
     bad "the update answer's modal leaves a GTK critical behind"
+    grep -m2 "Gtk-CRITICAL" "$U/log.txt" | sed 's/^/       /'
 else ok "the update answer's modal leaves no GTK critical behind"; fi
 
 echo "== the update check finds the release that carries the Linux archive =="
