@@ -19,7 +19,7 @@ with the per-run raw output (`run-<id>-review-full.log`).
 
 ## Summary
 
-- 28 fixed, 2 deliberately deferred and documented, 0 still open.
+- 30 fixed, 2 deliberately deferred and documented, 0 still open.
 
 - The "-UNIMPLEMENTED" ids in the raw logs are the same defects re-reported after a
   daemon restart killed a fixer mid-round; they are folded into their base id here.
@@ -453,3 +453,59 @@ the Windows-inherited tombstone-on-undo quirk is recorded in docs/linux.md.
 *File: `docs/linux.md` line 63*  
 
 *Severity: info - action requested: auto-fix*
+
+### MNPDF-UPDTAG-TWO-MEANINGS (warning) - FIXED
+
+**Fixed in `0371ccb`**
+
+the shared `updcheck=`/`updtag=` pair carried two different meanings, one per
+platform, in one file.
+
+> The pipeline said:
+>
+> The update-check state written to app.txt collides across platforms: the
+> Windows reader treats `updtag=` as the tag `/releases/latest` names - the
+> newest non-prerelease overall (src/main.cpp:2435) - while the Linux reader
+> stamped the newest release carrying a Linux archive into the same key. A
+> shared app.txt (the whole point of the sidecar contract) therefore makes
+> each reader's cached cooldown answer offer the other platform's release:
+> a Linux-stamped v2.7.0 (Linux-only prerelease) would make a Windows reader
+> at 2.6.0 offer a release with no Windows archive, and a Windows-stamped
+> v2.6.0 would silence a Linux check that should offer v2.7.0.
+
+*File: `src/linux/sidecar.cpp`*
+
+*Severity: warning - action requested: ask-user*
+
+The fix splits the pairs by platform rather than unifying the meaning: the
+Linux reader now keeps its own cooldown in `lnxupdcheck=`/`lnxupdtag=` and
+carries `updcheck=`/`updtag=` forward as foreign lines, verbatim, never read
+on Linux. Each reader's cached answer comes only from its own stamp. The
+Windows writer truncates the Linux pair, which costs the Linux reader one
+fresh check after a Windows run - honest and bounded, unlike one key that
+changes meaning per platform. Gate coverage: "a Windows stamp is not this
+reader's cooldown" proves a fresh `updcheck=` does not stop the Linux check,
+that the Linux check stamps its own pair, and that the Windows pair survives
+a Linux run untouched.
+
+### MNPDF-EMPTY-FEED-BLAMES-NETWORK (info) - FIXED
+
+**Fixed in `0371ccb`**
+
+a fetched-but-empty release feed reported a network failure.
+
+> The pipeline said:
+>
+> `fetchReleaseTags` sets `why` only when the request itself failed, so a 200
+> feed whose entries yield no usable tag returns with `why` empty and
+> `checkForUpdate` composes "The update check could not reach GitHub - ." -
+> a malformed sentence that blames the network for a host that answered.
+
+*File: `src/linux/update.cpp`*
+
+*Severity: info - action requested: auto-fix*
+
+Fixed by giving the answered-but-nothing-readable outcome its own sentence:
+`checkForUpdate` now emits "The release feed listed no release this build
+could read." when the feed was fetched but yielded nothing usable, and the
+network-blame sentence only when `why` actually names a network failure.
