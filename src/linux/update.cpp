@@ -5,9 +5,9 @@
 // build cannot use that endpoint for two reasons: /releases/latest answers with
 // the newest NON-prerelease, and a Linux-only release is a prerelease until the
 // Windows archive is published alongside it; and the asset it would fetch is
-// the Windows one. So this asks the releases API for the list and picks the
-// newest release that actually carries a Linux archive, then compares versions
-// the same way the Windows build does.
+// the Windows one. So this reads the release feed, finds the newest release
+// that actually carries a Linux archive, and compares versions the same way
+// the Windows build does.
 //
 // The version this build reports is generated at compile time from the
 // Windows kAppVersion constant (see CMakeLists.txt), so the two readers can
@@ -35,13 +35,15 @@
 // is shared with every other unauthenticated client behind the same IP. The
 // web host has no such quota.
 //
-// The one thing the web host does not answer is the ASSET LIST, so the Linux
-// archive is looked up on the release page itself: the page names the archive
-// in its download links.
+// The web host does not answer with an asset list, so the Linux archive is
+// looked up the way a reader would: by asking for its download URL. The
+// releases page itself is no help - it renders the asset list lazily, so the
+// page's HTML carries the release NOTES but not the assets, and a scan of it
+// for the archive name reads the notes rather than the file list.
 static const char* kGitHubRoot = "https://github.com";
 static const char* kRepoPath = "mnsky-tyan/mnpdf";
 static const std::string kLatestReleaseUrl = std::string(kGitHubRoot) + "/" + kRepoPath + "/releases/latest";
-static const std::string kReleasePageUrl = std::string(kGitHubRoot) + "/" + kRepoPath + "/releases";
+static const std::string kReleaseFeedUrl = std::string(kGitHubRoot) + "/" + kRepoPath + "/releases.atom";
 
 // ---- version helpers (the Windows rules, src/main.cpp:2334) ----------------
 bool parseVersion(const std::string& text, int& major, int& minor, int& patch) {
@@ -87,6 +89,30 @@ static HttpReply httpGet(const std::string& url) {
     // the redirect is NOT followed: the Windows build reads the Location
     // header instead, because that is where the release tag lives
     // (src/main.cpp:2466-2479). Following it would throw the tag away.
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 0L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, ("mnpdf/" + std::string(gAppVersion)).c_str());
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+    r.code = curl_easy_perform(curl);
+    if (r.code == CURLE_OK) {
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &r.status);
+        char* loc = nullptr;
+        if (curl_easy_getinfo(curl, CURLINFO_REDIRECT_URL, &loc) == CURLE_OK && loc)
+            r.location = loc;
+    }
+    curl_easy_cleanup(curl);
+    return r;
+}
+
+// A HEAD request: the answer is the status alone, the body is not wanted.
+// Used to ask whether a release's asset exists without downloading it.
+static HttpReply httpHead(const std::string& url) {
+    HttpReply r;
+    CURL* curl = curl_easy_init();
+    if (!curl) return r;
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_NOBODY, 1L);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 0L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
@@ -200,38 +226,79 @@ static std::string latestReleaseTag(std::string* why) {
     return tag;
 }
 
-// The releases page, read for the newest release that carries a Linux
-// archive. The page names each release and its assets, so a scan for the
-// archive name and the tag beside it is enough.
-static std::vector<ReleaseInfo> fetchReleases(std::string* why) {
-    std::vector<ReleaseInfo> out;
-    HttpReply r = httpGet(kReleasePageUrl);
-    if (r.code != CURLE_OK || r.status != 200 || r.body.empty()) {
-        if (why) *why = httpFailureText(r.code, r.status);
-        return out;
-    }
-    // The page lists the releases newest first, and each release's block names
-    // its tag and its assets. The Linux archive is named after the tag, so the
-    // archive name in the block gives the tag back.
-    const std::string kAssetPrefix = "mnpdf-linux-x64-";
+// The release feed, read for the release tags in release order.
+//
+// The feed is GitHub's own Atom rendering of the releases, and it lists the
+// prereleases as well as the releases, newest first - which is what a
+// Linux-only release needs, because such a release is a prerelease until its
+// Windows archive ships.
+//
+// It is the FEED and not the releases page on purpose: the page renders the
+// asset list lazily, so the page's HTML carries the release notes but not the
+// assets. A scan of the page for the archive name therefore reads the notes
+// - and the notes are prose, which a future release is free to mention or not
+// mention.
+// The tags out of a release feed, in the order the feed lists them.
+//
+// Split out from the request so the parsing can be tested without a network:
+// the shapes that matter are the entry id that ends with the tag, the feed's
+// own id that ends with "releases" and is not a release at all, and an id
+// whose last segment is not a version.
+std::vector<std::string> releaseTagsFromFeed(const std::string& body) {
+    std::vector<std::string> out;
+    // each entry's id ends with the tag:
+    //   <id>tag:github.com,2008:Repository/1373058058/v2.7.0</id>
+    const std::string kIdOpen = "<id>";
+    const std::string kIdClose = "</id>";
     size_t pos = 0;
     while (true) {
-        size_t asset = r.body.find(kAssetPrefix, pos);
-        if (asset == std::string::npos) break;
-        size_t nameEnd = r.body.find(".tar.gz", asset);
-        if (nameEnd == std::string::npos) break;
-        std::string tag = r.body.substr(asset + kAssetPrefix.size(),
-                                        nameEnd - (asset + kAssetPrefix.size()));
-        // the tag in the asset name is the tag of the release
-        if (!tag.empty() && cleanTag(tag)) {
-            ReleaseInfo ri;
-            ri.tag = tag;
-            ri.hasLinuxAsset = true;
-            out.push_back(ri);
-        }
-        pos = nameEnd;
+        size_t at = body.find(kIdOpen, pos);
+        if (at == std::string::npos) break;
+        size_t start = at + kIdOpen.size();
+        size_t end = body.find(kIdClose, start);
+        if (end == std::string::npos) break;
+        std::string id = body.substr(start, end - start);
+        pos = end;
+        // the feed's first id is the feed itself, whose last path segment is
+        // "releases" and not a tag
+        size_t slash = id.rfind('/');
+        if (slash == std::string::npos) continue;
+        std::string tag = id.substr(slash + 1);
+        int a = 0, b = 0, c = 0;
+        if (cleanTag(tag) && parseVersion(tag, a, b, c)) out.push_back(tag);
     }
     return out;
+}
+
+static std::vector<std::string> fetchReleaseTags(std::string* why) {
+    HttpReply r = httpGet(kReleaseFeedUrl);
+    if (r.code != CURLE_OK || r.status != 200 || r.body.empty()) {
+        if (why) *why = httpFailureText(r.code, r.status);
+        return std::vector<std::string>();
+    }
+    return releaseTagsFromFeed(r.body);
+}
+
+// The download URL of a release's Linux archive. The name follows the
+// pattern the release script writes (scripts/make-release-tarball.sh):
+// mnpdf-linux-x64-<tag>.tar.gz
+static std::string linuxAssetUrl(const std::string& tag) {
+    return std::string(kGitHubRoot) + "/" + kRepoPath + "/releases/download/" + tag +
+           "/mnpdf-linux-x64-" + tag + ".tar.gz";
+}
+
+// Does this release really carry the Linux archive? The download URL answers
+// with a redirect to the file when the asset is there and with 404 when it is
+// not, so a HEAD on it is the answer - the same URL a reader would click.
+//
+// The redirects are not followed: the answer that matters is whether the asset
+// exists, and the redirect itself is that answer.
+static bool releaseHasLinuxAsset(const std::string& tag) {
+    HttpReply r = httpHead(linuxAssetUrl(tag));
+    if (r.code != CURLE_OK) return false;
+    // 200 (the file itself) or 302 (the redirect to it) both mean the asset is
+    // there; 404 means it is not
+    return r.status == 200 || r.status == 301 || r.status == 302 || r.status == 307;
 }
 
 // ---- the cooldown ----------------------------------------------------------
@@ -276,23 +343,23 @@ struct UpdateResult {
 
 // The newest release that carries a Linux archive, prerelease or not: a Linux
 // release is a prerelease until the Windows archive is published beside it, and
-// the reader who installed it should still be told about the next one. The API
-// lists releases newest first, so the first one with a Linux archive is the
-// newest such release.
+// the reader who installed it should still be told about the next one.
 UpdateResult checkForUpdate() {
     UpdateResult res;
     std::string why;
 
-    // The releases page carries the newest release that has a Linux archive.
-    // The page lists them newest first, so the first one is the answer.
-    std::vector<ReleaseInfo> releases = fetchReleases(&why);
-    if (releases.empty()) {
+    // The feed lists the releases newest first, prereleases included, so the
+    // first one that really carries the Linux archive is the answer. The feed
+    // only says which releases exist; the asset is confirmed by asking for its
+    // download URL, because the feed carries no asset list.
+    std::vector<std::string> tags = fetchReleaseTags(&why);
+    if (tags.empty()) {
         res.error = "The update check could not reach GitHub - " + why + ".";
         return res;
     }
-    for (const ReleaseInfo& ri : releases) {
-        if (!ri.hasLinuxAsset) continue;
-        res.latestTag = ri.tag;
+    for (const std::string& tag : tags) {
+        if (!releaseHasLinuxAsset(tag)) continue;
+        res.latestTag = tag;
         break;
     }
     if (res.latestTag.empty()) {

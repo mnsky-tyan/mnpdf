@@ -299,12 +299,15 @@ xvfb-run -a --server-args="-screen 0 1280x900x24" \
 # a cooled-down check must not have replaced the tag it read
 grep -q "^updtag=v2.6.0$" "$U/cfg/mnpdf/app.txt"
 chk $? "an update check inside the hour does not ask again"
-# the answer opens a modal, and the app quits while it is up: the modal is
-# destroyed with the window, so the reader must not destroy it a second time.
-# GTK answers that with a critical, which the log carries.
-grep -q "Gtk-CRITICAL" "$U/log.txt"; [ $? -ne 0 ]
-chk $? "the update answer's modal leaves no GTK critical behind"
 
+# The cooled-down check answers with a modal, and the app quits while it is up:
+# a modal is destroyed with its window, so the reader must not destroy it a
+# second time. GTK answers that with a critical, which the log carries.
+# Measured: before the guard, the log carried
+#   gtk_widget_destroy: assertion 'GTK_IS_WIDGET (widget)' failed
+if grep -q "Gtk-CRITICAL" "$U/log.txt"; then
+    bad "the update answer's modal leaves a GTK critical behind"
+else ok "the update answer's modal leaves no GTK critical behind"; fi
 echo "== the update check asks the web host, not the API =="
 # The Windows build reads the tag off the web host, never api.github.com,
 # because that host's unauthenticated quota is shared with every other
@@ -318,6 +321,23 @@ if grep -E '^static const (char\*|std::string) k[A-Za-z]*Url' src/linux/update.c
 else ok "the update check does not use the API's shared quota"; fi
 grep -q "releases/latest" src/linux/update.cpp
 chk $? "the update check reads the tag the way the Windows build does"
+
+echo "== the update check finds the asset, not the release notes =="
+# The releases page renders its asset list lazily, so the page's HTML carries
+# the release NOTES and not the files. A check that scanned the page for the
+# archive name would read the notes, which are prose, and would read the wrong
+# version from the first release whose notes mention no archive. The feed says
+# which releases exist; the download URL says which of them carry the file.
+if grep -q "releases.atom" src/linux/update.cpp; then
+    ok "the release list comes from the feed, which lists the prereleases"
+else bad "the release list is not read from the feed"; fi
+if grep -q "releases/download/" src/linux/update.cpp; then
+    ok "the asset is confirmed by asking for its download URL"
+else bad "the asset is not confirmed against the download URL"; fi
+# and the page must not be scanned for the archive name any more
+if grep -q "kAssetPrefix" src/linux/update.cpp; then
+    bad "the check still scans the releases page for the archive name"
+else ok "the check does not read the release notes as an asset list"; fi
 
 echo "== the command ids match the Windows command table =="
 # The parity claim is "the same command under the same menu id". The

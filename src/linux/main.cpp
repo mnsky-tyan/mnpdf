@@ -115,6 +115,9 @@ void ui_set_title(const std::string&) {
 // exactly that: the modal opens from a callback, and the quit path tears the
 // window down while it is up. The widget's own destroy signal records that it
 // is gone already, so the second destroy is skipped.
+//
+// Measured: with the update check's answer on screen and the window closing
+// under it, GTK logged the critical above, once per run.
 struct Dialog {
     GtkWidget* w;
     bool gone = false;

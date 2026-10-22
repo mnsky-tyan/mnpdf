@@ -67,14 +67,12 @@ paints the composited frame and draws its own scrollbars.
   Windows build does (src/main.cpp:2466-2479). What differs is the asset.
   The Windows app then fetches `mnpdf-win-x64-<tag>.zip` by name; a Linux-only
   release is a prerelease until the Windows archive is published beside it, and
-  the endpoint names the Windows asset, so the port reads the releases page for
-  the newest release that carries `mnpdf-linux-x64-<tag>.tar.gz` and compares
-  versions with the Windows rules. The cooldown is shared: both readers keep
-  the `updcheck=` clock in the same app.txt, so the hour-long interval and the
-  cached answer are the same on both sides. There is no Linux install step:
-  the check reports what is available in a message box and does not open the
-  release page.
-- **Tabs are GtkNotebook pages**, and each tab's own document, zoom, scroll and
+
+  that endpoint names the Windows asset. The port reads the release feed for
+  the newest release that actually carries `mnpdf-linux-x64-<tag>.tar.gz` and
+  compares versions with the Windows rules. See "The parity work" above for
+  the asset that publishes that name. There is no Linux install step yet: the
+  check reports what is available and hands the reader the release page.- **Tabs are GtkNotebook pages**, and each tab's own document, zoom, scroll and
   marks live in its `Doc` bundle exactly as on Windows.
 
 ## The file formats are the contract
@@ -160,7 +158,7 @@ quits after, so a pixel assertion needs no harness clicking a window.
 
 Measured on this machine (`/usr/bin/time`, and RSS sampled from `/proc`):
 
-- Headless core test, 154 checks including two full save/bake round trips:
+- Headless core test, 161 checks including two full save/bake round trips:
   **0.26 s wall, 15.1 MB peak RSS** (measured, `/usr/bin/time -v`).
 - The GUI with a 13-page document open, idle after 20 s: **98.6 MB RSS, steady
   state, no growth** (measured, sampled from `/proc/<pid>/status`). Of that,
@@ -182,11 +180,11 @@ Measured on this machine (`/usr/bin/time`, and RSS sampled from `/proc`):
 ## What is still missing
 
 The Windows build's print dialog is replaced by the GtkPrintOperation dialog.
-The update check reports what is available and stops there: it does not open
-the release page and does not install, because there is no Linux install step
-to run. The route it reads the tag by is the Windows one - see "The update
-check" above.
 
+The update check differs in one deliberate way: the Windows app reads
+GitHub's `/releases/latest` and downloads `mnpdf-win-x64-<tag>.zip` by name,
+while this one reads the release feed for the newest release that actually
+carries a Linux archive - see "The update check" below.
 ## The parity work (2026-10-21)
 
 The port now carries the same command set as the Windows build, under the same
@@ -234,22 +232,42 @@ is Save, 119 is Save As, 114 is Undo, 115 is Redo, 113 is the titlebar toggle,
 clears the custom colours. The entries Windows has no menu for - Delete this
 page, Move page up, Move page down - moved into a free range (310-312).
 
-**The update check.** The tag comes from the same place the Windows build reads
-it: `/releases/latest` answers with a redirect to the newest NON-prerelease,
-and the tag is read off that redirect (src/main.cpp:2466-2479). What differs is
-the asset. The Windows app then fetches `mnpdf-win-x64-<tag>.zip` by name. A
-Linux-only release is a prerelease until the Windows archive is published
-beside it, and the asset that endpoint names is the Windows one, so the port
-reads the releases page and picks the newest release that actually carries
-`mnpdf-linux-x64-<tag>.tar.gz`, then compares versions with the Windows rules
-(src/main.cpp:2334). Neither reader asks api.github.com: that host answers
-"API rate limit exceeded" once the IP's unauthenticated quota is spent, and
-the quota is shared with every other unauthenticated client behind the same IP
-(src/main.cpp:2430-2432). The request runs on its own thread and is bounded by
-a timeout, so a slow network cannot freeze the window, and the answer is
-dropped if the window is already quitting. There is no Linux install step: the
-check reports what is available and does not open the release page.
 
+**The update check.** This is the one place the port deliberately does not
+follow the Windows route. The Windows app reads `/releases/latest`, which
+answers with the newest NON-prerelease, and then fetches
+`mnpdf-win-x64-<tag>.zip` by name. A Linux-only release is a prerelease until
+the Windows archive is published beside it, and the asset that endpoint names
+is the Windows one. So the port reads the release feed, picks the newest
+release that actually carries `mnpdf-linux-x64-<tag>.tar.gz`, then compares
+versions with the Windows rules (src/main.cpp:2334). The request runs on its
+own thread and is bounded by a timeout, so a slow network cannot freeze the
+window.
+
+Where the release list comes from, and where the asset list does not, was
+measured rather than guessed:
+
+- The **releases page** carries the release NOTES but not the assets. GitHub
+  renders the asset list lazily, so a scan of the page for the archive name
+  reads the notes - and the notes are prose, which a release is free to
+  mention or not mention. An earlier version of this check did exactly that,
+  and it would have read the wrong version from the first release whose notes
+  mention no archive.
+- The **release feed** (`/releases.atom`) is GitHub's own Atom rendering of
+  the releases. It lists the prereleases as well as the releases, newest
+  first, which is what a Linux-only release needs. It carries no asset list
+  either - it says which releases exist, not what they hold.
+- The **download URL** answers the asset question. A HEAD on
+  `/releases/download/<tag>/mnpdf-linux-x64-<tag>.tar.gz` answers 302 when
+  the archive is there and 404 when it is not, so the check confirms the
+  asset the same way a reader would - by asking for the file. Measured
+  against the live site: `v2.7.0` answers 302, and `v2.6.0`, `v2.5.0` and
+  `v2.4.0` answer 404, so exactly one release carries a Linux build.
+
+The feed's own id ends in `releases`, not in a tag, and is skipped rather than
+read as one. The parsing is split from the request so it can be tested
+without a network: the engine suite covers the feed's entry id, the feed's
+own id, an id that is not a version, and an empty feed.
 The version the port reports is generated at build time from the Windows
 `kAppVersion` constant (CMakeLists.txt reads src/main.cpp), so the two readers
 can never claim different versions - which matters, because they share one
