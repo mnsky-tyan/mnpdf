@@ -665,6 +665,13 @@ static int gMenuRotPage = -1;   // the page the context menu targets (rotate)
 static double gMenuPinX = 0, gMenuPinY = 0;
 static int gMenuHlIdx = -1;
 static int gMenuPinIdx = -1;
+// the drawer state the menu handler and the cascade builder need; the rest
+// of the drawer state lives with the drawer code below
+static GtkWidget* gThumbDrawer = nullptr;
+static GtkWidget* gOutlineDrawer = nullptr;
+static int gThumbSel = -1;
+// a move re-points the drawer's ring at the page that moved
+static void movePageSelFollows(int from, int to);
 
 // ---- context menu ----
 static void onMenuActivate(GtkMenuItem* mi, gpointer data) {
@@ -744,23 +751,34 @@ static void onMenuActivate(GtkMenuItem* mi, gpointer data) {
         }
         break;
     }
-    case 201: toggleOutlineDrawer(); break;
-    case 202: toggleThumbDrawer(); break;
+    case 201: toggleOutlineDrawer(); refreshMenuLabels(); break;
+    case 202: toggleThumbDrawer(); refreshMenuLabels(); break;
     case 207: reopenLastDocument(); break;
     case 118: doSave(); break;
     case 119: doSaveAs(); break;
     case 114: undoOp(); refreshDrawers(); break;
     case 115: redoOp(); refreshDrawers(); break;
     case 310: deletePage(gPageIndex); break;
-    case 311: if (gPageIndex > 0) { movePage(gPageIndex, gPageIndex - 1); } break;
-    case 312: if (gPageIndex + 1 < gDocPages) { movePage(gPageIndex, gPageIndex + 1); } break;
+    // a move re-points the drawer's ring at the page that moved
+    // (src/main.cpp:4615-4620): the index it happens to hold now shows a
+    // different page, so the next move would act on that one instead
+    case 311: if (gPageIndex > 0) { movePageSelFollows(gPageIndex, gPageIndex - 1); } break;
+    case 312: if (gPageIndex + 1 < gDocPages) { movePageSelFollows(gPageIndex, gPageIndex + 1); } break;
     case 133: { int rp = gMenuRotPage >= 0 ? gMenuRotPage : gPageIndex;
-                rotatePage(rp, +1); refreshDrawers(); } break;
+                rotatePage(rp, +1); refreshDrawers();
+                // the capture is spent. Windows never carries it past the
+                // context menu's own dispatch - its only rotate commands are
+                // the popup's (src/main.cpp:5559), captured the instant that
+                // menu is built - while this reader also has them in the menu
+                // bar, where a stale capture would rotate a page the reader
+                // is no longer looking at
+                gMenuRotPage = -1; } break;
     case 134: { int rp = gMenuRotPage >= 0 ? gMenuRotPage : gPageIndex;
-                rotatePage(rp, -1); refreshDrawers(); } break;
+                rotatePage(rp, -1); refreshDrawers();
+                gMenuRotPage = -1; } break;
     case 200: gNight = !gNight; writeAppPref(); renderPage(); refreshMenuLabels(); break;
     case 203: if (gDoc) pickSignatureImage(); break;
-    case 204: clearSignatures(); break;
+    case 204: clearSignatures(); refreshMenuLabels(); break;
     case 205: {
         std::string f = ui_open_file();
         if (!f.empty()) mergeFiles({ utf8ToWide(f) });
@@ -943,22 +961,33 @@ static GtkWidget* buildContextMenu(int x, int y) {
     {
         GtkWidget* advItem = gtk_menu_item_new_with_label("Advanced");
         GtkWidget* advSub = gtk_menu_new();
-        auto addAdv = [&](const char* label, int id) {
-            gtk_menu_shell_append(GTK_MENU_SHELL(advSub), menuCommand(label, id));
+        auto addAdv = [&](const char* label, int id, bool usable = true) {
+            GtkWidget* it = menuCommand(label, id);
+            if (!usable) gtk_widget_set_sensitive(it, FALSE);
+            gtk_menu_shell_append(GTK_MENU_SHELL(advSub), it);
         };
-        addAdv("Thumbnails", 202);
-        addAdv("Outline panel", 201);
+        // the ticks and the greying the Windows cascade draws when it builds
+        // its menu (advancedMenu, src/main.cpp:5450-5464): the two drawers
+        // tick when open, night mode ticks when on, every document tool
+        // greys out without a document, Split needs a second page, and Clear
+        // signatures needs a signature
+        bool doc = gDoc != nullptr;
+        char tickLab[48];
+        snprintf(tickLab, sizeof tickLab, "Thumbnails%s", gThumbDrawer ? " ✓" : "");
+        addAdv(tickLab, 202, doc);
+        snprintf(tickLab, sizeof tickLab, "Outline panel%s", gOutlineDrawer ? " ✓" : "");
+        addAdv(tickLab, 201, doc);
         // the same static label and tick the Windows build draws (MF_CHECKED,
         // src/main.cpp:5456): the label must not flip to "Day mode", which
         // would make the two readers show different words for one command
         addAdv(gNight ? "Night mode ✓" : "Night mode", 200);
         gtk_menu_shell_append(GTK_MENU_SHELL(advSub), gtk_separator_menu_item_new());
-        addAdv("Merge PDFs...", 205);
-        addAdv("Split pages...", 206);
-        addAdv("Insert signature...", 203);
-        addAdv("Clear signatures", 204);
+        addAdv("Merge PDFs...", 205, doc);
+        addAdv("Split pages...", 206, doc && gDocPages > 1);
+        addAdv("Insert signature...", 203, doc);
+        addAdv("Clear signatures", 204, !gSigs.empty());
         gtk_menu_shell_append(GTK_MENU_SHELL(advSub), gtk_separator_menu_item_new());
-        addAdv("Reopen last document", 207);
+        addAdv("Reopen last document", 207, doc);
         gtk_menu_item_set_submenu(GTK_MENU_ITEM(advItem), advSub);
         gtk_menu_shell_append(GTK_MENU_SHELL(menu), advItem);
     }
@@ -1069,6 +1098,8 @@ static void onButtonPress(GtkWidget* w, GdkEventButton* ev, gpointer) {
             int px = pageVx(i), py = pageVy(i), pw = pageWpx(i), ph = pageHpx(i);
             if (ev->x >= px && ev->x < px + pw && ev->y >= py && ev->y < py + ph) {
                 commitSigPlacement(i, ev->x - px, ev->y - py);
+                // a signature landed, so "Clear signatures" is usable now
+                refreshMenuLabels();
                 return;
             }
         }
@@ -1466,9 +1497,7 @@ static void toggleTitlebar() {
 // code path - a cairo surface built from renderPageToBuffer for the thumbnail,
 // and the bookmark list for the outline.
 static GtkWidget* gDrawerBox = nullptr;      // the hbox holding [thumb][outline][reader]
-static GtkWidget* gThumbDrawer = nullptr;
 static GtkWidget* gThumbArea = nullptr;
-static GtkWidget* gOutlineDrawer = nullptr;
 static GtkWidget* gOutlineArea = nullptr;
 
 // the same numbers the Windows drawers use, so the two readers look alike
@@ -1482,7 +1511,6 @@ static const int kBmRow = 18;
 
 static std::vector<unsigned char> gThumbPix;   // one page's BGRA, drawn on demand
 static std::vector<int> gThumbHs;
-static int gThumbSel = -1;
 static int gThumbScroll = 0;
 static double gThumbSmoothAcc = 0;   // fractional trackpad deltas, accumulated
 static int gThumbDrawnFor = -1;               // which page gThumbPix holds
@@ -1490,6 +1518,16 @@ static int gThumbDrawnFor = -1;               // which page gThumbPix holds
 struct BmEntry { std::wstring title; int page; int depth; };
 static std::vector<BmEntry> gBmList;
 static int gBmSel = -1;
+
+// The selection follows the page that moved, the way the Windows build sets
+// it inside movePage (src/main.cpp:4615-4620): the ring cannot stay on the
+// index it happens to hold, because that index now shows a different page -
+// a second Ctrl+Up would move that one instead and the repeat looks broken.
+static void movePageSelFollows(int from, int to) {
+    if (from < 0 || from >= gDocPages || to < 0 || to >= gDocPages || from == to) return;
+    movePage(from, to);
+    gThumbSel = to;
+}
 
 // Recompute the row heights and drop the cached raster. The Windows drawer
 // drops its pictures here too: layoutThumbs() calls clearThumbCache(), which
@@ -1614,8 +1652,8 @@ static gboolean onThumbKey(GtkWidget*, GdkEventKey* ev, gpointer) {
     if (gThumbSel < 0) return FALSE;
     bool ctrl = (ev->state & GDK_CONTROL_MASK) != 0;
     if (ev->keyval == GDK_KEY_Delete) deletePage(gThumbSel);
-    else if (ev->keyval == GDK_KEY_Up && ctrl) { if (gThumbSel > 0) movePage(gThumbSel, gThumbSel - 1); }
-    else if (ev->keyval == GDK_KEY_Down && ctrl) { if (gThumbSel + 1 < gDocPages) movePage(gThumbSel, gThumbSel + 1); }
+    else if (ev->keyval == GDK_KEY_Up && ctrl) { if (gThumbSel > 0) movePageSelFollows(gThumbSel, gThumbSel - 1); }
+    else if (ev->keyval == GDK_KEY_Down && ctrl) { if (gThumbSel + 1 < gDocPages) movePageSelFollows(gThumbSel, gThumbSel + 1); }
     else if (ev->keyval == GDK_KEY_r || ev->keyval == GDK_KEY_R) rotatePage(gThumbSel, +1);
     else if (ev->keyval == GDK_KEY_Up) { if (gThumbSel > 0) gThumbSel--; openPageAt(gThumbSel); }
     else if (ev->keyval == GDK_KEY_Down) { if (gThumbSel < gDocPages - 1) gThumbSel++; openPageAt(gThumbSel); }
@@ -1800,6 +1838,12 @@ static void toggleOutlineDrawer() {
 // the Windows app calls this after anything that changes the pages under the
 // drawers (delete, move, rotate, a new document)
 void refreshDrawers() {
+    // The menu bar's ticks and greying follow the same state this refresh
+    // follows - a document opened or closed, a page moved, deleted, merged
+    // or split - so it is re-read here. The Windows cascade re-reads its
+    // state every time it is built (advancedMenu, src/main.cpp:5450), and
+    // this menu bar is built once, so it needs the explicit pass.
+    refreshMenuLabels();
     // A tab that follows no document (a new empty tab, the last one closed
     // except for the quit path) leaves nothing for a drawer to show, so both
     // are closed, the way the Windows build closes them when the bundle they
@@ -1961,13 +2005,36 @@ static void restoreWindowGeometry() {
 // care - only the menu bar, which lives as long as the window.
 static void refreshMenuLabels() {
     if (!gMenuBar) return;
-    GtkWidget* night = (GtkWidget*)g_object_get_data(G_OBJECT(gMenuBar), "night-item");
-    if (night) {
-        // the tick is U+2713, the same character the context menu uses
-        std::string want = gNight ? "Night mode \u2713" : "Night mode";
-        if (gtk_menu_item_get_label(GTK_MENU_ITEM(night)) != want)
-            gtk_menu_item_set_label(GTK_MENU_ITEM(night), want.c_str());
-    }
+    // the ticks the Windows cascade draws (MF_CHECKED, src/main.cpp:5450-5456)
+    // and the greying it draws (MF_GRAYED, :5458-5464): the menu bar is built
+    // once, so its state is re-read every time the state it shows changes,
+    // the way Windows rebuilds its own menu per popup
+    auto item = [&](const char* key) -> GtkWidget* {
+        return (GtkWidget*)g_object_get_data(G_OBJECT(gMenuBar), key);
+    };
+    auto setLabel = [&](const char* key, const std::string& want) {
+        GtkWidget* w = item(key);
+        if (w && gtk_menu_item_get_label(GTK_MENU_ITEM(w)) != want)
+            gtk_menu_item_set_label(GTK_MENU_ITEM(w), want.c_str());
+    };
+    auto setUsable = [&](const char* key, bool on) {
+        GtkWidget* w = item(key);
+        if (w) gtk_widget_set_sensitive(w, on ? TRUE : FALSE);
+    };
+    // the tick is U+2713, the same character the context menu uses. The
+    // mnemonics stay in the labels: gtk_menu_item_get_label returns the
+    // label with its underscore, so the comparison carries it too
+    setLabel("thumbs-item", std::string("_Thumbnails") + (gThumbDrawer ? " \u2713" : ""));
+    setLabel("outline-item", std::string("_Outline panel") + (gOutlineDrawer ? " \u2713" : ""));
+    setLabel("night-item", gNight ? "Night mode \u2713" : "Night mode");
+    bool doc = gDoc != nullptr;
+    setUsable("thumbs-item", doc);
+    setUsable("outline-item", doc);
+    setUsable("merge-item", doc);
+    setUsable("split-item", doc && gDocPages > 1);
+    setUsable("sig-item", doc);
+    setUsable("clearsig-item", !gSigs.empty());
+    setUsable("reopen-item", doc);
 }
 
 static void installMenuBar(GtkWidget* box) {
@@ -2013,20 +2080,28 @@ static void installMenuBar(GtkWidget* box) {
     // command means the same thing on both platforms.
     GtkWidget* adv = gtk_menu_item_new_with_mnemonic("_Advanced");
     GtkWidget* advMenu = gtk_menu_new();
-    gtk_menu_shell_append(GTK_MENU_SHELL(advMenu), mi("_Thumbnails", 202));
-    gtk_menu_shell_append(GTK_MENU_SHELL(advMenu), mi("_Outline panel", 201));
-    GtkWidget* nightItem = mi(gNight ? "Night mode \u2713" : "Night mode", 200);
-    g_object_set_data(G_OBJECT(bar), "night-item", nightItem);
-    gtk_menu_shell_append(GTK_MENU_SHELL(advMenu), nightItem);
+    auto advItem = [&](const char* key, const char* label, int id) {
+        GtkWidget* it = mi(label, id);
+        g_object_set_data(G_OBJECT(bar), key, it);
+        gtk_menu_shell_append(GTK_MENU_SHELL(advMenu), it);
+        return it;
+    };
+    advItem("thumbs-item", "_Thumbnails", 202);
+    advItem("outline-item", "_Outline panel", 201);
+    advItem("night-item", gNight ? "Night mode \u2713" : "Night mode", 200);
     gtk_menu_shell_append(GTK_MENU_SHELL(advMenu), gtk_separator_menu_item_new());
-    gtk_menu_shell_append(GTK_MENU_SHELL(advMenu), mi("_Merge PDFs...", 205));
-    gtk_menu_shell_append(GTK_MENU_SHELL(advMenu), mi("Split _pages...", 206));
-    gtk_menu_shell_append(GTK_MENU_SHELL(advMenu), mi("Insert _signature...", 203));
-    gtk_menu_shell_append(GTK_MENU_SHELL(advMenu), mi("Clear si_gnatures", 204));
+    advItem("merge-item", "_Merge PDFs...", 205);
+    advItem("split-item", "Split _pages...", 206);
+    advItem("sig-item", "Insert _signature...", 203);
+    advItem("clearsig-item", "Clear si_gnatures", 204);
     gtk_menu_shell_append(GTK_MENU_SHELL(advMenu), gtk_separator_menu_item_new());
-    gtk_menu_shell_append(GTK_MENU_SHELL(advMenu), mi("Reopen last document", 207));
+    advItem("reopen-item", "Reopen last document", 207);
     gtk_menu_item_set_submenu(GTK_MENU_ITEM(adv), advMenu);
     gtk_menu_shell_append(GTK_MENU_SHELL(bar), adv);
+    // the ticks and the greying the Windows cascade draws at build time are
+    // re-read here once for the state at startup; refreshDrawers and the
+    // command handlers keep them current afterwards
+    refreshMenuLabels();
 
     gtk_box_pack_start(GTK_BOX(box), bar, FALSE, FALSE, 0);
 }

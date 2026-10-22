@@ -125,6 +125,11 @@ own it writes neither app.txt nor last.txt. The port takes the same role with
 an advisory lock on `instance.lock` in the same directory: the first reader
 holds it for as long as it runs, and a second one reads the preferences but
 writes nothing, so two open readers cannot overwrite each other's settings.
+The guard is per platform, though - the flock cannot see the Windows mutex,
+and the mutex cannot see the flock - so it holds for two Linux readers or
+two Windows readers, not for one of each with the directory open at the same
+instant; a synced directory is normally open on one machine at a time, which
+is why the guarantee is stated per platform here and in README-linux.txt.
 The kernel drops the lock when the process dies, so a crashed reader does not
 leave the role locked.
 
@@ -415,6 +420,17 @@ powershell -File scripts/make-release-zip.ps1   # -> build\mnpdf-win-x64-v2.7.0.
 ./scripts/make-release-tarball.sh               # -> build-linux/mnpdf-linux-x64-v2.7.0.tar.gz
 git commit -am "release: v2.7.0" && git push origin main
 git tag v2.7.0 && git push origin v2.7.0
+# the tag alone publishes nothing: one GitHub release carries BOTH assets,
+# because the Windows app discovers updates through /releases/latest and
+# then fetches its zip by name (src/main.cpp:2572)
+gh release create v2.7.0 --title "mnpdf v2.7.0" \
+    build/mnpdf-win-x64-v2.7.0.zip build-linux/mnpdf-linux-x64-v2.7.0.tar.gz
+# a Linux-only release (no Windows zip yet) must stay a prerelease:
+# /releases/latest skips prereleases, so it keeps naming the newest release
+# a Windows reader can actually fetch - publish with --prerelease, then when
+# the Windows zip ships, upload it and clear the flag:
+#   gh release upload v2.7.0 build/mnpdf-win-x64-v2.7.0.zip
+#   gh release edit v2.7.0 --prerelease=false
 ```
 
 The Linux asset is a plain tarball, and `scripts/make-release-tarball.sh`

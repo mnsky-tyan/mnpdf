@@ -229,6 +229,42 @@ PY
     chk $? "the outline drawer covers the page beside it"
 fi
 
+echo "== the drawer's selection follows the page that moved =="
+# Windows re-points the ring inside its own movePage (src/main.cpp:4615-4620):
+# the index the ring happens to hold now shows a different page, so a ring
+# that stayed put would make the next move act on that one instead. The
+# reader proves it by moving the page its own ring selects: the ring is a
+# grey filled band (RGB 199,199,199) behind the selected preview, and the
+# shot locates the band. Measured: with the ring on the first page the band
+# starts at y=29; after the page moves down one, y=175 - a ring that stayed
+# put would still be at 29.
+M=$STATE/ringfollow; mkdir -p "$M/cfg/mnpdf"
+xvfb-run -a --server-args="-screen 0 1280x900x24" \
+  env GDK_BACKEND=x11 MNPDF_NO_UPDATE=1 XDG_CONFIG_HOME="$M/cfg" MNPDF_CMD=202,312 \
+      MNPDF_SHOT="$M/follow.png" MNPDF_SHOT_WINDOW=1 MNPDF_SHOT_EXIT=1 \
+  timeout 30 "$BIN" "$PDF" >"$M/log.txt" 2>&1
+if [ -s "$M/follow.png" ] && command -v python3 >/dev/null; then
+python3 - "$M/follow.png" <<'PY'
+import sys
+from PIL import Image
+im = Image.open(sys.argv[1]).convert("RGB")
+px = im.load()
+top = None
+for y in range(im.height):
+    cnt = sum(1 for x in range(10, 120)
+              if abs(px[x, y][0] - 199) < 6 and abs(px[x, y][1] - 199) < 6
+              and abs(px[x, y][2] - 199) < 6)
+    if cnt >= 90:
+        top = y
+        break
+print("       selection band top: %s" % top)
+sys.exit(0 if top is not None and top > 100 else 1)
+PY
+    chk $? "the ring moved with the page it selected"
+else
+    bad "the ring-follow shot is missing"
+fi
+
 echo "== the titlebar toggle, and it survives a relaunch =="
 D=$STATE/titlebar; mkdir -p "$D"
 rm -rf "$D/cfg"; mkdir -p "$D/cfg"

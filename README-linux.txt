@@ -18,7 +18,10 @@ It reads and writes the same per-document sidecar files and the same app.txt as
 the Windows build, so marks, pins, rotations and notes made in either build open
 in the other. On Linux those live in ${XDG_CONFIG_HOME:-~/.config}/mnpdf; point
 XDG_CONFIG_HOME at a directory shared with the Windows machine to line the two
-readers up on the same documents.
+readers up on the same documents. The single-writer guard is per platform (a
+flock on Linux, a named mutex on Windows), so keep one platform's reader closed
+while the other's is open: two Linux readers or two Windows readers protect the
+file from each other, one of each does not.
 
 DIFFERENCES FROM THE WINDOWS BUILD
 Printing uses the GTK print dialog instead of the Windows one. The note editor
