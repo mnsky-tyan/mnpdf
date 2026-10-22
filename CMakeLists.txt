@@ -16,9 +16,10 @@ pkg_check_modules(CURL REQUIRED libcurl)
 # The version this build reports is taken from the Windows kAppVersion constant
 # in src/main.cpp, so the two readers can never claim different versions - they
 # share one app.txt, and a version disagreement there would be a real
-# interoperability bug. The file is generated into the build tree; a build from
-# a tree without src/main.cpp (the release tarball) falls back to the value
-# baked into docs/linux.md.
+# interoperability bug. This is a hard configure-time dependency on the Windows
+# source: a tree without src/main.cpp does not configure (rather than silently
+# reporting some other number), and the release tarball ships the BUILT binary,
+# so it never needs to configure.
 file(READ ${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp MNPDF_MAIN_CPP)
 # CMake's regex has no \s or \. escapes, so the blanks and the dots are
 # spelled out
@@ -61,6 +62,7 @@ add_executable(mnpdf
   src/linux/opendoc.cpp
   src/linux/surgery.cpp
   src/linux/update.cpp
+  src/linux/instance.cpp
 )
 
 # The headless engine suite: links the platform-independent core and stubs the
@@ -74,6 +76,7 @@ add_executable(mnpdf-core-test
   src/linux/opendoc.cpp
   src/linux/surgery.cpp
   src/linux/update.cpp
+  src/linux/instance.cpp
   ${CMAKE_CURRENT_BINARY_DIR}/mnpdf-version.h
 )
 target_include_directories(mnpdf-core-test PRIVATE

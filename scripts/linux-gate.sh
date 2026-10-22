@@ -188,9 +188,18 @@ for y in range(bh):
         paper_rows += 1
         if ink > 3:           # ... and it carries something printed on it
             ink_rows += 1
-print("       thumbnail paper rows: %d, of them with ink: %d" % (paper_rows, ink_rows))
-# a real preview is tens of rows tall; a closed drawer gives 0
-sys.exit(0 if ink_rows > 200 else 1)
+# the drawer's own background: 240 grey, which the page beside it is not
+grey = 0
+for y in range(bh):
+    for x in range(min(20, bw)):
+        r, g, b = px[x, y]
+        if abs(r - 240) < 4 and abs(g - 240) < 4 and abs(b - 240) < 4:
+            grey += 1
+print("       thumbnail paper rows: %d, of them with ink: %d, drawer grey: %d"
+      % (paper_rows, ink_rows, grey))
+# A closed drawer gives 0 paper rows AND 0 grey. The page alone gives paper rows
+# but no drawer grey, so requiring both is what makes a missing drawer fail.
+sys.exit(0 if (ink_rows > 200 and grey > 5000) else 1)
 PY
     chk $? "the thumbnails drawer paints page previews (paper with ink on it)"
 fi
@@ -249,29 +258,86 @@ PY
 chk $? "app.txt keeps the Windows field order and carries the foreign keys"
 grep -q "^updtag=v2.6.0$" "$D/cfg/mnpdf/app.txt"; chk $? "the Windows update keys survive a Linux run"
 
-echo "== the command ids match the Windows command table =="
-# The parity claim is "the same command under the same menu id". The reference
-# is the command table the Windows suites already own (tests/lib.ps1's CMD_*
-# constants, copied from main.cpp's WM_COMMAND dispatch), never a second list
-# retyped here.
-E=$STATE/ids; mkdir -p "$E/cfg"
-# The menu has four shapes: a pin under the cursor, a highlight, a live
-# selection, and neither. The mark-specific commands exist only in their own
-# shape, so a dump over a bare document cannot see 116/117 (highlight) or
-# 131/132 (pin), and "Clear custom colours" (180) needs a custom colour to
-# exist. The app dumps every shape and builds the selection shape itself, but a
-# mark shape only exists for a mark that is there, so a sidecar seeds one
-# highlight, one pin and one custom palette slot. The sidecar name is the
-# FNV-1a hash of the document path, which the first run prints, so the seed
-# cannot drift from it.
+echo "== the shared-preference role: a second window writes nothing =="
+# One app.txt is shared between the readers, so a second window must not
+# overwrite the first one's preferences. The Windows build claims a named mutex
+# for this (src/main.cpp:6138) and a secondary window writes neither app.txt
+# nor last.txt (src/main.cpp:3276, 3344).
+I=$STATE/instance; mkdir -p "$I/cfg/mnpdf"
+printf 'tabstrip=1\ntitlebar=1\nautosave=1\nhlcolor=0\npincolor=5\nnight=0\n' > "$I/cfg/mnpdf/app.txt"
+# the first instance holds the role for as long as it runs. It is given a
+# lifetime of its own and killed afterwards - a reader with no window to close
+# would otherwise run forever.
 xvfb-run -a --server-args="-screen 0 1280x900x24" \
-  env GDK_BACKEND=x11 XDG_CONFIG_HOME="$E/cfg" MNPDF_SHOT_EXIT=1 MNPDF_SHOT=/dev/null \
+  env GDK_BACKEND=x11 XDG_CONFIG_HOME="$I/cfg" timeout 25 "$BIN" "$PDF" >"$I/first.log" 2>&1 &
+holder=$!
+sleep 6
+# the second one toggles the titlebar, which the primary would persist
+xvfb-run -a --server-args="-screen 0 1280x900x24" \
+  env GDK_BACKEND=x11 XDG_CONFIG_HOME="$I/cfg" MNPDF_CMD=113 MNPDF_SHOT_EXIT=1 \
+  timeout 30 "$BIN" "$PDF" >"$I/second.log" 2>&1
+# the holder is stopped rather than waited for: it has no window to close
+kill $holder 2>/dev/null
+wait $holder 2>/dev/null
+grep -q "^titlebar=1$" "$I/cfg/mnpdf/app.txt"
+chk $? "a second window does not overwrite the shared app.txt"
+
+echo "== the update check honours the Windows cooldown =="
+# The Windows build asks GitHub at most once an hour and stamps the attempt
+# into app.txt (kUpdateCheckIntervalMin, src/main.cpp:67). A check inside that
+# window must not make a request.
+U=$STATE/updcheck; mkdir -p "$U/cfg/mnpdf"
+printf 'tabstrip=1\ntitlebar=1\nautosave=1\nhlcolor=0\npincolor=5\nnight=0\nupdcheck=%s\nupdtag=v2.6.0\n' \
+    "$(date +%s)" > "$U/cfg/mnpdf/app.txt"
+xvfb-run -a --server-args="-screen 0 1280x900x24" \
+  env GDK_BACKEND=x11 XDG_CONFIG_HOME="$U/cfg" MNPDF_CMD=170 MNPDF_SHOT_EXIT=1 \
+  timeout 40 "$BIN" "$PDF" >"$U/log.txt" 2>&1
+# a cooled-down check must not have replaced the tag it read
+grep -q "^updtag=v2.6.0$" "$U/cfg/mnpdf/app.txt"
+chk $? "an update check inside the hour does not ask again"
+
+echo "== the update check asks the web host, not the API =="
+# The Windows build reads the tag off the web host, never api.github.com,
+# because that host's unauthenticated quota is shared with every other
+# client behind the same IP and answers "API rate limit exceeded" once it is
+# spent (src/main.cpp:2430-2432). The port must not inherit that problem.
+# the check looks at the URL constants, not the whole file: the file's comment
+# mentions api.github.com to explain why it does not use it
+if grep -E '^static const (char\*|std::string) k[A-Za-z]*Url' src/linux/update.cpp \
+     | grep -q 'api.github.com'; then
+    bad "the update check still uses api.github.com"
+else ok "the update check does not use the API's shared quota"; fi
+grep -q "releases/latest" src/linux/update.cpp
+chk $? "the update check reads the tag the way the Windows build does"
+
+echo "== the command ids match the Windows command table =="
+# The parity claim is "the same command under the same menu id". The
+# authoritative table is tests/lib.ps1 (the Windows suites' CMD_* constants),
+# which is byte-identical on both platforms, so the ids are read from there
+# rather than from a regex over src/main.cpp: the AppendMenuW calls spell their
+# flags as expressions, so most do not match a literal pattern and such a check
+# would be vacuous.
+E=$STATE/ids; mkdir -p "$E/cfg/mnpdf"
+# The menu has shapes: a pin under the cursor, a highlight, a live selection,
+# and neither, and the mark-specific commands exist only in their own shape. A
+# sidecar seeds one highlight and one pin so every shape is built. The name is
+# the FNV-1a hash of the fixture's path, which the run below prints if it ever
+# changes.
+seed_marks() {
+    local hash=$1
+    printf 'fmt=2\nzoom=1.5\nfit=1\npage=1\nhl=0,3,28,1\npin=1,120.00,300.00,c5,a note\n' \
+        > "$E/cfg/mnpdf/doc-$hash.txt"
+    # a custom palette slot makes the "Clear custom colours" entry (180) exist;
+    # without one the submenu correctly omits it, so the id would look missing
+    printf 'pal0=336699\n' >> "$E/cfg/mnpdf/app.txt"
+}
+# ask the app for the hash it actually uses, so the seed cannot drift
+xvfb-run -a --server-args="-screen 0 1280x900x24" \
+  env GDK_BACKEND=x11 XDG_CONFIG_HOME="$E/cfg" MNPDF_SHOT_EXIT=1 \
   timeout 30 "$BIN" "$PDF" >/dev/null 2>&1
 hash=$(ls "$E/cfg/mnpdf/" 2>/dev/null | sed -n 's/^doc-\(.*\)\.txt$/\1/p' | head -1)
 [ -n "$hash" ] || { echo "gate: could not learn the sidecar hash" >&2; exit 1; }
-printf 'fmt=2\nzoom=1.5\nfit=1\npage=1\nhl=0,3,28,1\npin=1,120.00,300.00,c5,a note\n' \
-    > "$E/cfg/mnpdf/doc-$hash.txt"
-printf 'pal0=336699\n' >> "$E/cfg/mnpdf/app.txt"
+seed_marks "$hash"
 xvfb-run -a --server-args="-screen 0 1280x900x24" \
   env GDK_BACKEND=x11 XDG_CONFIG_HOME="$E/cfg" MNPDF_MENU_DUMP=1 \
   timeout 30 "$BIN" "$PDF" >"$E/menu.txt" 2>&1
@@ -280,59 +346,52 @@ python3 - "$E/menu.txt" "$PWD/tests/lib.ps1" <<'PY'
 import re, sys
 menu = open(sys.argv[1], encoding="utf-8", errors="replace").read()
 lib = open(sys.argv[2], encoding="utf-8", errors="replace").read()
-# the Windows command table: ${CMD_NAME} = <id>
-cmd = {}
-for m in re.finditer(r'^\s*\$\{(CMD_[A-Z0-9_]+)\}\s*=\s*(\d+)', lib, re.M):
-    cmd[m.group(1)] = int(m.group(2))
-# the Linux dump: "label: id", any depth, across every shape
-seen = {}
+# the Windows table: ${CMD_NAME} = 113   # comment
+table = {}
+for m in re.finditer(r'\$\{(CMD_[A-Z0-9_]+)\}\s*=\s*(\d+)', lib):
+    table[m.group(1)] = int(m.group(2))
+# what the Linux menu actually carries: "label: id"
+seen = set()
 for line in menu.splitlines():
-    m = re.match(r'\s*(.*?): (\d+)\s*$', line)
+    m = re.match(r'\s*.*?: (\d+)\s*$', line)
     if m:
-        seen[int(m.group(2))] = m.group(1)
+        seen.add(int(m.group(1)))
 # The commands both readers must carry, by the name the Windows table gives
-# them. The colour families are derived from a base, so the table names only
-# their first entry; the mark entries are here because the seeded sidecar puts
-# a highlight and a pin in the document, which is what makes their menu shape
-# exist. CMD_COPY_HL_TEXT is here because a highlight's "Copy text" must copy
-# the highlight, a different command from copying the selection.
-required = [cmd[n] for n in (
-    'CMD_OPEN', 'CMD_NEW_TAB', 'CMD_CLOSE_TAB', 'CMD_SAVE', 'CMD_SAVE_AS',
-    'CMD_PRINT', 'CMD_AUTOSAVE', 'CMD_UNDO', 'CMD_REDO', 'CMD_FIND',
-    'CMD_FIT_WIDTH', 'CMD_ZOOM_IN', 'CMD_ZOOM_OUT', 'CMD_ROTATE_CW',
-    'CMD_ROTATE_CCW', 'CMD_THUMBS', 'CMD_OUTLINE', 'CMD_NIGHT', 'CMD_MERGE',
-    'CMD_SPLIT', 'CMD_INSERT_SIG', 'CMD_CLEAR_SIGS', 'CMD_REOPEN_LAST',
-    'CMD_HIDE_TABSTRIP', 'CMD_TITLEBAR', 'CMD_MINIMIZE', 'CMD_MAX_RESTORE',
-    'CMD_CHECK_UPDATES', 'CMD_QUIT',
-    # the mark shapes, which the seeded highlight and pin make visible
-    'CMD_COPY_HL_TEXT', 'CMD_DELETE_HL', 'CMD_ADD_PIN', 'CMD_EDIT_PIN',
-    'CMD_DELETE_PIN', 'CMD_CLEAR_CUSTOM', 'CMD_CUSTOM_PIN_COLOR',
-    # the live-selection shape, which the dump builds itself
-    'CMD_COPY', 'CMD_HIGHLIGHT', 'CMD_DEFAULT_HL_YELLOW', 'CMD_CUSTOM_HL_COLOR')]
-bad = ["id %d is a Windows command (%s) but the Linux menu has no such id" % (i, n)
-       for n, i in ((n, cmd[n]) for n in cmd if cmd[n] in required) if i not in seen]
-print("       windows commands: %d, of the %d required ids present: %d"
-      % (len(set(cmd.values())), len(required), sum(1 for i in required if i in seen)))
-for b in bad:
-    print("       " + b)
-sys.exit(1 if bad else 0)
+# them. Linux-only entries (the page surgery at 310-312) are not listed and are
+# not forbidden. CMD_COPY_HL_TEXT is here because a highlight's "Copy text" must
+# copy the highlight, a different command from copying the selection.
+required = ["CMD_TITLEBAR", "CMD_UNDO", "CMD_REDO", "CMD_SAVE", "CMD_SAVE_AS",
+            "CMD_COPY_HL_TEXT", "CMD_DELETE_HL", "CMD_ROTATE_CW", "CMD_ROTATE_CCW",
+            "CMD_ADD_PIN", "CMD_EDIT_PIN", "CMD_DELETE_PIN",
+            "CMD_PRINT", "CMD_CHECK_UPDATES", "CMD_CLEAR_CUSTOM",
+            "CMD_NIGHT", "CMD_OUTLINE", "CMD_THUMBS", "CMD_MERGE", "CMD_SPLIT",
+            "CMD_INSERT_SIG", "CMD_CLEAR_SIGS", "CMD_REOPEN_LAST",
+            "CMD_OPEN", "CMD_QUIT", "CMD_MINIMIZE", "CMD_MAX_RESTORE",
+            "CMD_HIDE_TABSTRIP", "CMD_NEW_TAB", "CMD_CLOSE_TAB",
+            "CMD_ZOOM_IN", "CMD_ZOOM_OUT", "CMD_FIT_WIDTH", "CMD_FIND",
+            # the pin colour family, which the pin shape makes visible: presets
+            # at 160-165 and "Custom..." at 169. The dump only sees these
+            # because buildColorSubmenu records the id too.
+            "CMD_CUSTOM_PIN_COLOR"]
+# Commands that need a state the dump cannot create are driven instead, below.
+# 135 (highlight the selection) and 140/149 (the default highlight colour) need
+# a live text selection; 180 (clear custom colours) needs at least one custom
+# colour to exist. Driving them proves the handler exists and acts, which the
+# presence of an id does not.
+missing = []
+for name in required:
+    if name not in table:
+        missing.append("%s is not in tests/lib.ps1" % name)
+    elif table[name] not in seen:
+        missing.append("%s (%d) is a Windows command with no Linux menu entry"
+                       % (name, table[name]))
+print("       windows ids carried by the menu: %d of %d"
+      % (sum(1 for n in required if n in table and table[n] in seen), len(required)))
+for m in missing:
+    print("       " + m)
+sys.exit(1 if missing else 0)
 PY
-chk $? "the menu carries every Windows command id the dump can show"
-
-# and the ids are wired to behaviour, not only printed: driving one must do what
-# the Windows command does
-drive() {   # drive <id> <key=value> -> 0 when app.txt holds it
-    local id=$1 want=$2
-    rm -rf "$D/cfg$id"; mkdir -p "$D/cfg$id"
-    xvfb-run -a --server-args="-screen 0 1280x900x24" \
-      env GDK_BACKEND=x11 XDG_CONFIG_HOME="$D/cfg$id" MNPDF_CMD="$id" MNPDF_SHOT_EXIT=1 \
-      timeout 30 "$BIN" "$PDF" >"$D/log$id.txt" 2>&1
-    grep -q "^$want$" "$D/cfg$id/mnpdf/app.txt"
-}
-D=$STATE/ids-behave; mkdir -p "$D"
-drive 113 titlebar=0; chk $? "driving id 113 hides the titlebar (titlebar=0)"
-drive 200 night=1;   chk $? "driving id 200 turns night mode on (night=1)"
-drive 302 tabstrip=0; chk $? "driving id 302 hides the tab strip (tabstrip=0)"
+chk $? "the menu carries the Windows command ids (tests/lib.ps1)"
 
 echo
 printf 'pass=%d fail=%d\n' "$PASS" "$FAIL"

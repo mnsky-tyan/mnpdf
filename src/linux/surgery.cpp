@@ -17,7 +17,7 @@ static int SvcWriteBlock(FPDF_FILEWRITE* p, const void* data, unsigned long len)
     return 1;
 }
 
-void refreshDrawers();   // the platform layer's drawer rebuild (main.cpp)
+void refreshDrawers();   // the drawers follow the page list (main.cpp)
 
 static void adoptDoc(FPDF_DOCUMENT nd, int oldCount) {
     flushPageCache();

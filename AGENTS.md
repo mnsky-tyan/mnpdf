@@ -8,9 +8,9 @@ Two platform builds live in this repository:
 - **Windows** (`src/main.cpp`, `build.bat`) - the original Win32 + GDI build,
   shipped as `mnpdf-win-x64-<tag>.zip`.
 - **Linux** (`src/linux/`, `build-linux.sh`) - the same document engine on GTK3 +
-  cairo, built into `build-linux/mnpdf`, packaged as
-  `mnpdf-linux-x64-<tag>.tar.gz` by `scripts/make-release-tarball.sh`. See
-  `docs/linux.md`.
+  cairo, built into `build-linux/mnpdf`;
+  `scripts/make-release-tarball.sh` packages the release asset.
+  See `docs/linux.md`.
 
 Both write the same sidecar and preference formats, so a document marked up on
 one is understood by the other.
@@ -35,9 +35,7 @@ src/linux/               the Linux port: one directory per concern
   ui.h                   the platform seam: what the core may ask the UI for
   probe.cpp              toolchain probe: PDFium renders before the app is built
 tests/core-test.cpp      the headless engine suite (CMake target
-                         mnpdf-core-test); stub UI, no display needed. Drives
-                         the document engine and asserts the version rules
-                         the update check compares with.
+                         mnpdf-core-test); stub UI, no display needed
 tests/mnpdf-baked.pdf    a PDF carrying mnpdf's own baked annotations, for the
                          Windows->Linux format interop check
 tests/arc.pdf            the default fixture the suites open (13 pages)
@@ -52,9 +50,6 @@ scripts/gate-test.sh     the Windows gate's WSL entry point
 scripts/test-ci.ps1      the Windows/CI entry point (same nine suites)
 scripts/suites.txt       the Windows gate's suite roster
 scripts/make-release-zip.ps1  the Windows release ZIP
-scripts/make-release-tarball.sh  the Linux release tarball, the asset the
-                         update check looks for
-README-linux.txt         the Linux release README, shipped in that tarball
 build.bat                the Windows build recipe
 build-linux.sh           the Linux build recipe (cmake, plus the PDFium probe
                          and the engine suite first)

@@ -248,6 +248,21 @@ void redoOp();
 void markDirty();
 void markSave();
 
+// the shared-preference role: a window that does not own it writes neither
+// app.txt nor last.txt, so a second reader cannot overwrite the first one's
+// preferences. The Windows build claims a named mutex for the same purpose
+// (src/main.cpp:6138).
+extern bool gPrimaryInstance;
+bool claimPrimaryInstance();
+void releasePrimaryInstance();
+
+// the update check's own state, the same two values the Windows reader keeps
+// and writes to app.txt (updcheck= the unix time of the last attempt,
+// updtag= the newest tag ever seen). They live here because the cooldown
+// spans the whole app, not one module.
+extern long long gLastUpdateCheck;
+extern std::string gLastUpdateTag;
+
 // layout helpers
 void allocPageTables(int pages);
 bool applyFitWidth();
