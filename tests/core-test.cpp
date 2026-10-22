@@ -526,6 +526,8 @@ int main(int argc, char** argv) {
                   "updcheck=1700000000\nupdtag=v2.6.0\n", pf);
             fclose(pf);
         }
+        gLastUpdateCheck = 0;
+        gLastUpdateTag.clear();
         loadAppPref();
         writeAppPref();
         std::string after;
@@ -560,6 +562,38 @@ int main(int argc, char** argv) {
               "titlebar= is owned and sits in the Linux block; the foreign keys follow it in order");
         CHECK(after.find("night=") != std::string::npos && after.find("night=") == after.rfind("night="),
               "the Linux-owned block is written once, not appended to a copy");
+        // the Windows stamp is foreign to this reader's cooldown: updtag= means
+        // the newest non-prerelease overall on Windows (src/main.cpp:2435), not
+        // the newest release carrying a Linux archive, so adopting it would make
+        // a shared app.txt tell each reader the other's answer
+        CHECK(gLastUpdateCheck == 0 && gLastUpdateTag.empty(),
+              "the Windows update stamp does not seed this reader's cooldown");
+        // this reader's own pair is the Linux one: written once, carried beside
+        // the Windows pair untouched, and read back on the next load
+        gLastUpdateCheck = 1700000001;
+        gLastUpdateTag = "v2.7.0";
+        writeAppPref();
+        after.clear();
+        rf = fopen(prefsPath.c_str(), "rb");
+        if (rf) {
+            char buf2[512];
+            size_t got2;
+            while ((got2 = fread(buf2, 1, sizeof buf2, rf)) > 0) after.append(buf2, got2);
+            fclose(rf);
+        }
+        CHECK(after.find("lnxupdcheck=1700000001") != std::string::npos &&
+              after.find("lnxupdtag=v2.7.0") != std::string::npos &&
+              after.find("lnxupdcheck=") == after.rfind("lnxupdcheck="),
+              "the Linux update pair is written once, beside the Windows pair");
+        CHECK(after.find("updcheck=1700000000") != std::string::npos &&
+              after.find("updtag=v2.6.0") != std::string::npos &&
+              after.find("lnxupdcheck=1700000001") > after.find("updtag=v2.6.0"),
+              "the Windows pair is carried forward untouched, before the Linux pair");
+        gLastUpdateCheck = 0;
+        gLastUpdateTag.clear();
+        loadAppPref();
+        CHECK(gLastUpdateCheck == 1700000001 && gLastUpdateTag == "v2.7.0",
+              "the Linux update pair round-trips");
     }
 
     printf("== format interop: marks baked by the Windows app lift on Linux ==\n");

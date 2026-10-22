@@ -106,9 +106,18 @@ is gone again after a restart.
 
 `app.txt` is one shared file, so a Linux write emits its own keys in the
 Windows canonical order and carries every key it does not own (the Windows
-reader's `titlebar=`, `updcheck=` and `updtag=`) after them, verbatim and in
-their original order: a launch on one platform never loses the other's
-preferences or its update-check clock.
+reader's `updcheck=` and `updtag=`) after them, verbatim and in their
+original order: a launch on one platform never loses the other's
+preferences or its update-check clock. The two update-check pairs are kept
+apart on purpose: `updcheck=`/`updtag=` are the Windows reader's stamp and
+mean the newest non-prerelease overall there (src/main.cpp:2435), while the
+Linux check answers a different question (the newest release carrying a
+Linux archive) and keeps its own stamp in `lnxupdcheck=`/`lnxupdtag=`. One
+key that changed meaning per platform would make a shared file tell each
+reader the other's answer, so each reader reads and writes only its own
+pair, and each pair survives the other platform's rewrites (the Linux
+writer carries the Windows pair forward; the Windows writer drops the Linux
+pair, which only costs the Linux reader one fresh check next time).
 
 Because the file is shared, only one window may write it. The Windows build
 claims a named mutex at startup (src/main.cpp:6138) and a window that does not
@@ -320,6 +329,26 @@ The rotation commands act on the page the context menu was opened on, not on
 the page the document happens to be showing, the way the Windows build does
 with `gMenuRotPage` (src/main.cpp:5514, :5748). A right-click on page 3
 rotates page 3 even when page 7 is on screen.
+
+### The one place the port is cheaper than the Windows build
+
+The thumbnail drawer keeps ONE page raster, where the Windows drawer keeps a
+picture per row (src/main.cpp:4805-4859). Scrolling down and back up
+re-rasterizes the rows that left the viewport, and each raster is a
+`FPDF_LoadPage` plus a `FPDF_RenderPageBitmap` on the UI thread inside the
+draw signal, so a 100-page document's drawer scrolls more slowly than the
+Windows one does.
+
+The trade was made on purpose: a picture per row for a 100-page document is
+100 page-sized bitmaps held at once, and the box this runs on has 15 GiB of RAM
+with about 10 GiB already in use. One raster costs one page. The Windows
+build's own row cache is not carried over until the port can hold it.
+
+Everything else about the drawer follows the Windows shape: a refresh rebuilds
+the row heights and keeps each row's picture unless the page count changed
+(refreshThumbDrawer, src/main.cpp:4813-4957), the selection stays on the page
+it named unless that page is gone (src/main.cpp:4964-4967), and the scroll
+offset is clamped when the list shrinks.
 
 ## The test seams
 
