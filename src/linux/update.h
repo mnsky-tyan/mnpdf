@@ -1,0 +1,44 @@
+// mnpdf for Linux - the update check's API.
+//
+// One header for the check's two halves and the version rules they share:
+// main.cpp runs the blocking half on a worker thread, update.cpp implements
+// it, and tests/core-test.cpp drives the parsing and the comparison directly.
+// They live here rather than in doc.h because the check is not part of the
+// document model; doc.h keeps only the cooldown's own state, which
+// sidecar.cpp is the one to persist.
+#pragma once
+
+#include <string>
+#include <vector>
+
+// The version this build reports. It is generated at configure time from the
+// Windows kAppVersion constant (CMakeLists.txt), so the two readers can never
+// claim different versions - they share one app.txt.
+#include "mnpdf-version.h"
+
+// The Windows version rules (src/main.cpp:2334): a tag is MAJOR.MINOR.PATCH
+// with an optional leading v, and a tag that does not parse is never an
+// update. `versionIsNewer` compares against this build's own version.
+bool parseVersion(const std::string& text, int& major, int& minor, int& patch);
+bool versionIsNewer(const std::string& candidate);
+
+// The tags out of a release feed, in the order the feed lists them. Split out
+// from the request so the parsing can be exercised without a network: the
+// shapes that matter are the entry id that ends with the tag, the feed's own
+// id that ends with "releases" and is not a release at all, and an id whose
+// last segment is not a version.
+std::vector<std::string> releaseTagsFromFeed(const std::string& body);
+
+// The check's blocking half, run on a worker thread: it honours the cooldown,
+// so a click inside the hour spends no request, and `requested` says whether a
+// request was really made. An answer taken from the cache is not one, and must
+// not stamp the cooldown - a stamp would push the cooldown's end away, so a
+// reader who clicks once an hour would never ask again. The stamp itself is
+// written by noteUpdateCheck, on the UI thread: it writes the shared app.txt.
+bool updateCheckNow(std::string& latestTag, bool& newer, std::string& error,
+                    std::string& currentTag, bool& currentIsNewer, bool& requested);
+void noteUpdateCheck(const std::string& tag);
+bool updateCheckCooling();
+
+// the whole check - every request it makes - fits in this budget
+int updateCheckBudgetSeconds();

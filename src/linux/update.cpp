@@ -15,7 +15,7 @@
 // app.txt.
 #include "doc.h"
 #include "ui.h"
-#include "mnpdf-version.h"
+#include "update.h"
 
 #include <curl/curl.h>
 

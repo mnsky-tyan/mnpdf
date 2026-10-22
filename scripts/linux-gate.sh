@@ -332,17 +332,19 @@ wait $holder 2>/dev/null
 grep -q "^titlebar=1$" "$I/cfg/mnpdf/app.txt"
 chk $? "a second window does not overwrite the shared app.txt"
 
-echo "== a plain second launch starts empty, and no second window writes a sidecar =="
+echo "== a plain second launch starts empty, and no second window writes the shared files =="
 # README.txt's promise ("SEVERAL WINDOWS"): later windows "start empty and write
 # none of them". Windows keeps it two ways: a plain second launch opens
-# nothing (src/main.cpp:6241) and the sidecar write itself is gated on the
-# primary role (src/main.cpp:3276). An explicit file argument still opens -
-# two readers side by side is the point of a second window - but that
-# window writes no sidecar either. Three halves, all against a live primary:
-# the plain second launch maps an EMPTY window (titled "mnpdf", never
-# "arc.pdf - mnpdf - page 1/13"), the second launch with a file argument
-# opens its document, and that window's clean exit leaves the primary's
-# sidecar untouched (mtime AND content).
+# nothing (src/main.cpp:6241), and the two SHARED files are gated on the primary
+# role - last.txt (src/main.cpp:3276) and app.txt (:3345). A document's SIDECAR
+# is not one of them: it belongs to whichever window owns that document
+# (:3243-3245), so a second window's marks must persist.
+#
+# Three halves, all against a live primary: the plain second launch maps an
+# EMPTY window (titled "mnpdf", never "arc.pdf - mnpdf - page 1/13"); a second
+# launch with a file argument opens its document; and that window's rotation
+# reaches the document's own sidecar while the shared app.txt the section above
+# covers stays the primary's.
 E=$STATE/secondwin; mkdir -p "$E/cfg/mnpdf"
 printf 'tabstrip=1\ntitlebar=1\nautosave=1\nhlcolor=0\npincolor=5\nnight=0\n' > "$E/cfg/mnpdf/app.txt"
 xvfb-run -a --server-args="-screen 0 1280x900x24" \
@@ -367,8 +369,7 @@ chk $? "its window is the empty reader"
 # whichever window owns it (:3243-3245), so a second window's marks must
 # persist rather than be dropped at its exit. Proven by rotating in the second
 # window: the rotation must reach the sidecar (the shared app.txt staying
-# untouched is what the section above proves).
-xvfb-run -a --server-args="-screen 0 800x600x24" \
+# untouched is what the section above proves).xvfb-run -a --server-args="-screen 0 800x600x24" \
   env GDK_BACKEND=x11 MNPDF_NO_UPDATE=1 XDG_CONFIG_HOME="$E/cfg" MNPDF_CMD=133 \
       MNPDF_SHOT="$E/second.png" MNPDF_SHOT_EXIT=1 \
   timeout 20 "$BIN" "$PDF" > "$E/file.log" 2>&1
@@ -509,9 +510,15 @@ TOPS=$(sed -n 's/^TOPS //p' "$L/one/tops.txt")
 [ "$TOPS" = "2" ]
 chk $? "a launch whose check found the reader current says nothing (tops: $TOPS)"
 # a host that cannot reach GitHub is not a code failure: the silence above is
-# the behaviour under test, and the stamp only exists when the check answered
-if grep -q 'could not reach GitHub' "$L/one/log.txt"; then
+# the behaviour under test, and the stamp only exists when the check answered.
+# The reader prints the outcome it reached on stdout ("update check: outcome
+# current <tag>" / "newer <tag>", or "outcome error" plus the reason) whether
+# or not it opens a dialog - a silent launch check says nothing to the reader,
+# so the dialog is not where a suite can read it.
+if grep -q 'update check: error The update check could not reach GitHub' "$L/one/log.txt"; then
     ok "the launch check could not reach GitHub from here - the stamp parts are untested"
+elif grep -q 'update check: outcome error' "$L/one/log.txt"; then
+    bad "the launch check failed for a reason other than the network (see $L/one/log.txt)"
 else
     grep -q '^lnxupdcheck=' "$L/one/mnpdf/app.txt"
     chk $? "the launch check asks on its own, with no click"
@@ -578,8 +585,9 @@ xvfb-run -a --server-args="-screen 0 1280x900x24" \
 # found) is only meaningful when the host answered at all.
 FOUND=$(sed -n 's/^lnxupdtag=//p' "$V/cfg/mnpdf/app.txt" | head -1)
 UNREACHED=0
+# a request was opened, and the answer was not a host that failed to answer
 grep -q 'update check: GET' "$V/log.txt" || UNREACHED=1
-grep -q 'could not reach GitHub' "$V/log.txt" && UNREACHED=1
+grep -q 'update check: error The update check could not reach GitHub' "$V/log.txt" && UNREACHED=1
 if [ "$UNREACHED" = "1" ]; then
     ok "the update check could not reach GitHub from here - the network parts are untested"
 elif [ -n "$FOUND" ]; then
@@ -655,10 +663,12 @@ lib = open(sys.argv[2], encoding="utf-8", errors="replace").read()
 table = {}
 for m in re.finditer(r'\$\{(CMD_[A-Z0-9_]+)\}\s*=\s*(\d+)', lib):
     table[m.group(1)] = int(m.group(2))
-# what the Linux menu actually carries: "label: id"
+# what the Linux menu actually carries: "label: id", and " [greyed]" after the
+# id when the entry is there but cannot run. A greyed entry still carries its
+# id - it is in the menu - so the id scan has to accept the marker.
 seen = set()
 for line in menu.splitlines():
-    m = re.match(r'\s*.*?: (\d+)\s*$', line)
+    m = re.match(r'\s*.*?: (\d+)(?: \[greyed\])?\s*$', line)
     if m:
         seen.add(int(m.group(1)))
 # The commands both readers must carry, by the name the Windows table gives
@@ -707,7 +717,7 @@ for line in menu.splitlines():
         continue
     if inbar and line.strip():
         bar.append(line)
-noId = [l for l in bar if l.startswith(" ") and not re.search(r': \d+$', l)]
+noId = [l for l in bar if l.startswith(" ") and not re.search(r': \d+(?: \[greyed\])?$', l)]
 print("       menu bar entries: %d, command entries without an id: %d"
       % (len(bar), len(noId)))
 for l in noId:
@@ -730,6 +740,46 @@ HITP=$(sed -n 's/^hit-page //p' "$E/menu.txt" | head -1)
 VIEWP=$(sed -n 's/^view-page //p' "$E/menu.txt" | head -1)
 [ -n "$PINP" ] && [ "$PINP" = "$HITP" ] && [ "$((PINP + 1))" = "$VIEWP" ]
 chk $? "a right-click on a scrolled page names one page for both targets (pin $PINP, hit $HITP, view $VIEWP)"
+
+# The greying, asserted rather than assumed: Windows greys a command out when
+# it cannot run (src/main.cpp:5543-5560), and the port greyed NOTHING - every
+# entry was live whether or not it could act. The dump marks a greyed entry
+# " [greyed]", so the two states are visible to a check.
+#
+# The run above seeds a highlight and a pin, so it is DIRTY by design: restored
+# marks are unsaved work (openPath marks the document dirty when the sidecar
+# carried marks the file does not have). That is the state Windows answers with
+# Save live and the undo stack empty, so those are the assertions here. Undo,
+# Redo and Close tab are context-menu entries, so they carry no indentation.
+GREY=$(sed -n 's/^Undo: 114\( \[greyed\]\)\?$/\1/p' "$E/menu.txt" | head -1)
+[ -n "$GREY" ]
+chk $? "Undo is greyed out with an empty undo stack"
+GREY=$(sed -n 's/^Redo: 115\( \[greyed\]\)\?$/\1/p' "$E/menu.txt" | head -1)
+[ -n "$GREY" ]
+chk $? "Redo is greyed out with an empty redo stack"
+GREY=$(sed -n 's/^Close tab: 301\( \[greyed\]\)\?$/\1/p' "$E/menu.txt" | head -1)
+[ -n "$GREY" ]
+chk $? "Close tab is greyed out with one tab (src/main.cpp:5544)"
+if grep -qE '^(Save|Save as\.\.\.|Print\.\.\.|Rotate clockwise): (118|119|137|133) \[greyed\]$' "$E/menu.txt"; then
+    bad "a command that applies was greyed out"
+else
+    ok "Save, Print and the rotations stay live on a document with unsaved marks"
+fi
+# The other half needs the state the dump run cannot be in: a CLEAN document.
+# Save and Save As are dead then (nothing to save), which is the Windows
+# predicate gDoc && gDirty. A menu that greyed everything would fail the block
+# above; one that greyed nothing fails here.
+C=$STATE/clean; mkdir -p "$C/cfg/mnpdf"
+printf 'tabstrip=1\ntitlebar=1\nautosave=1\nhlcolor=0\npincolor=5\nnight=0\n' > "$C/cfg/mnpdf/app.txt"
+xvfb-run -a --server-args="-screen 0 1280x900x24" \
+  env GDK_BACKEND=x11 MNPDF_NO_UPDATE=1 XDG_CONFIG_HOME="$C/cfg" MNPDF_MENU_DUMP=1 \
+  timeout 30 "$BIN" "$PDF" >"$C/menu.txt" 2>&1
+grep -qE '^  Save: 118 \[greyed\]$' "$C/menu.txt"
+chk $? "Save is greyed out on a clean document (src/main.cpp:5543)"
+grep -qE '^  Save as\.\.\.: 119 \[greyed\]$' "$C/menu.txt"
+chk $? "Save As is greyed out on a clean document"
+grep -qE '^  Print\.\.\.: 137$' "$C/menu.txt"
+chk $? "Print stays live on a clean document with a document open"
 
 echo
 printf 'pass=%d fail=%d\n' "$PASS" "$FAIL"

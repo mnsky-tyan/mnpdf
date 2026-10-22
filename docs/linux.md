@@ -260,6 +260,22 @@ page, Move page up, Move page down - moved into a free range (310-312), and
 "Open in new tab..." (108) has no Windows counterpart either, so it is
 Linux-only in the same way.
 
+**The greying.** Windows greys a command out when it cannot run
+(src/main.cpp:5543-5560 for the context menu, advancedMenu :5450-5461 for the
+cascade): New Tab with no room left, Close Tab with one tab, Save and Save As
+when there is nothing unsaved, Print and the rotations without a document,
+Undo and Redo with an empty stack, and the cascade's own rules. The port has
+one predicate for all of it, `commandUsable`, and both menus read it: the
+context menu when it is built (as Windows builds its menu per open), and the
+menu bar from `refreshMenuLabels` plus a `show` handler on each submenu, which
+is the closest GTK gets to rebuilding it per popup. Two copies of those rules
+had drifted before - the context menu greyed nothing at all while the cascade
+greyed its own entries.
+
+The label of 111 carries the window's state too, as the Windows one does
+(src/main.cpp:5565: `IsZoomed(h) ? "Restore" : "Maximize"`), and 131 reads
+"Edit text" like Windows rather than the port's old "Edit note".
+
 
 **The update check.** This is the one place the port deliberately does not
 follow the Windows route. The Windows app reads `/releases/latest`, which
@@ -335,6 +351,19 @@ that are easy to get wrong:
   first request's own window makes one request, not two. The port gates it the
   same way, and the gate asserts it by counting the requests the reader
   actually made.
+- **A click during a check is answered, not dropped.** Windows records the
+  click in `gManualUpdateRequested` before its in-flight test
+  (src/main.cpp:3183), the worker takes the flag at its tail (:3201), and the
+  result handler re-posts command 170 for anything that arrived after (:6089).
+  The port keeps the same flag (`gUpdateCheckWanted`) in the same places, so a
+  click during the silent launch check gets its answer instead of vanishing -
+  which is what it did while the flag was only a function argument.
+- **The outcome reaches stdout, not only a dialog.** A dialog is a GTK window a
+  headless run can neither read nor dismiss, so the reply handler also prints
+  `update check: outcome current|newer <tag>`, or `outcome error` plus the
+  reason, before the silent filter drops the dialog. That is what lets the gate
+  tell a host that did not answer from a host that answered and has no Linux
+  release - and from a check that is simply broken.
 - **The asset check is three-valued.** "The release carries the archive", "it
   does not" and "the host did not answer" are three different answers, and the
   third is not the second: a timeout is not evidence that the archive is
@@ -363,7 +392,7 @@ Everything else about the drawer follows the Windows shape: a refresh rebuilds
 the row heights and drops the pictures on both platforms - the Windows
 refreshThumbDrawer calls layoutThumbs, which opens with clearThumbCache
 (src/main.cpp:4813-4817, :4825, :4968), and the port drops its single raster
-(src/linux/main.cpp:1583-1585) - the only difference is the granularity, one
+(src/linux/main.cpp:1697-1699) - the only difference is the granularity, one
 raster here against a picture per row there. The selection stays on the page
 it named unless that page is gone (src/main.cpp:4964-4967), and the scroll
 offset is clamped when the list shrinks.
@@ -380,7 +409,10 @@ see that the second click spends no request.
 `MNPDF_SHOT_WINDOW` captures the whole window instead of only the page buffer.
 `MNPDF_MENU_DUMP` prints the menu bar and the context menu as text, every
 entry that posts a command as `label: id`, then quits through the app's own
-quit path. The context menu
+quit path. An entry that cannot run carries ` [greyed]` after its id, so the
+suite can assert the greying as well as the command set: a menu that greyed
+everything and a menu that greyed nothing are both wrong, and both are visible
+here. The context menu
 is printed in every shape it has - nothing under the cursor, a highlight, a
 pin, a live selection - because the mark-specific commands exist only in
 their own shape. The dump is asserted against the command table the Windows
@@ -389,6 +421,15 @@ wrong id fails the gate; the menu bar's entries post the same commands and
 carry the same ids, so they are asserted there too. The gate then drives ids
 113, 170, 201 and 202 and
 asserts what each wrote to app.txt or to the pixels.
+
+The update check also prints what it concluded - `update check: outcome
+current|newer <tag>`, or `outcome error` and the reason - on stdout, before
+the silent-launch filter drops the dialog. A dialog is a GTK window a headless
+run can neither read nor dismiss, so without this trace a suite could only
+grep the source, which proves what the source says rather than what the reader
+did. The three answers it keeps apart are "a release was found", "the host
+answered and has none" and "the host did not answer": the last is a network
+fact, and the gate reports it as untested rather than as a failure.
 
 `MNPDF_SHOT_EXIT` is a fourth seam, and it is a window-level one rather than a
 fourth independent thing: it appends the quit command to whatever else the run

@@ -31,6 +31,8 @@ src/linux/               the Linux port: one directory per concern
   opendoc.cpp            open, save/bake, signature stamps, the JPEG guard
   surgery.cpp            delete/move page, merge, split (FPDF_ImportPages)
   update.cpp             the update check: the web host, the version rules
+  update.h               the check's API: the version rules, the feed parser,
+                         the blocking half main.cpp runs on a worker thread
   instance.cpp           the shared-preference role: the lock file a second
                          window does not write past
   main.cpp               the GTK3 platform layer and the ui_* seam

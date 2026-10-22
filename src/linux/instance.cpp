@@ -12,8 +12,13 @@
 //
 // The mechanism is an advisory lock on a lock file in the config directory:
 // flock() is released by the kernel when the process dies, so a crashed
-// reader does not leave the role locked, and the lock is per-machine rather
-// than per-user, which matches the "Global\\" prefix the Windows build uses.
+// reader does not leave the role locked. The lock is per config directory, not
+// per machine: it lives in appDir(), the same place app.txt and last.txt do, so
+// two readers sharing a directory contend for it and two readers with separate
+// directories do not. The Windows mutex is machine-wide (its name carries the
+// "Global\\" prefix), so the two guards cover different scopes - which matches
+// the files they protect, since each reader only ever contends over the
+// directory it is pointed at.
 
 #include "doc.h"
 #include "ui.h"

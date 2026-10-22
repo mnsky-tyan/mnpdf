@@ -9,6 +9,7 @@
 // draws its own), and cairo replaces GDI for the overlays.
 #include "doc.h"
 #include "ui.h"
+#include "update.h"
 
 #include <gtk/gtk.h>
 #include <gdk/gdkkeysyms.h>
@@ -18,6 +19,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -52,14 +54,6 @@ extern bool renderPageToBuffer(int page, int w, int h, std::vector<unsigned char
 extern const unsigned char* ui_backbuf_bits();
 extern int ui_backbuf_w();
 extern int ui_backbuf_h();
-// the update check (update.cpp): the blocking half, run on a worker thread
-extern const char* gAppVersion;
-bool updateCheckNow(std::string& latestTag, bool& newer, std::string& error,
-                    std::string& currentTag, bool& currentIsNewer, bool& requested);
-void noteUpdateCheck(const std::string& tag);
-bool updateCheckCooling();
-// the whole check - every request it makes - fits in this budget
-int updateCheckBudgetSeconds();
 
 // ---- platform state ----
 static GtkWidget* gWin = nullptr;
@@ -72,6 +66,11 @@ static GtkWidget* gMenuBar = nullptr;   // the menu bar, so its stateful labels 
 static GMainLoop* gAppLoop = nullptr;
 static bool gAppLoopRunning = false;
 static std::atomic<bool> gUpdateCheckRunning{false};   // a check is in flight on the worker thread
+// A click that arrived while a check was in flight. The Windows build keeps the
+// same flag (gManualUpdateRequested, src/main.cpp:92): the click is recorded
+// before the in-flight test, and the worker's tail takes it, so a click during a
+// silent launch check is answered rather than dropped (src/main.cpp:3183, 3201).
+static std::atomic<bool> gUpdateCheckWanted{false};
 static GtkWidget* gNotebook = nullptr;
 static GtkWidget* gCurArea = nullptr;
 static GtkWidget* gSearchBar = nullptr;
@@ -382,9 +381,30 @@ struct UpdateOutcome {
 // reason (gShuttingDown, src/main.cpp:93 and 3149).
 static std::atomic<bool> gShuttingDown = false;
 
+// the check itself, declared here because the reply handler above re-runs the
+// command when a click arrived while the check was in flight
+static void runUpdateCheck(bool manual);
+
 static gboolean showUpdateResult(gpointer data) {
     UpdateOutcome* o = (UpdateOutcome*)data;
     gUpdateCheckRunning = false;
+    // The outcome goes to stdout as well as to a dialog. The dialog is the
+    // reader's answer; stdout is the suite's, because a modal is a GTK window a
+    // headless run can neither read nor dismiss. It is printed before the
+    // silent filter below, so a launch check that found nothing - or could not
+    // reach the host - still leaves the outcome it reached behind. The error
+    // text is printed too, because it is what tells the three answers apart:
+    // "could not reach GitHub" is a host that did not answer, and "No release
+    // with a Linux build was found" is a host that answered and has none. A
+    // suite that conflated the two would blame the code for the network.
+    if (o->ok) {
+        printf("update check: outcome %s %s\n", o->newer ? "newer" : "current",
+               o->latestTag.c_str());
+    } else {
+        printf("update check: outcome error\nupdate check: error %s\n",
+               o->error.empty() ? "the check failed" : o->error.c_str());
+    }
+    fflush(stdout);
     if (gShuttingDown) { delete o; return G_SOURCE_REMOVE; }
     std::string current = gAppVersion;
     // The attempt is stamped here, on the GTK main thread, not on the worker
@@ -400,6 +420,17 @@ static gboolean showUpdateResult(gpointer data) {
     // otherwise a reader who clicks once an hour never asks again and keeps
     // being told whatever the first attempt saw.
     if (o->requested) noteUpdateCheck(o->ok ? o->latestTag : std::string());
+    // A click that arrived while this check ran is answered by running the
+    // command again, not by recursing from here: the cooldown decision and its
+    // dialog stay on the UI thread, the way the Windows result handler posts
+    // WM_COMMAND 170 rather than calling into the check (src/main.cpp:6089).
+    // The worker already took any click that was pending when it finished (that
+    // is what `o->manual` carries), so what is left here is a click that
+    // arrived after that - it must not be dropped.
+    if (!gShuttingDown && gUpdateCheckWanted.exchange(false)) {
+        g_timeout_add(0, +[](gpointer) -> gboolean { runUpdateCheck(true); return G_SOURCE_REMOVE; },
+                      nullptr);
+    }
     // The silent launch check only speaks when there is a newer release: a
     // check with nothing to say, or one that could not reach the host, says
     // nothing at all, the two ways the Windows result handler is silent
@@ -441,10 +472,21 @@ static gboolean showUpdateResult(gpointer data) {
 }
 
 static void runUpdateCheck(bool manual) {
+    // A click is recorded BEFORE the in-flight test below, so a click that
+    // arrives while a check is running is not lost: the check in flight answers
+    // it, and the reply handler runs the command again for anything that
+    // arrived after it. The Windows build sets its own flag in the same place
+    // for the same reason (src/main.cpp:3183 before :3188).
+    if (manual) gUpdateCheckWanted = true;
     // One request at a time. The Windows build gates the click on the UI
     // thread before it spawns anything (src/main.cpp:3188), so a second
     // click inside the first request's own window makes one request, not two.
     if (gUpdateCheckRunning.exchange(true)) return;
+    // Nothing is in flight now, so a click still recorded is this check's to
+    // answer. Consuming it here matters for the cooldown return below: a flag
+    // left set there would be claimed by the NEXT check, which would then open
+    // a dialog nobody asked for.
+    if (gUpdateCheckWanted.exchange(false)) manual = true;
     // The silent launch check says nothing inside the cooldown: the Windows
     // build returns before it spawns anything, and the cached answer is only
     // surfaced by a click (src/main.cpp:3190-3195) - a launch that answered
@@ -453,10 +495,17 @@ static void runUpdateCheck(bool manual) {
     if (!manual && updateCheckCooling()) { gUpdateCheckRunning = false; return; }
     std::thread([manual]() {
         UpdateOutcome* o = new UpdateOutcome();
-        o->manual = manual;
         std::string latest, error, cur;
         bool newer = false, curNewer = false, requested = false;
-        if (updateCheckNow(latest, newer, error, cur, curNewer, requested)) {
+        bool ok = updateCheckNow(latest, newer, error, cur, curNewer, requested);
+        // The click this check answers: one that arrived while the request was
+        // in flight is folded into THIS answer rather than costing a second
+        // request, which is where the Windows worker takes its flag - at the
+        // tail, after the request (src/main.cpp:3201). A click that lands after
+        // this line is answered by the reply handler.
+        bool clicked = gUpdateCheckWanted.exchange(false);
+        o->manual = manual || clicked;
+        if (ok) {
             o->ok = true;
             o->latestTag = latest;
             o->newer = newer;
@@ -860,9 +909,13 @@ static void dumpMenuTree(GtkWidget* item, int depth) {
     const char* text = label ? gtk_label_get_text(GTK_LABEL(label)) : "";
     for (int i = 0; i < depth; i++) printf("  ");
     // the id is what the parity claim is about, so print it beside the label:
-    // "Hide titlebar: 113" is checkable, "Hide titlebar" is not
+    // "Hide titlebar: 113" is checkable, "Hide titlebar" is not. An entry that
+    // is greyed out is marked "[greyed]": a command that is present but
+    // insensitive does not run, so a dump that printed only the label and the
+    // id would call a dead entry live.
     int id = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(item), "cmd-id"));
-    if (id) printf("%s: %d\n", text, id);
+    const char* grey = gtk_widget_get_sensitive(item) ? "" : " [greyed]";
+    if (id) printf("%s: %d%s\n", text, id, grey);
     else printf("%s\n", text);
     if (sub) {
         GList* kids = gtk_container_get_children(GTK_CONTAINER(sub));
@@ -881,6 +934,35 @@ static void dumpMenuShell(GtkWidget* shell, const char* title) {
     for (GList* k = kids; k; k = k->next)
         if (GTK_IS_MENU_ITEM(k->data)) dumpMenuTree(GTK_WIDGET(k->data), 0);
     g_list_free(kids);
+}
+
+// Which commands are usable right now, by the rules the Windows context menu
+// draws its greying with (src/main.cpp:5543-5560, advancedMenu :5450-5461):
+// New Tab needs room under kMaxTabs (canNewTab, :5311), Close Tab a second
+// tab, Save and Save As unsaved work, Print/Rotate a document, Undo and Redo
+// a stack that is not empty, and the Advanced cascade greys every document
+// tool without a document, Split needs a second page and Clear signatures a
+// signature.
+//
+// One predicate, because the port draws this state twice: the context menu is
+// built per open (like Windows, which rebuilds its menu every time), and the
+// menu bar is built once and refreshed (refreshMenuLabels). Two copies of the
+// rules drifted before - the context menu greyed nothing at all while the
+// cascade greyed its own entries.
+static bool commandUsable(int id) {
+    bool doc = gDoc != nullptr;
+    switch (id) {
+    case 300: return gDocCount < kMaxTabs;          // canNewTab()
+    case 301: return gDocCount > 1;
+    case 118: case 119: return doc && gDirty;      // nothing to save when clean
+    case 137: case 133: case 134: return doc;
+    case 114: return !gUndo.empty();
+    case 115: return !gRedo.empty();
+    case 201: case 202: case 203: case 205: case 207: return doc;
+    case 206: return doc && gDocPages > 1;
+    case 204: return !gSigs.empty();
+    default: return true;
+    }
 }
 
 // Build the right-click menu for the current gMenuHlIdx / gMenuPinIdx /
@@ -903,12 +985,17 @@ static GtkWidget* buildContextMenu(int x, int y) {
     int pg = pageAtDocY(y - docTop());
 
     auto add = [&](const char* label, int id) {
-        gtk_menu_shell_append(GTK_MENU_SHELL(menu), menuCommand(label, id));
+        // greying comes from the state, the way the Windows menu draws it
+        // (src/main.cpp:5543-5560): a GTK item is insensitive unless the
+        // command applies right now
+        GtkWidget* it = menuCommand(label, id);
+        if (!commandUsable(id)) gtk_widget_set_sensitive(it, FALSE);
+        gtk_menu_shell_append(GTK_MENU_SHELL(menu), it);
     };
     auto sep = [&]() { gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new()); };
 
     if (gMenuPinIdx >= 0) {
-        add("Edit note", 131);
+        add("Edit text", 131);
         {
             GtkWidget* it = gtk_menu_item_new_with_label("Color");
             gtk_menu_item_set_submenu(GTK_MENU_ITEM(it),
@@ -989,33 +1076,32 @@ static GtkWidget* buildContextMenu(int x, int y) {
     {
         GtkWidget* advItem = gtk_menu_item_new_with_label("Advanced");
         GtkWidget* advSub = gtk_menu_new();
-        auto addAdv = [&](const char* label, int id, bool usable = true) {
+        auto addAdv = [&](const char* label, int id) {
             GtkWidget* it = menuCommand(label, id);
-            if (!usable) gtk_widget_set_sensitive(it, FALSE);
+            if (!commandUsable(id)) gtk_widget_set_sensitive(it, FALSE);
             gtk_menu_shell_append(GTK_MENU_SHELL(advSub), it);
         };
         // the ticks and the greying the Windows cascade draws when it builds
-        // its menu (advancedMenu, src/main.cpp:5450-5464): the two drawers
-        // tick when open, night mode ticks when on, every document tool
-        // greys out without a document, Split needs a second page, and Clear
-        // signatures needs a signature
-        bool doc = gDoc != nullptr;
+        // its menu (advancedMenu, src/main.cpp:5450-5461): the two drawers
+        // tick when open, night mode ticks when on, and commandUsable carries
+        // the rest - every document tool greys out without a document, Split
+        // needs a second page, and Clear signatures needs a signature
         char tickLab[48];
         snprintf(tickLab, sizeof tickLab, "Thumbnails%s", gThumbDrawer ? " ✓" : "");
-        addAdv(tickLab, 202, doc);
+        addAdv(tickLab, 202);
         snprintf(tickLab, sizeof tickLab, "Outline panel%s", gOutlineDrawer ? " ✓" : "");
-        addAdv(tickLab, 201, doc);
+        addAdv(tickLab, 201);
         // the same static label and tick the Windows build draws (MF_CHECKED,
         // src/main.cpp:5456): the label must not flip to "Day mode", which
         // would make the two readers show different words for one command
         addAdv(gNight ? "Night mode ✓" : "Night mode", 200);
         gtk_menu_shell_append(GTK_MENU_SHELL(advSub), gtk_separator_menu_item_new());
-        addAdv("Merge PDFs...", 205, doc);
-        addAdv("Split pages...", 206, doc && gDocPages > 1);
-        addAdv("Insert signature...", 203, doc);
-        addAdv("Clear signatures", 204, !gSigs.empty());
+        addAdv("Merge PDFs...", 205);
+        addAdv("Split pages...", 206);
+        addAdv("Insert signature...", 203);
+        addAdv("Clear signatures", 204);
         gtk_menu_shell_append(GTK_MENU_SHELL(advSub), gtk_separator_menu_item_new());
-        addAdv("Reopen last document", 207, doc);
+        addAdv("Reopen last document", 207);
         gtk_menu_item_set_submenu(GTK_MENU_ITEM(advItem), advSub);
         gtk_menu_shell_append(GTK_MENU_SHELL(menu), advItem);
     }
@@ -1024,7 +1110,9 @@ static GtkWidget* buildContextMenu(int x, int y) {
     add(gTitlebar ? "Hide titlebar" : "Show titlebar", 113);
     sep();
     add("Minimize", 110);
-    add("Maximize / restore", 111);
+    // the label carries the window's state, like the Windows entry
+    // (src/main.cpp:5565: IsZoomed(h) ? "Restore" : "Maximize")
+    add(gWinMax ? "Restore" : "Maximize", 111);
     sep();
     add("Check for updates", 170);
     add("Quit", 112);
@@ -1040,9 +1128,14 @@ static void onContextMenu(GtkWidget* w, GdkEventButton* ev) {
     gMenuPinPage = -1;
     // The rotation commands act on the page the menu was opened on, not on
     // the page the document happens to be showing. The Windows build keeps
-    // that page in gMenuRotPage (src/main.cpp:5514) and the rotation commands
+    // that page in gMenuRotPage (src/main.cpp:5515) and the rotation commands
     // read it (src/main.cpp:5748), so a right-click on page 3 rotates page 3
     // even when page 7 is on screen.
+    //
+    // The capture is taken here, NOT in buildContextMenu: the menu bar posts
+    // 133/134 with no right-click behind them, and a capture taken while
+    // BUILDING a menu would then follow a rotate the reader never aimed at a
+    // page. One function per entry point keeps the two apart.
     gMenuRotPage = pg >= 0 ? pg : gPageIndex;
     GtkWidget* menu = buildContextMenu(x, y);
     // The Windows build clears the captured drop point once the dispatch has consumed
@@ -1109,15 +1202,25 @@ static void dumpEveryMenuShape() {
     gSelAnchorPage = savedSelAP; gSelHeadPage = savedSelHP;
 
     // A right-click on a SCROLLED page is where the two page targets can
-    // disagree: buildContextMenu computes the pin's page itself and the
-    // rotate capture through charIndexAtDoc, so a coordinate-space slip in one
-    // and not the other is invisible while the view sits at the top (both read
-    // "page 1"). This shape scrolls away from the top and prints both targets
-    // for the same click, so the gate can assert they name the same page.
+    // disagree: buildContextMenu computes the pin's page itself and
+    // onContextMenu computes the rotate capture through charIndexAtDoc, so a
+    // coordinate-space slip in one and not the other is invisible while the
+    // view sits at the top (both read "page 1"). This shape scrolls away from
+    // the top and prints the three targets for the same click, so the gate can
+    // assert they name the same page.
+    //
+    // The click is put through onContextMenu's own capture rather than calling
+    // buildContextMenu directly: gMenuRotPage is only ever set there (a menu
+    // built for the dump is not a right-click), so reading it without that
+    // step would print a constant -1 and prove nothing.
     if (gDoc && gDocPages > 1) {
         int savedScroll = gScrollY;
         // far enough that the document's top is well above the viewport
         scrollByDy(3 * gClientH);
+        // the same hit-testing onContextMenu does, without the popup
+        int cpg = -1;
+        charIndexAtDoc(gClientW / 2, gClientH / 2, &cpg);
+        gMenuRotPage = cpg >= 0 ? cpg : gPageIndex;
         GtkWidget* menu = buildContextMenu(gClientW / 2, gClientH / 2);
         gtk_widget_destroy(menu);
         g_object_unref(menu);
@@ -1130,6 +1233,7 @@ static void dumpEveryMenuShape() {
         charIndexAtDoc(gClientW / 2, gClientH / 2, &hp);
         printf("hit-page %d\n", hp);
         printf("view-page %d\n", gPageIndex + 1);
+        gMenuRotPage = -1;
         gScrollY = savedScroll;
         scrollByDy(0);   // re-clamp and repaint from the restored offset
     }
@@ -1438,6 +1542,13 @@ static gboolean onShotIdle(gpointer) {
     // context menu carries, so the ids are verified through the shapes above.
     bool dumpMenu = getenv("MNPDF_MENU_DUMP") != nullptr;
     if (dumpMenu) {
+        // The menu bar re-reads its ticks and its greying when a submenu is
+        // shown (the show handler installMenuBar connects), because GTK builds
+        // it once. A dump never opens a submenu, so without this pass it would
+        // print the state of the last refresh rather than the state the reader
+        // would be looking at - and a suite asserting on the greying would be
+        // reading a stale picture.
+        refreshMenuLabels();
         if (gMenuBar) dumpMenuShell(gMenuBar, "menu bar");
         dumpEveryMenuShape();
         fflush(stdout);
@@ -2064,9 +2175,13 @@ static void restoreWindowGeometry() {
 
 // The Windows build rebuilds its menu every time it opens
 // (src/main.cpp:5507), so a label that carries the state - "Night mode" with
-// a tick - is always current. A GTK menu bar is built once and kept, so a
-// label that carries the state would freeze at its first value: after a
-// toggle the tick still claimed the old mode. This refreshes those labels.
+// a tick - and the greying are always current. A GTK menu bar is built once
+// and kept, so both would freeze at their first value: after a toggle the tick
+// still claimed the old mode, and a command stayed sensitive after the state
+// that made it unusable was gone. This refreshes the bar: installMenuBar calls
+// it once, every handler that changes what it shows calls it again, and each
+// submenu's "show" signal calls it when the reader opens it - the closest GTK
+// gets to Windows rebuilding the menu per popup.
 //
 // The context menu is built afresh every time it opens, so it needs no such
 // care - only the menu bar, which lives as long as the window.
@@ -2084,24 +2199,39 @@ static void refreshMenuLabels() {
         if (w && gtk_menu_item_get_label(GTK_MENU_ITEM(w)) != want)
             gtk_menu_item_set_label(GTK_MENU_ITEM(w), want.c_str());
     };
-    auto setUsable = [&](const char* key, bool on) {
-        GtkWidget* w = item(key);
-        if (w) gtk_widget_set_sensitive(w, on ? TRUE : FALSE);
+    // Every entry that posts a command greys by the rules the context menu
+    // uses, read from the widget tree rather than from a key per entry: an
+    // entry added to the bar later gets its greying without another line here,
+    // and the two menus cannot drift apart again. The three top-level holders
+    // (File, View, Advanced) post nothing, carry no id and are left sensitive.
+    std::function<void(GtkWidget*)> grey = [&](GtkWidget* shell) {
+        GList* kids = gtk_container_get_children(GTK_CONTAINER(shell));
+        for (GList* k = kids; k; k = k->next) {
+            GtkWidget* it = GTK_WIDGET(k->data);
+            if (!GTK_IS_MENU_ITEM(it)) continue;
+            GtkWidget* sub = gtk_menu_item_get_submenu(GTK_MENU_ITEM(it));
+            if (sub) { grey(sub); continue; }
+            int id = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(it), "cmd-id"));
+            if (id) gtk_widget_set_sensitive(it, commandUsable(id) ? TRUE : FALSE);
+        }
+        g_list_free(kids);
     };
+    grey(gMenuBar);
     // the tick is U+2713, the same character the context menu uses. The
     // mnemonics stay in the labels: gtk_menu_item_get_label returns the
     // label with its underscore, so the comparison carries it too
     setLabel("thumbs-item", std::string("_Thumbnails") + (gThumbDrawer ? " \u2713" : ""));
     setLabel("outline-item", std::string("_Outline panel") + (gOutlineDrawer ? " \u2713" : ""));
     setLabel("night-item", gNight ? "Night mode \u2713" : "Night mode");
-    bool doc = gDoc != nullptr;
-    setUsable("thumbs-item", doc);
-    setUsable("outline-item", doc);
-    setUsable("merge-item", doc);
-    setUsable("split-item", doc && gDocPages > 1);
-    setUsable("sig-item", doc);
-    setUsable("clearsig-item", !gSigs.empty());
-    setUsable("reopen-item", doc);
+}
+
+// A submenu is shown again on every popup, so this is the port's counterpart of
+// the Windows build rebuilding its menu each time it opens (src/main.cpp:5507):
+// the greying and the ticks are re-read at the moment the reader looks at them,
+// not only when something happened to call refreshMenuLabels.
+static gboolean onMenuShow(GtkWidget*, gpointer) {
+    refreshMenuLabels();
+    return FALSE;
 }
 
 static void installMenuBar(GtkWidget* box) {
@@ -2111,11 +2241,14 @@ static void installMenuBar(GtkWidget* box) {
     GtkWidget* fileMenu = gtk_menu_new();
     // Every entry that posts a command records the id it posts, so the menu
     // dump sees the whole command set - the menu bar included, exactly like
-    // the context menu, the colour submenus and the Advanced cascade.
+    // the context menu, the colour submenus and the Advanced cascade. The
+    // greying comes from the same commandUsable predicate the context menu
+    // uses, so the two can never disagree.
     auto mi = [](const char* label, int id) {
         GtkWidget* it = gtk_menu_item_new_with_mnemonic(label);
         g_signal_connect(it, "activate", G_CALLBACK(onMenuActivate), GINT_TO_POINTER(id));
         g_object_set_data(G_OBJECT(it), "cmd-id", GINT_TO_POINTER(id));
+        if (!commandUsable(id)) gtk_widget_set_sensitive(it, FALSE);
         return it;
     };
     GtkWidget* open = mi("_Open...", 107);
@@ -2127,6 +2260,7 @@ static void installMenuBar(GtkWidget* box) {
     gtk_menu_shell_append(GTK_MENU_SHELL(fileMenu), gtk_separator_menu_item_new());
     gtk_menu_shell_append(GTK_MENU_SHELL(fileMenu), mi("_Quit", 112));
     gtk_menu_item_set_submenu(GTK_MENU_ITEM(file), fileMenu);
+    g_signal_connect(fileMenu, "show", G_CALLBACK(onMenuShow), nullptr);
     gtk_menu_shell_append(GTK_MENU_SHELL(bar), file);
 
     GtkWidget* view = gtk_menu_item_new_with_mnemonic("_View");
@@ -2140,6 +2274,7 @@ static void installMenuBar(GtkWidget* box) {
     gtk_menu_shell_append(GTK_MENU_SHELL(viewMenu), mi("_Rotate clockwise", 133));
     gtk_menu_shell_append(GTK_MENU_SHELL(viewMenu), mi("Rotate c_ounter-clockwise", 134));
     gtk_menu_item_set_submenu(GTK_MENU_ITEM(view), viewMenu);
+    g_signal_connect(viewMenu, "show", G_CALLBACK(onMenuShow), nullptr);
     gtk_menu_shell_append(GTK_MENU_SHELL(bar), view);
 
     // "Advanced" is the Windows cascade (src/main.cpp:5449): everything past
@@ -2164,6 +2299,7 @@ static void installMenuBar(GtkWidget* box) {
     gtk_menu_shell_append(GTK_MENU_SHELL(advMenu), gtk_separator_menu_item_new());
     advItem("reopen-item", "Reopen last document", 207);
     gtk_menu_item_set_submenu(GTK_MENU_ITEM(adv), advMenu);
+    g_signal_connect(advMenu, "show", G_CALLBACK(onMenuShow), nullptr);
     gtk_menu_shell_append(GTK_MENU_SHELL(bar), adv);
     // the ticks and the greying the Windows cascade draws at build time are
     // re-read here once for the state at startup; refreshDrawers and the

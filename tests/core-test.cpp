@@ -9,15 +9,12 @@
 //
 // Usage: mnpdf-core-test <path-to-arc.pdf> <scratch-dir>
 #include "doc.h"
-#include "mnpdf-version.h"
-
-// the update check's version rules and release lookup (update.cpp). AssetAnswer
-// and pickLinuxRelease come from doc.h: the suite links the real update.cpp and
-// asserts what the probe loop does with each of the three answers.
-bool parseVersion(const std::string& text, int& major, int& minor, int& patch);
-bool versionIsNewer(const std::string& candidate);
-std::vector<std::string> releaseTagsFromFeed(const std::string& body);
 #include "ui.h"
+#include "update.h"
+
+// the update check's version rules and release lookup (update.cpp) come from
+// update.h: the suite links the real update.cpp and asserts what the probe
+// loop does with each of the three answers.
 
 #include <cstdio>
 #include <cstring>
