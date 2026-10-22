@@ -973,6 +973,16 @@ static void onContextMenu(GtkWidget* w, GdkEventButton* ev) {
     // even when page 7 is on screen.
     gMenuRotPage = pg >= 0 ? pg : gPageIndex;
     GtkWidget* menu = buildContextMenu(x, y);
+    // The Windows build clears the captured drop point once the dispatch has consumed
+    // it (src/main.cpp:5593-5595), so a capture never outlives the menu that made
+    // it. The port has a second entry point Windows does not - the menu bar posts
+    // 133/134 with no capture of its own - so an uncleared gMenuRotPage would let
+    // a menu-bar rotate act on the page of an old right-click. The signal fires
+    // after the item's activate handler has run, so the context menu's own entries
+    // keep the capture.
+    g_signal_connect(menu, "selection-done", G_CALLBACK(+[](GtkMenuShell*, gpointer) {
+        gMenuRotPage = -1;
+    }), nullptr);
     gtk_widget_show_all(menu);
     gtk_menu_popup_at_pointer(GTK_MENU(menu), (GdkEvent*)ev);
 }
@@ -1467,7 +1477,7 @@ static const int kBmRow = 18;
 
 static std::vector<unsigned char> gThumbPix;   // one page's BGRA, drawn on demand
 static std::vector<int> gThumbHs;
-static int gThumbSel = -1;
+int gThumbSel = -1;                       // the ring, and what the drawer's keys act on
 static int gThumbScroll = 0;
 static double gThumbSmoothAcc = 0;   // fractional trackpad deltas, accumulated
 static int gThumbDrawnFor = -1;               // which page gThumbPix holds
@@ -1585,7 +1595,7 @@ static gboolean onThumbDraw(GtkWidget*, cairo_t* cr, gpointer) {
 static gboolean onThumbPress(GtkWidget*, GdkEventButton* ev, gpointer) {
     if (ev->button != GDK_BUTTON_PRIMARY) return FALSE;
     int idx = thumbAt((int)ev->y);
-    if (idx >= 0 && idx < gDocPages) { gThumbSel = idx; openPageAt(idx); }
+    if (idx >= 0 && idx < gDocPages) { gThumbSel = idx; openPageAt(idx); gtk_widget_queue_draw(gThumbArea); }
     // the drawer takes the keyboard, so the keys below reach it
     gtk_widget_grab_focus(gThumbArea);
     return TRUE;

@@ -42,6 +42,7 @@ bool ui_prompt_range(std::string& r) { r = "2-3"; return true; }
 bool ui_color_box(int& idx) { idx = kPalPreset; return false; }
 void ui_copy_text(const std::string& t) { gCopyCount++; gLastCopy = t; }
 void refreshDrawers() {}
+int gThumbSel = -1;
 extern int ui_matchActive();   // from search.cpp: which match is active
 void ui_windowRect(int* x, int* y, int* w, int* h, int* maxed) { *x = 0; *y = 0; *w = 800; *h = 600; *maxed = 0; }
 
@@ -454,6 +455,10 @@ int main(int argc, char** argv) {
         CHECK(gDocPages == n0 - 1, "deletePage drops exactly one page");
         movePage(0, 2);
         CHECK(gDocPages == n0 - 1, "movePage keeps the count");
+        // the drawer's selection follows the page that moved: the ring names the
+        // page the reader picked, and a second move acts on that one rather than
+        // on the page that slid into the index it left behind
+        CHECK(gThumbSel == 2, "movePage points the drawer's selection at the destination");
 
         std::string out = scratch + "/split.pdf";
         gStubSavePath = out;
