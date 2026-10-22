@@ -61,15 +61,19 @@ paints the composited frame and draws its own scrollbars.
   client size the window manager handed GTK. Each platform round-trips its own
   value, so the file stays readable on both; a window sized on one just appears
   a frame's worth larger or smaller on the other.
-- **The update check.** It is the same feature, but it cannot follow the same
-  route. The Windows app reads `/releases/latest` - the newest
-  NON-prerelease - and fetches `mnpdf-win-x64-<tag>.zip` by name; a Linux-only
+- **The update check.** It is the same feature, and it reads the tag the same
+  way: `/releases/latest` answers with a redirect to the newest
+  NON-prerelease, and the tag is read off that redirect, exactly as the
+  Windows build does (src/main.cpp:2466-2479). What differs is the asset.
+  The Windows app then fetches `mnpdf-win-x64-<tag>.zip` by name; a Linux-only
   release is a prerelease until the Windows archive is published beside it, and
-  that endpoint names the Windows asset. The port asks the releases API for the
-  newest release that actually carries `mnpdf-linux-x64-<tag>.tar.gz` and
-  compares versions with the Windows rules. See "The parity work" above for
-  the asset that publishes that name. There is no Linux install step: the
-  check reports what is available and does not open the release page.
+  the endpoint names the Windows asset, so the port reads the releases page for
+  the newest release that carries `mnpdf-linux-x64-<tag>.tar.gz` and compares
+  versions with the Windows rules. The cooldown is shared: both readers keep
+  the `updcheck=` clock in the same app.txt, so the hour-long interval and the
+  cached answer are the same on both sides. There is no Linux install step:
+  the check reports what is available in a message box and does not open the
+  release page.
 - **Tabs are GtkNotebook pages**, and each tab's own document, zoom, scroll and
   marks live in its `Doc` bundle exactly as on Windows.
 
@@ -99,6 +103,15 @@ Windows canonical order and carries every key it does not own (the Windows
 reader's `titlebar=`, `updcheck=` and `updtag=`) after them, verbatim and in
 their original order: a launch on one platform never loses the other's
 preferences or its update-check clock.
+
+Because the file is shared, only one window may write it. The Windows build
+claims a named mutex at startup (src/main.cpp:6138) and a window that does not
+own it writes neither app.txt nor last.txt. The port takes the same role with
+an advisory lock on `instance.lock` in the same directory: the first reader
+holds it for as long as it runs, and a second one reads the preferences but
+writes nothing, so two open readers cannot overwrite each other's settings.
+The kernel drops the lock when the process dies, so a crashed reader does not
+leave the role locked.
 
 `tests/mnpdf-baked.pdf` is a PDF carrying mnpdf's own baked annotations
 (`/Source (mnpdf 0 45)` on a Highlight, `/Source (mnpdf)` on a Text note) - the
@@ -157,15 +170,22 @@ Measured on this machine (`/usr/bin/time`, and RSS sampled from `/proc`):
   discipline as the Windows build, and the print path allocates exactly one page
   raster at a time, sized from the page's own box at 300 dpi and shrunk to the
   same 16-megapixel budget the Windows print path applies.
+- The thumbnails drawer holds one page raster at a time, where the Windows
+  drawer holds one bitmap per row (src/main.cpp:4803). The cost is invisible
+  but real: scrolling down and back up re-rasterizes every row that left the
+  viewport, and each raster is a `FPDF_LoadPage` plus `FPDF_RenderPageBitmap`
+  on the UI thread inside the draw signal, so a long document's drawer scrolls
+  more slowly than the Windows one. The bound is the reason: a per-row cache
+  would grow with the document, and the page cache the engine already keeps is
+  six pages deep (src/linux/doc.cpp:236).
 
 ## What is still missing
 
 The Windows build's print dialog is replaced by the GtkPrintOperation dialog.
-The update check differs in one deliberate way: the Windows app reads
-GitHub's `/releases/latest` and downloads `mnpdf-win-x64-<tag>.zip` by name,
-while this one asks the releases API for the newest release that actually
-carries a Linux archive - see "The update check" below. That check does not
-open the release page and does not install: it reports what is available.
+The update check reports what is available and stops there: it does not open
+the release page and does not install, because there is no Linux install step
+to run. The route it reads the tag by is the Windows one - see "The update
+check" above.
 
 ## The parity work (2026-10-21)
 
@@ -214,18 +234,21 @@ is Save, 119 is Save As, 114 is Undo, 115 is Redo, 113 is the titlebar toggle,
 clears the custom colours. The entries Windows has no menu for - Delete this
 page, Move page up, Move page down - moved into a free range (310-312).
 
-**The update check.** This is the one place the port deliberately does not
-follow the Windows route. The Windows app reads `/releases/latest`, which
-answers with the newest NON-prerelease, and then fetches
-`mnpdf-win-x64-<tag>.zip` by name. A Linux-only release is a prerelease until
-the Windows archive is published beside it, and the asset that endpoint names
-is the Windows one. So the port asks the releases API for the list and picks
-the newest release that actually carries
+**The update check.** The tag comes from the same place the Windows build reads
+it: `/releases/latest` answers with a redirect to the newest NON-prerelease,
+and the tag is read off that redirect (src/main.cpp:2466-2479). What differs is
+the asset. The Windows app then fetches `mnpdf-win-x64-<tag>.zip` by name. A
+Linux-only release is a prerelease until the Windows archive is published
+beside it, and the asset that endpoint names is the Windows one, so the port
+reads the releases page and picks the newest release that actually carries
 `mnpdf-linux-x64-<tag>.tar.gz`, then compares versions with the Windows rules
-(src/main.cpp:2334). The request runs on its own thread and is bounded by a
-timeout, so a slow network cannot freeze the window, and the answer is dropped
-if the window is already quitting. There is no Linux install step: the check
-reports what is available and does not open the release page.
+(src/main.cpp:2334). Neither reader asks api.github.com: that host answers
+"API rate limit exceeded" once the IP's unauthenticated quota is spent, and
+the quota is shared with every other unauthenticated client behind the same IP
+(src/main.cpp:2430-2432). The request runs on its own thread and is bounded by
+a timeout, so a slow network cannot freeze the window, and the answer is
+dropped if the window is already quitting. There is no Linux install step: the
+check reports what is available and does not open the release page.
 
 The version the port reports is generated at build time from the Windows
 `kAppVersion` constant (CMakeLists.txt reads src/main.cpp), so the two readers
@@ -240,11 +263,13 @@ It runs on its own turn of the main loop and the picture is taken on the next
 one, so a drawer a command opened is laid out before it is captured.
 `MNPDF_SHOT_WINDOW` captures the whole window instead of only the page buffer.
 `MNPDF_MENU_DUMP` prints the menu bar and the context menu as text, each entry
-as `label: id`, then quits through the app's own quit path. The dump is
-asserted against the command table the Windows suites already own
-(`tests/lib.ps1`'s `CMD_*` ids), so a missing command or a wrong id fails the
-gate; the gate then drives ids 113, 200 and 302 and asserts what each wrote to
-app.txt.
+as `label: id`, then quits through the app's own quit path. The context menu
+is printed in every shape it has - nothing under the cursor, a highlight, a
+pin, a live selection - because the mark-specific commands exist only in
+their own shape. The dump is asserted against the command table the Windows
+suites already own (`tests/lib.ps1`'s `CMD_*` ids), so a missing command or a
+wrong id fails the gate; the gate then drives ids 113, 170, 201 and 202 and
+asserts what each wrote to app.txt or to the pixels.
 
 `MNPDF_SHOT_EXIT` is a fourth seam, and it is a window-level one rather than a
 fourth independent thing: it appends the quit command to whatever else the run

@@ -30,7 +30,9 @@ src/linux/               the Linux port: one directory per concern
   sidecar.cpp            per-document sidecar, app.txt prefs, last.txt
   opendoc.cpp            open, save/bake, signature stamps, the JPEG guard
   surgery.cpp            delete/move page, merge, split (FPDF_ImportPages)
-  update.cpp             the update check: the releases API, the version rules
+  update.cpp             the update check: the web host, the version rules
+  instance.cpp           the shared-preference role: the lock file a second
+                         window does not write past
   main.cpp               the GTK3 platform layer and the ui_* seam
   ui.h                   the platform seam: what the core may ask the UI for
   probe.cpp              toolchain probe: PDFium renders before the app is built
@@ -95,6 +97,7 @@ Windows `%APPDATA%\mnpdf`, with byte-identical file formats:
 | `app.txt` | tab strip, autosave, default highlight and pin colours, night mode, custom palette, window geometry |
 | `doc-<hash>.txt` | per-document sidecar: zoom, fit, page, highlights, rotations, pins, signature stamps, deleted marks |
 | `last.txt` | the document a plain launch reopens |
+| `instance.lock` | the lock file that names the window allowed to write `app.txt` and `last.txt` |
 
 The sidecar name is the same FNV-1a hash of the document path the Windows app
 uses, so a shared config directory lines both readers up on the same document.

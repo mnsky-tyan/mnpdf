@@ -266,18 +266,22 @@ echo "== the shared-preference role: a second window writes nothing =="
 I=$STATE/instance; mkdir -p "$I/cfg/mnpdf"
 printf 'tabstrip=1\ntitlebar=1\nautosave=1\nhlcolor=0\npincolor=5\nnight=0\n' > "$I/cfg/mnpdf/app.txt"
 # the first instance holds the role for as long as it runs. It is given a
-# lifetime of its own and killed afterwards - a reader with no window to close
-# would otherwise run forever.
+# lifetime of its own and waited for afterwards - a reader with no window to
+# close would otherwise run forever. It is NOT killed: xvfb-run takes its X
+# server down in an EXIT trap, which a signal does not run, so killing the
+# wrapper would leave the server (and its temp directory) behind on every run.
+# Letting it run out its own lifetime ends it the ordinary way, and the
+# server goes with it.
 xvfb-run -a --server-args="-screen 0 1280x900x24" \
-  env GDK_BACKEND=x11 XDG_CONFIG_HOME="$I/cfg" timeout 25 "$BIN" "$PDF" >"$I/first.log" 2>&1 &
+  env GDK_BACKEND=x11 XDG_CONFIG_HOME="$I/cfg" timeout 12 "$BIN" "$PDF" >"$I/first.log" 2>&1 &
 holder=$!
 sleep 6
 # the second one toggles the titlebar, which the primary would persist
 xvfb-run -a --server-args="-screen 0 1280x900x24" \
   env GDK_BACKEND=x11 XDG_CONFIG_HOME="$I/cfg" MNPDF_CMD=113 MNPDF_SHOT_EXIT=1 \
   timeout 30 "$BIN" "$PDF" >"$I/second.log" 2>&1
-# the holder is stopped rather than waited for: it has no window to close
-kill $holder 2>/dev/null
+# the holder ends on its own timeout, a few seconds after the second one is
+# done; waiting for it is what lets xvfb-run clean up after itself
 wait $holder 2>/dev/null
 grep -q "^titlebar=1$" "$I/cfg/mnpdf/app.txt"
 chk $? "a second window does not overwrite the shared app.txt"
@@ -369,15 +373,21 @@ required = ["CMD_TITLEBAR", "CMD_UNDO", "CMD_REDO", "CMD_SAVE", "CMD_SAVE_AS",
             "CMD_OPEN", "CMD_QUIT", "CMD_MINIMIZE", "CMD_MAX_RESTORE",
             "CMD_HIDE_TABSTRIP", "CMD_NEW_TAB", "CMD_CLOSE_TAB",
             "CMD_ZOOM_IN", "CMD_ZOOM_OUT", "CMD_FIT_WIDTH", "CMD_FIND",
+            "CMD_AUTOSAVE",
             # the pin colour family, which the pin shape makes visible: presets
             # at 160-165 and "Custom..." at 169. The dump only sees these
             # because buildColorSubmenu records the id too.
-            "CMD_CUSTOM_PIN_COLOR"]
-# Commands that need a state the dump cannot create are driven instead, below.
-# 135 (highlight the selection) and 140/149 (the default highlight colour) need
-# a live text selection; 180 (clear custom colours) needs at least one custom
-# colour to exist. Driving them proves the handler exists and acts, which the
-# presence of an id does not.
+            "CMD_CUSTOM_PIN_COLOR",
+            # the selection family, which the selection shape makes visible:
+            # Copy (101), Highlight (135) and the default-highlight colour
+            # family (140-149).
+            "CMD_COPY", "CMD_HIGHLIGHT", "CMD_DEFAULT_HL_YELLOW",
+            "CMD_CUSTOM_HL_COLOR"]
+# The dump builds every menu shape, so the commands that need a state of their
+# own are visible anyway: the selection shape carries Copy (101), Highlight
+# (135) and the default-highlight family (140-149), the highlight shape carries
+# the highlight's own Copy text (116), and 180 (clear custom colours) needs a
+# custom colour to exist, which the seed above provides.
 missing = []
 for name in required:
     if name not in table:
