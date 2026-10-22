@@ -121,6 +121,12 @@ std::wstring u16ToWide(const unsigned short* p, size_t n) {
     return out;
 }
 
+std::wstring pdfBytesToWide(const unsigned short* p, unsigned long bytes) {
+    std::wstring out = u16ToWide(p, bytes / 2);
+    while (!out.empty() && out.back() == L'\0') out.pop_back();
+    return out;
+}
+
 std::string wideToUtf8(const std::wstring& s) {
     std::string out;
     for (size_t i = 0; i < s.size(); i++) {

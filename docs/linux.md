@@ -72,7 +72,6 @@ paints the composited frame and draws its own scrollbars.
   Windows build does (src/main.cpp:2466-2479). What differs is the asset.
   The Windows app then fetches `mnpdf-win-x64-<tag>.zip` by name; a Linux-only
   release is a prerelease until the Windows archive is published beside it, and
-
   that endpoint names the Windows asset. The port reads the release feed for
   the newest release that actually carries `mnpdf-linux-x64-<tag>.tar.gz` and
   compares versions with the Windows rules. See "The parity work" below for

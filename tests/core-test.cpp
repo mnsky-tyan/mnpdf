@@ -11,7 +11,9 @@
 #include "doc.h"
 #include "mnpdf-version.h"
 
-// the update check's version rules (update.cpp)
+// the update check's version rules and release lookup (update.cpp). AssetAnswer
+// and pickLinuxRelease come from doc.h: the suite links the real update.cpp and
+// asserts what the probe loop does with each of the three answers.
 bool parseVersion(const std::string& text, int& major, int& minor, int& patch);
 bool versionIsNewer(const std::string& candidate);
 std::vector<std::string> releaseTagsFromFeed(const std::string& body);
@@ -20,6 +22,7 @@ std::vector<std::string> releaseTagsFromFeed(const std::string& body);
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <functional>
 #include <string>
 #include <vector>
 #include <sys/stat.h>
@@ -719,6 +722,51 @@ int main(int argc, char** argv) {
         CHECK(releaseTagsFromFeed("<feed><id>tag:github.com,2008:x/nonsense</id></feed>").empty(),
               "an id that is not a version yields no tag");
         CHECK(releaseTagsFromFeed("").empty(), "an empty feed yields no tag");
+    }
+
+    printf("\n== the update check never names an older release when a probe fails ==\n");
+    {
+        // The feed lists the newest release first, and the documented release
+        // rule is that every release carries both assets. So when the newest
+        // release's archive probe does not answer (a CDN 5xx, a 429, a timeout)
+        // the answer is UNKNOWN, not "no": falling through to the next tag
+        // would report an older release as the newest, tell a reader on that
+        // older build it is up to date, and cache the wrong tag for an hour.
+        std::vector<std::string> tags = { "v2.8.0", "v2.7.0" };
+        bool unknown = false;
+        std::string got = pickLinuxRelease(tags, [](const std::string& tag) {
+            return tag == "v2.8.0" ? AssetAnswer::Unreachable : AssetAnswer::Yes;
+        }, &unknown);
+        CHECK(got.empty() && unknown,
+              "an unreachable newest probe names no release and reports the uncertainty");
+
+        // a real "no" on the newest release is different: the search moves on,
+        // because that release genuinely carries no Linux archive
+        unknown = true;
+        got = pickLinuxRelease(tags, [](const std::string& tag) {
+            return tag == "v2.8.0" ? AssetAnswer::No : AssetAnswer::Yes;
+        }, &unknown);
+        CHECK(got == "v2.7.0" && !unknown,
+              "a release that really carries no archive is skipped, and the next one is named");
+
+        // every tag answering "no" is a real answer: no Linux build was found
+        unknown = true;
+        got = pickLinuxRelease(tags, [](const std::string&) { return AssetAnswer::No; }, &unknown);
+        CHECK(got.empty() && !unknown, "when every release answers no, no Linux build exists");
+
+        // an unreachable probe deeper in the list is uncertainty too: the
+        // release above it answered "no", so the newest one is still unknown
+        unknown = false;
+        got = pickLinuxRelease(tags, [](const std::string& tag) {
+            return tag == "v2.8.0" ? AssetAnswer::No : AssetAnswer::Unreachable;
+        }, &unknown);
+        CHECK(got.empty() && unknown,
+              "an unreachable probe after a no is uncertainty, not a missing release");
+
+        // the newest release answering yes is the answer, whatever follows
+        unknown = true;
+        got = pickLinuxRelease(tags, [](const std::string&) { return AssetAnswer::Yes; }, &unknown);
+        CHECK(got == "v2.8.0" && !unknown, "the newest release carrying the archive is named");
     }
 
     printf("\npass=%d fail=%d\n", gPass, gFail);
