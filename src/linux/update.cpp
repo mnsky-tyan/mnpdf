@@ -156,18 +156,15 @@ static std::string httpFailureText(CURLcode code, long status) {
 //     letters, dot, dash and underscore pass, because the tag becomes a URL
 //     path component and a file name.
 //
-//  2. The release page names its assets in its download links, so the Linux
-//     archive is found there. /releases/latest skips prereleases, and a
-//     Linux-only release IS a prerelease until its Windows archive ships, so
-//     the releases LIST is read as well and the newest release carrying a
-//     Linux archive is taken from it.
+//  2. The release feed lists which releases exist, the prereleases included,
+//     and the Linux archive is confirmed by asking for its download URL - the
+//     same URL a reader would click. /releases/latest skips prereleases, and
+//     a Linux-only release IS a prerelease until its Windows archive ships,
+//     so the feed is read and the newest release carrying a Linux archive is
+//     taken from it.
 //
 // The tag is never taken on trust: it is validated the same way the Windows
 // build validates it.
-struct ReleaseInfo {
-    std::string tag;
-    bool hasLinuxAsset = false;
-};
 
 // a tag is only digits, letters, dot, dash and underscore - the same set the
 // Windows build accepts before it turns a tag into a path (src/main.cpp:2481)

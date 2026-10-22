@@ -70,9 +70,12 @@ paints the composited frame and draws its own scrollbars.
 
   that endpoint names the Windows asset. The port reads the release feed for
   the newest release that actually carries `mnpdf-linux-x64-<tag>.tar.gz` and
-  compares versions with the Windows rules. See "The parity work" above for
+  compares versions with the Windows rules. See "The parity work" below for
   the asset that publishes that name. There is no Linux install step yet: the
-  check reports what is available and hands the reader the release page.- **Tabs are GtkNotebook pages**, and each tab's own document, zoom, scroll and
+  check reports what is available in a message box, and it has no "open the
+  release page" button - the Windows build has one.
+
+- **Tabs are GtkNotebook pages**, and each tab's own document, zoom, scroll and
   marks live in its `Doc` bundle exactly as on Windows.
 
 ## The file formats are the contract

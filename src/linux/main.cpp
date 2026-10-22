@@ -314,10 +314,10 @@ static int menuColorIndex(int id, int presetBase, int customBase) {
 
 // ---- the update check ------------------------------------------------------
 // The Windows build offers the update in a dialog with a Download button
-// (src/main.cpp:3020). The Linux check reads the release tag off the web host
-// and finds the Linux archive on the release page, then compares the tag with
-// this build's version; the report is a dialog of the same shape, so the
-// reader sees the same thing on both platforms.
+// (src/main.cpp:3020). The Linux check takes the release list from the
+// release feed, confirms the Linux archive by asking for its download URL,
+// and compares the tag with this build's version; the report is a dialog too,
+// though with no download - the reader is told, not installed.
 //
 // The request runs on its own thread, like the Windows one: a network that
 // takes its time must not freeze the window. GTK is not thread-safe, so the
