@@ -187,7 +187,7 @@ The Windows build's print dialog is replaced by the GtkPrintOperation dialog.
 The update check differs in one deliberate way: the Windows app reads
 GitHub's `/releases/latest` and downloads `mnpdf-win-x64-<tag>.zip` by name,
 while this one reads the release feed for the newest release that actually
-carries a Linux archive - see "The update check" below.
+carries a Linux archive - see "The update check" above.
 ## The parity work (2026-10-21)
 
 The port now carries the same command set as the Windows build, under the same
@@ -233,7 +233,9 @@ platforms.
 is Save, 119 is Save As, 114 is Undo, 115 is Redo, 113 is the titlebar toggle,
 133 and 134 are the rotations, 137 is Print, 170 is the update check, 180
 clears the custom colours. The entries Windows has no menu for - Delete this
-page, Move page up, Move page down - moved into a free range (310-312).
+page, Move page up, Move page down - moved into a free range (310-312), and
+"Open in new tab..." (108) has no Windows counterpart either, so it is
+Linux-only in the same way.
 
 
 **The update check.** This is the one place the port deliberately does not
@@ -276,6 +278,29 @@ The version the port reports is generated at build time from the Windows
 can never claim different versions - which matters, because they share one
 app.txt.
 
+Three things the Windows build does that the port now does the same way, and
+that are easy to get wrong:
+
+- **The attempt is stamped on the UI thread.** The worker thread makes the
+  request; the window procedure stamps the attempt into app.txt
+  (src/main.cpp:6085). The port stamps it in the reply handler, for the same
+  reason: `writeAppPref` writes the shared app.txt, and every other writer of
+  it runs on the GTK main thread.
+- **A click inside the cooldown is answered from the cache**, not refused. The
+  Windows build reports what the last attempt learned
+  (src/main.cpp:3156-3180), so the reader gets a true answer and no request
+  is spent. The port does the same, and says when the last attempt could not
+  reach GitHub and how long is left.
+- **The asset check is three-valued.** "The release carries the archive", "it
+  does not" and "the host did not answer" are three different answers, and the
+  third is not the second: a timeout is not evidence that the archive is
+  missing. The port says so rather than reporting a missing build.
+
+The rotation commands act on the page the context menu was opened on, not on
+the page the document happens to be showing, the way the Windows build does
+with `gMenuRotPage` (src/main.cpp:5514, :5748). A right-click on page 3
+rotates page 3 even when page 7 is on screen.
+
 ## The test seams
 
 `MNPDF_CMD` drives one command by its menu id, the way the Windows suites post
@@ -283,13 +308,16 @@ WM_COMMAND, so a suite can assert on chrome the page back buffer never holds.
 It runs on its own turn of the main loop and the picture is taken on the next
 one, so a drawer a command opened is laid out before it is captured.
 `MNPDF_SHOT_WINDOW` captures the whole window instead of only the page buffer.
-`MNPDF_MENU_DUMP` prints the menu bar and the context menu as text, each entry
-as `label: id`, then quits through the app's own quit path. The context menu
+`MNPDF_MENU_DUMP` prints the menu bar and the context menu as text, the
+context menu's entries as `label: id`, then quits through the app's own quit
+path. The context menu
 is printed in every shape it has - nothing under the cursor, a highlight, a
 pin, a live selection - because the mark-specific commands exist only in
 their own shape. The dump is asserted against the command table the Windows
 suites already own (`tests/lib.ps1`'s `CMD_*` ids), so a missing command or a
-wrong id fails the gate; the gate then drives ids 113, 170, 201 and 202 and
+wrong id fails the gate; the menu bar's entries post the same commands, so the
+ids are asserted through the shapes. The gate then drives ids 113, 170, 201
+and 202 and
 asserts what each wrote to app.txt or to the pixels.
 
 `MNPDF_SHOT_EXIT` is a fourth seam, and it is a window-level one rather than a

@@ -14,13 +14,27 @@ here=$(cd "$(dirname "$0")/.." && pwd)
 cd "$here"
 
 tag=${1:-}
+
+# The generated header is the single source of the version: the Windows
+# kAppVersion constant that CMake read into mnpdf-version.cpp. It is required
+# either way: with no tag the build's version IS the tag, and with an explicit
+# tag it is what that tag is checked against. A tree that cannot state the
+# version it built cannot package a release at all, so a missing file is a
+# refusal rather than a silently unchecked tag.
+ver=$(sed -n 's/^const char\* gAppVersion = "\([^"]*\)";$/\1/p' \
+          build-linux/mnpdf-version.cpp 2>/dev/null | head -1)
+[ -n "$ver" ] || { echo "no build-linux/mnpdf-version.cpp; run ./build-linux.sh first" >&2; exit 1; }
 if [ -z "$tag" ]; then
-    # the generated header is the single source of the version: the Windows
-    # kAppVersion constant. Reading it here keeps the two in step.
-    ver=$(sed -n 's/^const char\* gAppVersion = "\([^"]*\)";$/\1/p' \
-              build-linux/mnpdf-version.cpp 2>/dev/null | head -1)
-    [ -n "$ver" ] || { echo "no build-linux/mnpdf-version.cpp; run ./build-linux.sh first" >&2; exit 1; }
     tag="v$ver"
+elif [ "$tag" != "v$ver" ]; then
+    # The tag must match the binary's own version. The archive is named after
+    # the tag, and the update check looks the archive up by exactly that name,
+    # so a tarball named for a version the binary does not claim is one the
+    # check will never offer - and one that says the wrong thing to anyone who
+    # unpacks it.
+    echo "the tag ($tag) does not match the build's version ($ver)" >&2
+    echo "build first, or pass the tag the build carries: v$ver" >&2
+    exit 1
 fi
 
 [ -x build-linux/mnpdf ] || { echo "no build-linux/mnpdf; run ./build-linux.sh first" >&2; exit 1; }

@@ -47,6 +47,7 @@ tests/lib.ps1            shared Windows suite harness (window lookup, launch)
 tests/watchdog.ps1        Windows suite watchdog
 scripts/linux-gate.sh    the Linux gate: builds, runs the headless engine suite,
                          then drives the real binary on Xvfb
+scripts/make-release-tarball.sh  the Linux release asset: mnpdf-linux-x64-<tag>.tar.gz
 scripts/gate-common.ps1  shared Windows gate recipe (one pass/fail rule)
 scripts/gate-test.sh     the Windows gate's WSL entry point
 scripts/test-ci.ps1      the Windows/CI entry point (same nine suites)
