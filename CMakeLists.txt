@@ -27,7 +27,11 @@ string(REGEX MATCH "kAppVersion[ \t]*=[ \t]*L\"([0-9]+[.][0-9]+[.][0-9]+)\"" MNP
 if(MNPDF_VER_MATCH)
   set(MNPDF_VERSION ${CMAKE_MATCH_1})
 else()
-  set(MNPDF_VERSION "0.0.0")
+  # the regex miss is a configure error, not a 0.0.0: a tree whose
+  # kAppVersion moved or was reformatted must fail HERE, where the cause is
+  # one message away - a 0.0.0 build would sail through configure, stamp the
+  # release tarball v0.0.0 and tell every reader that every release is newer
+  message(FATAL_ERROR "cannot read kAppVersion from src/main.cpp - expected a literal L\"x.y.z\" assignment")
 endif()
 message(STATUS "mnpdf version ${MNPDF_VERSION} (from src/main.cpp)")
 file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/mnpdf-version.h

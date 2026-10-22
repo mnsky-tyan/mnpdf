@@ -53,8 +53,11 @@ else
     cp "$so" "$stage/libpdfium.so"
 fi
 cp build-linux/mnpdf "$stage/mnpdf"
-[ -e README.txt ] && cp README.txt "$stage/README.txt"
 [ -e third_party/pdfium-linux/LICENSE ] && cp third_party/pdfium-linux/LICENSE "$stage/PDFIUM-LICENSE.txt"
+# README-linux.txt is the Linux reader's readme; README.txt is the Windows
+# document ("Run mnpdf.exe") and does not ship in the Linux asset. The Linux
+# asset's version is its tag-named directory; the Windows ZIP keeps README.txt
+# as its version contract.
 [ -e README-linux.txt ] && cp README-linux.txt "$stage/README-linux.txt"
 
 out=build-linux/mnpdf-linux-x64-$tag.tar.gz

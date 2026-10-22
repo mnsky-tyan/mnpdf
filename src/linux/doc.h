@@ -248,6 +248,8 @@ void undoOp();
 void redoOp();
 void markDirty();
 void markSave();
+bool sidecarPending();     // a sidecar write is armed for the 800 ms tick
+void sidecarClearPending(); // disarm it (the autosave toggle's off half)
 
 // the shared-preference role: a window that does not own it writes neither
 // app.txt nor last.txt, so a second reader cannot overwrite the first one's

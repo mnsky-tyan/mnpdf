@@ -179,8 +179,9 @@ quits after, so a pixel assertion needs no harness clicking a window.
 
 Measured on this machine (`/usr/bin/time`, and RSS sampled from `/proc`):
 
-- Headless core test, 161 checks including two full save/bake round trips:
-  **0.26 s wall, 15.1 MB peak RSS** (measured, `/usr/bin/time -v`).
+- Headless core test, 171 checks including two full save/bake round trips:
+  **0.26 s wall, 21 MB peak RSS** (measured, `/usr/bin/time -v`; the suite
+  links libcurl and exercises the update and instance modules).
 - The GUI with a 13-page document open, idle after 20 s: **98.6 MB RSS, steady
   state, no growth** (measured, sampled from `/proc/<pid>/status`). Of that,
   the vendored `libpdfium.so` file itself is 7.9 MB (measured, `ls`); how much of
@@ -438,7 +439,11 @@ gh release create v2.7.0 --title "mnpdf v2.7.0" \
 The Linux asset is a plain tarball, and `scripts/make-release-tarball.sh`
 produces exactly the layout that is published: a `mnpdf-linux-x64-<tag>/`
 directory holding the binary, the vendored `libpdfium.so` (found through an
-`$ORIGIN` rpath), `README.txt`, `PDFIUM-LICENSE.txt` and `README-linux.txt`.
+`$ORIGIN` rpath), `PDFIUM-LICENSE.txt` and `README-linux.txt`. (The published
+v2.7.0 asset also carries the Windows `README.txt`, whose first lines tell
+the reader to run `mnpdf.exe`; from the next release the Linux asset ships
+`README-linux.txt` alone, and the Windows ZIP keeps `README.txt` as its
+version contract.)
 It needs no install step and no root; the system dependencies are GTK3, which
 every desktop already has, and libcurl (`libcurl4-openssl-dev` to build,
 `libcurl.so.4` at runtime) for the update check. `ldd` on the unpacked binary

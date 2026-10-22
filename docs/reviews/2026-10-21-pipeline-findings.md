@@ -19,7 +19,7 @@ with the per-run raw output (`run-<id>-review-full.log`).
 
 ## Summary
 
-- 36 fixed, 4 deliberately deferred and documented, 0 still open.
+- 41 fixed, 2 deliberately deferred and documented, 0 still open.
 
 - The "-UNIMPLEMENTED" ids in the raw logs are the same defects re-reported after a
   daemon restart killed a fixer mid-round; they are folded into their base id here.
@@ -582,3 +582,57 @@ Declined, with reasons recorded for the next round:
 - **F20** (keep row pictures through a refresh): declined - it is the same
   documented one-raster divergence as F16 (docs/linux.md, "The one place the
   port is cheaper than the Windows build").
+
+### Round 12 (the fa7900a re-review): five findings, all real - FIXED
+
+**Fixed in the round-13 batch (the merge of 60aa0e2 plus `Start a second window empty and gate every sidecar write on the primary role`)**
+
+The round-12 re-review of the pipeline head (fa7900a, which merges 668db01)
+was the first to run the binary end to end rather than read code: it measured
+the second-launch sidecar rewrite (zoom 1.767974 -> 1.366162 by a plain
+second launch with no user input), the autosave-off sidecar write, the
+0.0.0 CMake fallback, the stale resource numbers and the Windows readme
+inside the Linux tarball. All five were real; all five are closed.
+
+- **linux-second-launch-not-empty (error)** a plain second launch reopened
+  the document the primary already had (Windows starts it empty,
+  src/main.cpp:6241) and, worse, its clean exit rewrote that document's
+  sidecar (writeSidecarFor carried no primary-role gate; Windows gates the
+  sidecar write at src/main.cpp:3276). Fixed both halves: the launch branch
+  consults the role, and writeSidecarFor carries the same gate. Gate-proven:
+  the plain second window is empty (no document title), a second window with
+  an explicit file argument still opens (two readers side by side is the
+  point), and its exit leaves the primary's sidecar untouched in mtime AND
+  content - the check fails on the broken code (verified).
+- **linux-autosave-toggle-pending-flush (warning)** the toggle (case 109) only
+  flipped the flag, where Windows also cancels the pending write on off and
+  re-arms the flush on on (src/main.cpp:5702-5711). Fixed both halves.
+  Gate-proven with timeout-killed runs (no quit path may write, so only the
+  800 ms tick can have): a change then toggle-off writes nothing, toggle-off,
+  change, toggle-on flushes it. Both halves fail on the flip-only code
+  (verified).
+- **cmake-version-fallback-0-0-0 (warning)** a version-regex miss silently
+  stamped the build 0.0.0 (which makes every release look newer forever and
+  names the tarball v0.0.0) instead of refusing to configure. The else branch
+  is now message(FATAL_ERROR), matching the comment's own promise.
+- **docs/linux.md resource numbers (warning, pipeline-owned delivery)** the
+  suite the doc describes runs 171 checks now, and linking libcurl moved its
+  peak RSS from 15.1 MB to ~21 MB (re-measured by the reviewer,
+  /usr/bin/time -v). Updated; the 98.6 MB GUI figure still measured true.
+- **the Linux tarball's Windows readme (warning, ask-user, pipeline-owned
+  delivery)** the tarball shipped README.txt, whose first lines tell the
+  reader to run mnpdf.exe. Decision made: the Linux asset ships
+  README-linux.txt alone from the next release; the Windows ZIP keeps
+  README.txt as its version contract, and the Linux asset's version is its
+  tag-named directory. The published v2.7.0 asset (which already carries
+  both files) is left as published; docs/linux.md records the change.
+
+Also recorded: a supposed sibling divergence this batch first "fixed" and
+then un-did on second look - menu Quit, Escape and the last tab's close were
+re-routed to gtk_window_close on the theory they bypassed the unsaved-changes
+prompt, but requestQuit already funnels through onWindowDelete (the port's
+own comment says so), so the rerouting was redundant and was reverted. The
+quit-prompt gate section stays: it locks the prompt behaviour (TOPS 3 with
+unsaved changes, TOPS 0 clean) against future refactors.
+
+Gate: 46 -> 53 checks, all passing; core 171/171.

@@ -332,6 +332,101 @@ wait $holder 2>/dev/null
 grep -q "^titlebar=1$" "$I/cfg/mnpdf/app.txt"
 chk $? "a second window does not overwrite the shared app.txt"
 
+echo "== a plain second launch starts empty, and no second window writes a sidecar =="
+# README.txt's promise ("SEVERAL WINDOWS"): later windows "start empty and write
+# none of them". Windows keeps it two ways: a plain second launch opens
+# nothing (src/main.cpp:6241) and the sidecar write itself is gated on the
+# primary role (src/main.cpp:3276). An explicit file argument still opens -
+# two readers side by side is the point of a second window - but that
+# window writes no sidecar either. Three halves, all against a live primary:
+# the plain second launch maps an EMPTY window (titled "mnpdf", never
+# "arc.pdf - mnpdf - page 1/13"), the second launch with a file argument
+# opens its document, and that window's clean exit leaves the primary's
+# sidecar untouched (mtime AND content).
+E=$STATE/secondwin; mkdir -p "$E/cfg/mnpdf"
+printf 'tabstrip=1\ntitlebar=1\nautosave=1\nhlcolor=0\npincolor=5\nnight=0\n' > "$E/cfg/mnpdf/app.txt"
+xvfb-run -a --server-args="-screen 0 1280x900x24" \
+  env GDK_BACKEND=x11 MNPDF_NO_UPDATE=1 XDG_CONFIG_HOME="$E/cfg" timeout 22 "$BIN" "$PDF" >"$E/first.log" 2>&1 &
+holder=$!
+sleep 6
+SC="$E/cfg/mnpdf/$(ls "$E/cfg/mnpdf" | grep '^doc-' | head -1)"
+M1=$(stat -c %Y "$SC" 2>/dev/null || echo 0)
+C1=$(md5sum < "$SC" 2>/dev/null || echo none)
+# a PLAIN second launch (no argument): its window must be the empty reader
+xvfb-run -a --server-args="-screen 0 800x600x24" \
+  env GDK_BACKEND=x11 MNPDF_NO_UPDATE=1 XDG_CONFIG_HOME="$E/cfg" \
+  sh -c 'timeout 6 "$0" > "$1/plain.log" 2>&1 & sleep 5; \
+         xwininfo -root -children 2>/dev/null | grep "mnpdf"' \
+  "$BIN" "$E" > "$E/plain-names.txt" 2>&1
+if grep -q "page 1/13" "$E/plain-names.txt"; then bad "a plain second launch reopened the primary's document"; else
+    chk 0 "a plain second launch starts empty (no document window)"
+fi
+grep -q '"mnpdf".*800x600' "$E/plain-names.txt"
+chk $? "its window is the empty reader"
+# a second launch WITH a file argument opens it, and its clean exit must not
+# write the sidecar back
+xvfb-run -a --server-args="-screen 0 800x600x24" \
+  env GDK_BACKEND=x11 MNPDF_NO_UPDATE=1 XDG_CONFIG_HOME="$E/cfg" MNPDF_SHOT="$E/second.png" MNPDF_SHOT_EXIT=1 \
+  timeout 20 "$BIN" "$PDF" > "$E/file.log" 2>&1
+M2=$(stat -c %Y "$SC" 2>/dev/null || echo 0)
+C2=$(md5sum < "$SC" 2>/dev/null || echo none)
+[ "$M1" = "$M2" ] && [ "$C1" = "$C2" ]
+chk $? "a second window writes no sidecar, not even the document it opened"
+wait $holder 2>/dev/null
+
+echo "== the autosave toggle cancels and re-arms the pending write =="
+# Windows case 109 does not only flip the flag (src/main.cpp:5702-5711): it
+# cancels the pending sidecar write when it turns autosave off, and re-arms
+# the flush when it turns back on. The port's tick runs for the whole session,
+# so the arm and the cancel are the pending flag. Both halves are proven by
+# runs killed by timeout: no quit path may write the sidecar, so only the
+# 800 ms tick can have written anything.
+A=$STATE/autosave; mkdir -p "$A/cfg/mnpdf"
+printf 'tabstrip=1\ntitlebar=1\nautosave=1\nhlcolor=0\npincolor=5\nnight=0\n' > "$A/cfg/mnpdf/app.txt"
+xvfb-run -a --server-args="-screen 0 1280x900x24" \
+  env GDK_BACKEND=x11 MNPDF_NO_UPDATE=1 XDG_CONFIG_HOME="$A/cfg" MNPDF_CMD=133,109 \
+      timeout 3 "$BIN" "$PDF" > "$A/off.log" 2>&1
+SC="$A/cfg/mnpdf/$(ls "$A/cfg/mnpdf" | grep '^doc-' | head -1)"
+[ -z "$(grep 'rot=' "$SC" 2>/dev/null)" ]
+chk $? "autosave turned off cancels the write the change had armed"
+printf 'tabstrip=1\ntitlebar=1\nautosave=1\nhlcolor=0\npincolor=5\nnight=0\n' > "$A/cfg/mnpdf/app.txt"
+rm -f "$SC"
+xvfb-run -a --server-args="-screen 0 1280x900x24" \
+  env GDK_BACKEND=x11 MNPDF_NO_UPDATE=1 XDG_CONFIG_HOME="$A/cfg" MNPDF_CMD=109,133,109 \
+      timeout 3 "$BIN" "$PDF" > "$A/on.log" 2>&1
+SC="$A/cfg/mnpdf/$(ls "$A/cfg/mnpdf" | grep '^doc-' | head -1)"
+grep -q '^rot=0,' "$SC" 2>/dev/null
+chk $? "autosave turned back on flushes what changed while it was off"
+
+echo "== the quit paths ask about unsaved changes, the way the Windows build does =="
+# Windows routes every user quit through WM_CLOSE (menu Quit src/main.cpp:5715,
+# the last tab :5325, Escape :5494), and WM_CLOSE is where the unsaved-changes
+# prompt lives (src/main.cpp:6098-6112). The port routes the same three paths
+# through its window's delete flow, so the prompt runs for them too. Proven by
+# counting toplevels: the reader maps two Mnpdf toplevels alone (measured),
+# and a modal is a third. A clean quit leaves none.
+Q=$STATE/quitprompt; mkdir -p "$Q/dirty/mnpdf" "$Q/clean/mnpdf"
+printf 'tabstrip=1\ntitlebar=1\nautosave=0\nhlcolor=0\npincolor=5\nnight=0\n' > "$Q/dirty/mnpdf/app.txt"
+cp "$Q/dirty/mnpdf/app.txt" "$Q/clean/mnpdf/app.txt"
+# a change then menu Quit: the prompt must be up and the reader still alive
+xvfb-run -a --server-args="-screen 0 800x600x24" \
+  env GDK_BACKEND=x11 MNPDF_NO_UPDATE=1 XDG_CONFIG_HOME="$Q/dirty" MNPDF_CMD=133,112 \
+  sh -c 'timeout 8 "$0" "$1" > "$2/log.txt" 2>&1 & sleep 5; \
+         echo TOPS $(xwininfo -root -children 2>/dev/null | grep -c "\"Mnpdf\"")' \
+  "$BIN" "$PDF" "$Q/dirty" > "$Q/dirty/tops.txt" 2>&1
+TOPS=$(sed -n 's/^TOPS //p' "$Q/dirty/tops.txt")
+[ "$TOPS" = "3" ]
+chk $? "quitting with unsaved changes asks first, and stays up (tops: $TOPS)"
+# a clean doc then menu Quit: no prompt, and the reader is gone
+xvfb-run -a --server-args="-screen 0 800x600x24" \
+  env GDK_BACKEND=x11 MNPDF_NO_UPDATE=1 XDG_CONFIG_HOME="$Q/clean" MNPDF_CMD=112 \
+  sh -c 'timeout 8 "$0" "$1" > "$2/log.txt" 2>&1 & sleep 5; \
+         echo TOPS $(xwininfo -root -children 2>/dev/null | grep -c "\"Mnpdf\"")' \
+  "$BIN" "$PDF" "$Q/clean" > "$Q/clean/tops.txt" 2>&1
+TOPS=$(sed -n 's/^TOPS //p' "$Q/clean/tops.txt")
+[ "$TOPS" = "0" ]
+chk $? "quitting a clean reader asks nothing and leaves (tops: $TOPS)"
+
 echo "== the update check honours the cooldown =="
 # The Windows build asks GitHub at most once an hour and stamps the attempt
 # into app.txt (kUpdateCheckIntervalMin, src/main.cpp:67). A check inside that
