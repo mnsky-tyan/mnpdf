@@ -67,6 +67,7 @@ docs/reviews/            codebase review reports (dated per pass)
 test-*.ps1               the Windows feature suites (drive the real binary)
 select-msg-test.ps1      a Windows suite driving the selection path
 README.md / README.txt   the user README; README.txt is the version contract
+README-linux.txt         the Linux reader's own readme, inside the Linux tarball
 PDFIUM-LICENSE.txt       the PDFium license, shipped in release ZIPs
 mnpdf.ico, mnpdf.rc, resource.h   the Windows icon resource
 third_party/pdfium/        Windows PDFium (headers, import lib, DLL, license)

@@ -359,10 +359,13 @@ with about 10 GiB already in use. One raster costs one page. The Windows
 build's own row cache is not carried over until the port can hold it.
 
 Everything else about the drawer follows the Windows shape: a refresh rebuilds
-the row heights and keeps each row's picture unless the page count changed
-(refreshThumbDrawer, src/main.cpp:4813-4957), the selection stays on the page
-it named unless that page is gone (src/main.cpp:4964-4967), and the scroll
-offset is clamped when the list shrinks.
+the row heights and drops the pictures on both platforms - the Windows
+refreshThumbDrawer calls layoutThumbs, which opens with clearThumbCache
+(src/main.cpp:4813-4817, :4960), and the port drops its single raster - the
+only difference is the granularity, one raster here against a picture per row
+there. The selection stays on the page it named unless that page is gone
+(src/main.cpp:4964-4967), and the scroll offset is clamped when the list
+shrinks.
 
 ## The test seams
 
