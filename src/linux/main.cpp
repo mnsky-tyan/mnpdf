@@ -673,7 +673,6 @@ static int gMenuPinIdx = -1;
 static GtkWidget* gThumbDrawer = nullptr;
 static GtkWidget* gOutlineDrawer = nullptr;
 int gThumbSel = -1;
-// a move re-points the drawer's ring at the page that moved
 
 
 // ---- context menu ----
@@ -1595,11 +1594,9 @@ struct BmEntry { std::wstring title; int page; int depth; };
 static std::vector<BmEntry> gBmList;
 static int gBmSel = -1;
 
-// The selection follows the page that moved, the way the Windows build sets
-// it inside movePage (src/main.cpp:4615-4620): the ring cannot stay on the
 // Recompute the row heights and drop the cached raster. The Windows drawer
 // drops its pictures here too: layoutThumbs() calls clearThumbCache(), which
-// deletes every bitmap (src/main.cpp:4813-4821), so a refresh after a merge, a
+// deletes every bitmap (src/main.cpp:4813-4817), so a refresh after a merge, a
 // reopen or a rotation starts the rows again. It has to: the cached picture is
 // one page's, and a rotation, an undo, a page move and a reopen all change
 // what a row shows without changing how many pages there are. Windows can
@@ -2004,7 +2001,6 @@ static void clearCustomColours() {
 static void requestQuit() {
     if (!onWindowDelete(nullptr, nullptr, nullptr)) gtk_widget_destroy(gWin);
 }
-
 
 static void onWindowConfigure(GtkWidget*, GdkEventConfigure* ev, gpointer) {
     gWinX = ev->x; gWinY = ev->y; gWinW = ev->width; gWinH = ev->height;
