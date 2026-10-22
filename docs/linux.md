@@ -361,11 +361,11 @@ build's own row cache is not carried over until the port can hold it.
 Everything else about the drawer follows the Windows shape: a refresh rebuilds
 the row heights and drops the pictures on both platforms - the Windows
 refreshThumbDrawer calls layoutThumbs, which opens with clearThumbCache
-(src/main.cpp:4813-4817, :4960), and the port drops its single raster - the
-only difference is the granularity, one raster here against a picture per row
-there. The selection stays on the page it named unless that page is gone
-(src/main.cpp:4964-4967), and the scroll offset is clamped when the list
-shrinks.
+(src/main.cpp:4813-4817, :4825, :4968), and the port drops its single raster
+(src/linux/main.cpp:1558-1561) - the only difference is the granularity, one
+raster here against a picture per row there. The selection stays on the page
+it named unless that page is gone (src/main.cpp:4965-4967), and the scroll
+offset is clamped when the list shrinks.
 
 ## The test seams
 
