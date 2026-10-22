@@ -839,16 +839,26 @@ static void onContextMenu(GtkWidget* w, GdkEventButton* ev) {
 // each shape in turn and prints it.
 static void dumpEveryMenuShape() {
     int savedHl = gMenuHlIdx, savedPin = gMenuPinIdx, savedPinPage = gMenuPinPage;
+    int savedSelA = gSelAnchor, savedSelH = gSelHead;
+    int savedSelAP = gSelAnchorPage, savedSelHP = gSelHeadPage;
     for (int shape = 0; shape < 4; shape++) {
         gMenuHlIdx = -1;
         gMenuPinIdx = -1;
         gMenuPinPage = -1;
+        clearSelection();
         if (shape == 1 && !gHls.empty()) gMenuHlIdx = 0;
         else if (shape == 2 && !gPins.empty()) gMenuPinIdx = 0;
-        else if (shape == 3) gMenuHlIdx = -1;
+        else if (shape == 3 && gDoc) {
+            // a live selection: the only state in which the Copy/Highlight and
+            // the default-colour ids (101, 135, 140, 149) exist at all
+            gSelAnchorPage = gSelHeadPage = gPageIndex;
+            gSelAnchor = 0; gSelHead = 1;
+        }
         if (shape == 1 && gMenuHlIdx < 0) continue;   // no highlights to show
         if (shape == 2 && gMenuPinIdx < 0) continue;  // no pins to show
+        if (shape == 3 && !gDoc) continue;            // no page to select on
         GtkWidget* menu = buildContextMenu(gClientW / 2, gClientH / 2);
+        printf("== context menu (shape %d) ==\n", shape);
         GList* kids = gtk_container_get_children(GTK_CONTAINER(menu));
         for (GList* k = kids; k; k = k->next)
             if (GTK_IS_MENU_ITEM(k->data)) dumpMenuTree(GTK_WIDGET(k->data), 0);
@@ -858,6 +868,8 @@ static void dumpEveryMenuShape() {
     gMenuHlIdx = savedHl;
     gMenuPinIdx = savedPin;
     gMenuPinPage = savedPinPage;
+    gSelAnchor = savedSelA; gSelHead = savedSelH;
+    gSelAnchorPage = savedSelAP; gSelHeadPage = savedSelHP;
 }
 
 // ---- mouse ----
