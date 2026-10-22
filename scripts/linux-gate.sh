@@ -50,7 +50,7 @@ if ! command -v xvfb-run >/dev/null; then echo "gate: xvfb-run missing (apt inst
 echo "== launch, render, and write a pixel shot =="
 D=$STATE/launch; mkdir -p "$D"
 xvfb-run -a --server-args="-screen 0 1280x900x24" \
-  env GDK_BACKEND=x11 XDG_CONFIG_HOME="$D" MNPDF_SHOT="$OUT" MNPDF_SHOT_EXIT=1 \
+  env GDK_BACKEND=x11 MNPDF_NO_UPDATE=1 XDG_CONFIG_HOME="$D" MNPDF_SHOT="$OUT" MNPDF_SHOT_EXIT=1 \
   timeout 30 "$BIN" "$PDF" >"$D/log.txt" 2>&1
 grep -qF -- "$OUT" "$D/log.txt"; chk $? "the app writes its own back buffer"
 [ -s "$OUT" ]; chk $? "the shot file has content"
@@ -93,7 +93,7 @@ fi
 echo "== state files: sidecar, prefs, last-document =="
 D=$STATE/state; mkdir -p "$D"
 xvfb-run -a --server-args="-screen 0 1280x900x24" \
-  env GDK_BACKEND=x11 XDG_CONFIG_HOME="$D" MNPDF_SHOT_EXIT=1 MNPDF_SHOT=/dev/null \
+  env GDK_BACKEND=x11 MNPDF_NO_UPDATE=1 XDG_CONFIG_HOME="$D" MNPDF_SHOT_EXIT=1 MNPDF_SHOT=/dev/null \
   timeout 30 "$BIN" "$PDF" >"$D/log.txt" 2>&1
 CFG=$D/mnpdf
 ls "$CFG" >/dev/null 2>&1; chk $? "the app creates its config directory"
@@ -115,11 +115,11 @@ fi
 echo "== a second launch restores the same document =="
 D=$STATE/restore; mkdir -p "$D"
 xvfb-run -a --server-args="-screen 0 1280x900x24" \
-  env GDK_BACKEND=x11 XDG_CONFIG_HOME="$D" MNPDF_SHOT_EXIT=1 MNPDF_SHOT=/dev/null \
+  env GDK_BACKEND=x11 MNPDF_NO_UPDATE=1 XDG_CONFIG_HOME="$D" MNPDF_SHOT_EXIT=1 MNPDF_SHOT=/dev/null \
   timeout 30 "$BIN" "$PDF" >"$D/log.txt" 2>&1
 FIRST=$(cat "$D/mnpdf/last.txt" 2>/dev/null | tr -d '\n')
 xvfb-run -a --server-args="-screen 0 1280x900x24" \
-  env GDK_BACKEND=x11 XDG_CONFIG_HOME="$D" MNPDF_SHOT_EXIT=1 MNPDF_SHOT=/dev/null \
+  env GDK_BACKEND=x11 MNPDF_NO_UPDATE=1 XDG_CONFIG_HOME="$D" MNPDF_SHOT_EXIT=1 MNPDF_SHOT=/dev/null \
   timeout 30 "$BIN" >"$D/log2.txt" 2>&1
 SECOND=$(cat "$D/mnpdf/last.txt" 2>/dev/null | tr -d '\n')
 # the second launch's own sidecar must exist for the remembered path, so a
@@ -136,7 +136,7 @@ echo "this is not a pdf at all" >"$D/broken.pdf"
 # the suite drives the open without a clickable dialog, so the process is given a
 # short timeout and is expected to still be alive at that point
 xvfb-run -a --server-args="-screen 0 1280x900x24" \
-  env GDK_BACKEND=x11 XDG_CONFIG_HOME="$D" \
+  env GDK_BACKEND=x11 MNPDF_NO_UPDATE=1 XDG_CONFIG_HOME="$D" \
   timeout 4 "$BIN" "$D/broken.pdf" >"$D/log.txt" 2>&1
 RC=$?
 # the app refuses with a message box, so the process is expected to still be
@@ -154,7 +154,7 @@ shot_for() {   # shot_for <id> <file> -> 0 on success
     local id=$1 out=$2
     rm -rf "$D/cfg$id"; mkdir -p "$D/cfg$id"
     xvfb-run -a --server-args="-screen 0 1280x900x24" \
-      env GDK_BACKEND=x11 XDG_CONFIG_HOME="$D/cfg$id" MNPDF_CMD="$id" \
+      env GDK_BACKEND=x11 MNPDF_NO_UPDATE=1 XDG_CONFIG_HOME="$D/cfg$id" MNPDF_CMD="$id" \
           MNPDF_SHOT="$out" MNPDF_SHOT_WINDOW=1 MNPDF_SHOT_EXIT=1 \
       timeout 30 "$BIN" "$PDF" >"$D/log$id.txt" 2>&1
 }
@@ -233,12 +233,12 @@ echo "== the titlebar toggle, and it survives a relaunch =="
 D=$STATE/titlebar; mkdir -p "$D"
 rm -rf "$D/cfg"; mkdir -p "$D/cfg"
 xvfb-run -a --server-args="-screen 0 1280x900x24" \
-  env GDK_BACKEND=x11 XDG_CONFIG_HOME="$D/cfg" MNPDF_CMD=113 MNPDF_SHOT_EXIT=1 \
+  env GDK_BACKEND=x11 MNPDF_NO_UPDATE=1 XDG_CONFIG_HOME="$D/cfg" MNPDF_CMD=113 MNPDF_SHOT_EXIT=1 \
   timeout 30 "$BIN" "$PDF" >"$D/log1.txt" 2>&1
 grep -q "^titlebar=0$" "$D/cfg/mnpdf/app.txt"; chk $? "hiding the titlebar is recorded in app.txt"
 # a relaunch must come back captionless, not with the default caption
 xvfb-run -a --server-args="-screen 0 1280x900x24" \
-  env GDK_BACKEND=x11 XDG_CONFIG_HOME="$D/cfg" MNPDF_SHOT="$D/again.png" MNPDF_SHOT_EXIT=1 \
+  env GDK_BACKEND=x11 MNPDF_NO_UPDATE=1 XDG_CONFIG_HOME="$D/cfg" MNPDF_SHOT="$D/again.png" MNPDF_SHOT_EXIT=1 \
   timeout 30 "$BIN" "$PDF" >"$D/log2.txt" 2>&1
 grep -q "^titlebar=0$" "$D/cfg/mnpdf/app.txt"; chk $? "the captionless state survives a relaunch"
 
@@ -249,7 +249,7 @@ D=$STATE/order; mkdir -p "$D"
 mkdir -p "$D/cfg/mnpdf"
 printf 'tabstrip=1\ntitlebar=1\nautosave=1\nhlcolor=0\npincolor=5\nnight=0\nupdcheck=1700000000\nupdtag=v2.6.0\n' > "$D/cfg/mnpdf/app.txt"
 xvfb-run -a --server-args="-screen 0 1280x900x24" \
-  env GDK_BACKEND=x11 XDG_CONFIG_HOME="$D/cfg" MNPDF_SHOT_EXIT=1 MNPDF_SHOT=/dev/null \
+  env GDK_BACKEND=x11 MNPDF_NO_UPDATE=1 XDG_CONFIG_HOME="$D/cfg" MNPDF_SHOT_EXIT=1 MNPDF_SHOT=/dev/null \
   timeout 30 "$BIN" "$PDF" >"$D/log.txt" 2>&1
 # titlebar= must land in the Linux block (right after tabstrip=), and the
 # foreign keys must be carried after it in their original order
@@ -283,12 +283,12 @@ printf 'tabstrip=1\ntitlebar=1\nautosave=1\nhlcolor=0\npincolor=5\nnight=0\n' > 
 # Letting it run out its own lifetime ends it the ordinary way, and the
 # server goes with it.
 xvfb-run -a --server-args="-screen 0 1280x900x24" \
-  env GDK_BACKEND=x11 XDG_CONFIG_HOME="$I/cfg" timeout 12 "$BIN" "$PDF" >"$I/first.log" 2>&1 &
+  env GDK_BACKEND=x11 MNPDF_NO_UPDATE=1 XDG_CONFIG_HOME="$I/cfg" timeout 12 "$BIN" "$PDF" >"$I/first.log" 2>&1 &
 holder=$!
 sleep 6
 # the second one toggles the titlebar, which the primary would persist
 xvfb-run -a --server-args="-screen 0 1280x900x24" \
-  env GDK_BACKEND=x11 XDG_CONFIG_HOME="$I/cfg" MNPDF_CMD=113 MNPDF_SHOT_EXIT=1 \
+  env GDK_BACKEND=x11 MNPDF_NO_UPDATE=1 XDG_CONFIG_HOME="$I/cfg" MNPDF_CMD=113 MNPDF_SHOT_EXIT=1 \
   timeout 30 "$BIN" "$PDF" >"$I/second.log" 2>&1
 # the holder ends on its own timeout, a few seconds after the second one is
 # done; waiting for it is what lets xvfb-run clean up after itself
@@ -323,7 +323,9 @@ echo "== a Windows stamp is not this reader's cooldown =="
 # reader's (the newest release carrying a Linux archive). A Windows-written
 # app.txt with a fresh updcheck= must not stop the Linux check from asking,
 # and the Linux check must carry the Windows pair forward untouched instead
-# of overwriting it with its own answer.
+# of overwriting it with its own answer. The request may be spent by either
+# the launch check or the click - whichever reaches the network first - so
+# the assertion is on the trace, not on which half asked.
 W=$STATE/updwin; mkdir -p "$W/cfg/mnpdf"
 printf 'tabstrip=1\ntitlebar=1\nautosave=1\nhlcolor=0\npincolor=5\nnight=0\nupdcheck=%s\nupdtag=v2.6.0\n' \
     "$(date +%s)" > "$W/cfg/mnpdf/app.txt"
@@ -351,11 +353,55 @@ if grep -q "Gtk-CRITICAL" "$U/log.txt"; then
     bad "the update answer's modal leaves a GTK critical behind"
     grep -m2 "Gtk-CRITICAL" "$U/log.txt" | sed 's/^/       /'
 else ok "the update answer's modal leaves no GTK critical behind"; fi
+echo "== the reader checks for updates at launch, silently =="
+# The Windows build starts a silent check before its message loop
+# (startUpdateCheck(false), src/main.cpp:6286): a reader is told about a
+# newer release at launch, and nothing else - a check that found nothing to
+# say, or that failed, is silent, and a launch inside the cooldown is silent
+# even when the cached answer names a newer one (the cached answer is only
+# surfaced by a click, because a click is the reader asking). Both halves are
+# proven by RUNNING the reader and counting the toplevels it maps: a modal is
+# a toplevel of its own, countable with xwininfo. Measured: the reader maps
+# exactly two Mnpdf-classed toplevels - its window and GTK's 10x10 utility
+# window - and a dialog makes a third.
+L=$STATE/updlaunch; mkdir -p "$L/one/mnpdf" "$L/two/mnpdf"
+# run one: no stamp, no click, no seam. The launch check must ask on its own
+# and stamp what it found.
+NOW=$(date +%s)
+xvfb-run -a --server-args="-screen 0 800x600x24" \
+  env GDK_BACKEND=x11 XDG_CONFIG_HOME="$L/one" \
+  sh -c 'timeout 12 "$0" "$1" > "$2/log.txt" 2>&1 & sleep 11; \
+         echo TOPS $(xwininfo -root -children 2>/dev/null | grep -c "\"Mnpdf\"")' \
+  "$BIN" "$PDF" "$L/one" >"$L/one/tops.txt" 2>&1
+TOPS=$(sed -n 's/^TOPS //p' "$L/one/tops.txt")
+[ "$TOPS" = "2" ]
+chk $? "a launch whose check found the reader current says nothing (tops: $TOPS)"
+grep -q '^lnxupdcheck=' "$L/one/mnpdf/app.txt"
+chk $? "the launch check asks on its own, with no click"
+STAMP=$(sed -n 's/^lnxupdcheck=//p' "$L/one/mnpdf/app.txt" | head -1)
+[ -n "$STAMP" ] && [ "$STAMP" -ge "$NOW" ]
+chk $? "and stamps the attempt it made"
+# run two: a fresh stamp whose cached answer names a NEWER release. The
+# launch must stay silent - no modal, no re-stamp, no request.
+SEEDED=$(date +%s)
+printf 'lnxupdcheck=%s\nlnxupdtag=v9.9.9\n' "$SEEDED" > "$L/two/mnpdf/app.txt"
+xvfb-run -a --server-args="-screen 0 800x600x24" \
+  env GDK_BACKEND=x11 XDG_CONFIG_HOME="$L/two" \
+  sh -c 'timeout 12 "$0" "$1" > "$2/log.txt" 2>&1 & sleep 11; \
+         echo TOPS $(xwininfo -root -children 2>/dev/null | grep -c "\"Mnpdf\"")' \
+  "$BIN" "$PDF" "$L/two" >"$L/two/tops.txt" 2>&1
+TOPS=$(sed -n 's/^TOPS //p' "$L/two/tops.txt")
+[ "$TOPS" = "2" ]
+chk $? "a launch inside the cooldown says nothing, even with a newer release cached (tops: $TOPS)"
+grep -q "^lnxupdcheck=$SEEDED\$" "$L/two/mnpdf/app.txt"
+chk $? "and spends no request doing it"
+
 echo "== two update clicks in a row make one request =="
 # The reader refuses a second check while the first one is still in flight,
 # the way the Windows build does before it spawns anything (src/main.cpp:3188).
 # The app prints the URL of every request it makes, so the feed it asked for
-# is the evidence: one check, one request.
+# is the evidence: one run, one request - whichever of the launch check and
+# the two clicks reached the network, the count proves nothing asked twice.
 T=$STATE/updtwice; mkdir -p "$T/cfg/mnpdf"
 printf 'tabstrip=1\ntitlebar=1\nautosave=1\nhlcolor=0\npincolor=5\nnight=0\n' \
     > "$T/cfg/mnpdf/app.txt"
@@ -378,6 +424,8 @@ echo "== the update check finds the release that carries the Linux archive =="
 # is told to check for updates, and the tag it found is compared with the
 # release that really carries the archive. A check that greps the source can
 # only prove the source says something; this one proves the reader says it.
+# The launch check may answer before the click reaches the network - the
+# stamp names the release either way.
 V=$STATE/updlive; mkdir -p "$V/cfg/mnpdf"
 printf 'tabstrip=1\ntitlebar=1\nautosave=1\nhlcolor=0\npincolor=5\nnight=0\n' \
     > "$V/cfg/mnpdf/app.txt"
@@ -436,13 +484,13 @@ seed_marks() {
 }
 # ask the app for the hash it actually uses, so the seed cannot drift
 xvfb-run -a --server-args="-screen 0 1280x900x24" \
-  env GDK_BACKEND=x11 XDG_CONFIG_HOME="$E/cfg" MNPDF_SHOT_EXIT=1 \
+  env GDK_BACKEND=x11 MNPDF_NO_UPDATE=1 XDG_CONFIG_HOME="$E/cfg" MNPDF_SHOT_EXIT=1 \
   timeout 30 "$BIN" "$PDF" >/dev/null 2>&1
 hash=$(ls "$E/cfg/mnpdf/" 2>/dev/null | sed -n 's/^doc-\(.*\)\.txt$/\1/p' | head -1)
 [ -n "$hash" ] || { echo "gate: could not learn the sidecar hash" >&2; exit 1; }
 seed_marks "$hash"
 xvfb-run -a --server-args="-screen 0 1280x900x24" \
-  env GDK_BACKEND=x11 XDG_CONFIG_HOME="$E/cfg" MNPDF_MENU_DUMP=1 \
+  env GDK_BACKEND=x11 MNPDF_NO_UPDATE=1 XDG_CONFIG_HOME="$E/cfg" MNPDF_MENU_DUMP=1 \
   timeout 30 "$BIN" "$PDF" >"$E/menu.txt" 2>&1
 [ -s "$E/menu.txt" ]; chk $? "the menu dump runs"
 python3 - "$E/menu.txt" "$PWD/tests/lib.ps1" <<'PY'

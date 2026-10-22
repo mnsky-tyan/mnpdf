@@ -57,6 +57,7 @@ extern const char* gAppVersion;
 bool updateCheckNow(std::string& latestTag, bool& newer, std::string& error,
                     std::string& currentTag, bool& currentIsNewer, bool& requested);
 void noteUpdateCheck(const std::string& tag);
+bool updateCheckCooling();
 // the whole check - every request it makes - fits in this budget
 int updateCheckBudgetSeconds();
 
@@ -367,6 +368,7 @@ struct UpdateOutcome {
     bool ok = false;
     // a request was really made, rather than the answer being taken from what
     // the last attempt learned: only a real request stamps the cooldown
+    bool manual = true;           // a click asks; the launch check only reports news
     bool requested = false;
     std::string latestTag;
     bool newer = false;
@@ -398,6 +400,12 @@ static gboolean showUpdateResult(gpointer data) {
     // otherwise a reader who clicks once an hour never asks again and keeps
     // being told whatever the first attempt saw.
     if (o->requested) noteUpdateCheck(o->ok ? o->latestTag : std::string());
+    // The silent launch check only speaks when there is a newer release: a
+    // check with nothing to say, or one that could not reach the host, says
+    // nothing at all, the two ways the Windows result handler is silent
+    // (src/main.cpp:3129-3130). A clicked check always answers - the click
+    // is the reader asking.
+    if (!o->manual && !o->newer) { delete o; return G_SOURCE_REMOVE; }
     if (!o->ok) {
         ui_message(o->error.empty() ? "The update check failed." : o->error, "mnpdf", false);
     } else if (o->newer) {
@@ -429,13 +437,20 @@ static gboolean showUpdateResult(gpointer data) {
     return G_SOURCE_REMOVE;
 }
 
-static void runUpdateCheck() {
+static void runUpdateCheck(bool manual) {
     // One request at a time. The Windows build gates the click on the UI
     // thread before it spawns anything (src/main.cpp:3188), so a second
     // click inside the first request's own window makes one request, not two.
     if (gUpdateCheckRunning.exchange(true)) return;
-    std::thread([]() {
+    // The silent launch check says nothing inside the cooldown: the Windows
+    // build returns before it spawns anything, and the cached answer is only
+    // surfaced by a click (src/main.cpp:3190-3195) - a launch that answered
+    // from the cache would offer the same release at every start of a run
+    // that already knows about it.
+    if (!manual && updateCheckCooling()) { gUpdateCheckRunning = false; return; }
+    std::thread([manual]() {
         UpdateOutcome* o = new UpdateOutcome();
+        o->manual = manual;
         std::string latest, error, cur;
         bool newer = false, curNewer = false, requested = false;
         if (updateCheckNow(latest, newer, error, cur, curNewer, requested)) {
@@ -796,7 +811,7 @@ static void onMenuActivate(GtkMenuItem* mi, gpointer data) {
     }
     case 117: deleteHighlight(gMenuHlIdx); break;
     case 137: doPrint(); break;
-    case 170: runUpdateCheck(); break;
+    case 170: runUpdateCheck(true); break;
     }
 }
 
@@ -2163,6 +2178,15 @@ int main(int argc, char** argv) {
 
     gSaveTimer = g_timeout_add(800, onSaveTick, nullptr);
     gtk_widget_grab_focus(gCurArea);
+    // The Windows build checks for a newer release before its message loop
+    // starts (startUpdateCheck(false), src/main.cpp:6286): a reader is told
+    // about a newer release at launch, silently unless there is one, and
+    // never more often than the cooldown allows. MNPDF_NO_UPDATE skips only
+    // this launch check - the same kind of seam the suites use (below), so a
+    // suite that is not about the update check stays off the network. A
+    // clicked check (case 170) runs regardless: a suite that clicks is
+    // asking for the answer.
+    if (!getenv("MNPDF_NO_UPDATE")) runUpdateCheck(false);
     // The shot has to wait for the window to be mapped AND for the drawers a
     // command opened to be allocated: an idle callback fires before the first
     // size negotiation, so a drawer created by MNPDF_CMD would be captured at

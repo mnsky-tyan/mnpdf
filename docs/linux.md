@@ -299,9 +299,19 @@ The version the port reports is generated at build time from the Windows
 can never claim different versions - which matters, because they share one
 app.txt.
 
-Three things the Windows build does that the port now does the same way, and
+Four things the Windows build does that the port now does the same way, and
 that are easy to get wrong:
 
+- **The check runs at launch too, silently.** The Windows build starts a
+  check before its message loop (startUpdateCheck(false), src/main.cpp:6286)
+  and only speaks when a newer release exists: a check with nothing to say,
+  or one that could not reach the host, says nothing, and a launch inside the
+  cooldown says nothing even when the cached answer names a newer one - the
+  cached answer is only surfaced by a click, because a click is the reader
+  asking. The port runs the same silent check before its main loop; a modal
+  at every launch would be a nag, and a launch that answered from the cache
+  would offer the same release at every start of a run that already knows
+  about it.
 - **The attempt is stamped on the UI thread.** The worker thread makes the
   request; the window procedure stamps the attempt into app.txt
   (src/main.cpp:6085). The port stamps it in the reply handler, for the same
@@ -376,6 +386,13 @@ asserts what each wrote to app.txt or to the pixels.
 fourth independent thing: it appends the quit command to whatever else the run
 asked for. A run that asks only for a quit therefore quits, and a run that asks
 for a command and a quit drives the command and then quits.
+
+`MNPDF_NO_UPDATE` is the fifth, and it exists because the port does at every
+launch what the Windows build does (a silent update check before the message
+loop, `startUpdateCheck(false)`, src/main.cpp:6286): a suite that is not
+about the update check sets it so its runs stay off the network. It skips only
+the launch check - a suite that clicks "Check for updates" gets the real
+answer, because a click is the reader asking.
 
 ## Releasing
 
