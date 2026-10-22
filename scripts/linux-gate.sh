@@ -206,6 +206,15 @@ fi
 shot_for 201 "$D/outline.png"
 [ -s "$D/outline.png" ]; chk $? "the outline drawer opens (Advanced > Outline panel)"
 if [ -s "$D/outline.png" ] && command -v python3 >/dev/null; then
+    # The outline drawer is a light panel with dark bookmark text on it, so an
+    # OPEN drawer has FEWER dark pixels in that band than the page alone: the
+    # drawer covers the page. Measured: an open drawer gives ~9800 dark
+    # pixels, a closed one ~192000 (the whole page sits in the band).
+    #
+    # So the check is that the band went LIGHT, not that it went dark. The
+    # old check asked for dark pixels, which the closed drawer supplies in
+    # abundance - it passed whether or not the drawer was open, and proved
+    # nothing.
     python3 - "$D/outline.png" <<'PY'
 import sys
 from PIL import Image
@@ -214,9 +223,10 @@ w, h = im.size
 band = im.crop((max(0, w - 240), 0, w, h))
 dark = sum(1 for p in band.getdata() if p[0] < 200 and p[1] < 200 and p[2] < 200)
 print("       outline band dark pixels: %d" % dark)
-sys.exit(0 if dark > 200 else 1)
+# an open drawer: the band is mostly the drawer's light background
+sys.exit(0 if dark < 60000 else 1)
 PY
-    chk $? "the outline drawer lists the document's bookmarks"
+    chk $? "the outline drawer covers the page beside it"
 fi
 
 echo "== the titlebar toggle, and it survives a relaunch =="
@@ -304,36 +314,47 @@ if grep -q "Gtk-CRITICAL" "$U/log.txt"; then
     bad "the update answer's modal leaves a GTK critical behind"
 else ok "the update answer's modal leaves no GTK critical behind"; fi
 
-echo "== the update check asks the web host, not the API =="
-# The Windows build reads the tag off the web host, never api.github.com,
-# because that host's unauthenticated quota is shared with every other
-# client behind the same IP and answers "API rate limit exceeded" once it is
-# spent (src/main.cpp:2430-2432). The port must not inherit that problem.
-# the check looks at the URL constants, not the whole file: the file's comment
-# mentions api.github.com to explain why it does not use it
-if grep -E '^static const (char\*|std::string) k[A-Za-z]*Url' src/linux/update.cpp \
-     | grep -q 'api.github.com'; then
-    bad "the update check still uses api.github.com"
+echo "== the update check finds the release that carries the Linux archive =="
+# The check has to answer one question: which release carries the Linux
+# archive? The Windows build reads the tag off the web host, never
+# api.github.com, because that host's unauthenticated quota is shared with
+# every other client behind the same IP and answers "API rate limit exceeded"
+# once it is spent (src/main.cpp:2430-2432). The port must not inherit that
+# problem.
+#
+# The check below RUNS the reader rather than reading its source: the reader
+# is told to check for updates, and the tag it found is compared with the
+# release that really carries the archive. A check that greps the source can
+# only prove the source says something; this one proves the reader says it.
+V=$STATE/updlive; mkdir -p "$V/cfg/mnpdf"
+printf 'tabstrip=1\ntitlebar=1\nautosave=1\nhlcolor=0\npincolor=5\nnight=0\n' \
+    > "$V/cfg/mnpdf/app.txt"
+xvfb-run -a --server-args="-screen 0 1280x900x24" \
+  env GDK_BACKEND=x11 XDG_CONFIG_HOME="$V/cfg" MNPDF_CMD=170 MNPDF_SHOT_EXIT=1 \
+  timeout 40 "$BIN" "$PDF" >"$V/log.txt" 2>&1
+# the tag the check stamped is the newest release that carries the archive
+FOUND=$(sed -n 's/^updtag=//p' "$V/cfg/mnpdf/app.txt" | head -1)
+if [ -n "$FOUND" ]; then
+    ok "the update check found a release ($FOUND)"
+else
+    bad "the update check found no release"
+fi
+# and that release really carries the archive: the download URL answers 302
+# when the file is there and 404 when it is not
+if [ -n "$FOUND" ]; then
+    CODE=$(curl -s -o /dev/null -w '%{http_code}' -I \
+        "https://github.com/mnsky-tyan/mnpdf/releases/download/$FOUND/mnpdf-linux-x64-$FOUND.tar.gz")
+    if [ "$CODE" = "302" ] || [ "$CODE" = "200" ]; then
+        ok "the release it found really carries the Linux archive"
+    else
+        bad "the release it found ($FOUND) does not carry the archive (HTTP $CODE)"
+    fi
+fi
+# the check must not have used the API: that host answers 403 once the IP's
+# shared quota is spent, and the Windows build deliberately avoids it
+if grep -q '"https://api.github.com' src/linux/update.cpp; then
+    bad "the update check still asks the API"
 else ok "the update check does not use the API's shared quota"; fi
-grep -q "releases/latest" src/linux/update.cpp
-chk $? "the update check reads the tag the way the Windows build does"
-
-echo "== the update check finds the asset, not the release notes =="
-# The releases page renders its asset list lazily, so the page's HTML carries
-# the release NOTES and not the files. A check that scanned the page for the
-# archive name would read the notes, which are prose, and would read the wrong
-# version from the first release whose notes mention no archive. The feed says
-# which releases exist; the download URL says which of them carry the file.
-if grep -q "releases.atom" src/linux/update.cpp; then
-    ok "the release list comes from the feed, which lists the prereleases"
-else bad "the release list is not read from the feed"; fi
-if grep -q "releases/download/" src/linux/update.cpp; then
-    ok "the asset is confirmed by asking for its download URL"
-else bad "the asset is not confirmed against the download URL"; fi
-# and the page must not be scanned for the archive name any more
-if grep -q "kAssetPrefix" src/linux/update.cpp; then
-    bad "the check still scans the releases page for the archive name"
-else ok "the check does not read the release notes as an asset list"; fi
 
 echo "== the command ids match the Windows command table =="
 # The parity claim is "the same command under the same menu id". The

@@ -25,6 +25,18 @@ fi
 
 [ -x build-linux/mnpdf ] || { echo "no build-linux/mnpdf; run ./build-linux.sh first" >&2; exit 1; }
 
+# The tag must match the binary's own version. The archive is named after the
+# tag, and the update check looks the archive up by exactly that name, so a
+# tarball named for a version the binary does not claim is one the check will
+# never offer - and one that says the wrong thing to anyone who unpacks it.
+builtver=$(sed -n 's/^const char\* gAppVersion = "\([^"]*\)";$/\1/p' \
+               build-linux/mnpdf-version.cpp | head -1)
+if [ -n "$builtver" ] && [ "$tag" != "v$builtver" ]; then
+    echo "the tag ($tag) does not match the build's version ($builtver)" >&2
+    echo "build first, or pass the tag the build carries: v$builtver" >&2
+    exit 1
+fi
+
 stage=build-linux/mnpdf-linux-x64-$tag
 rm -rf "$stage"
 mkdir -p "$stage"

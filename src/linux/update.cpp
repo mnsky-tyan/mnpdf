@@ -62,6 +62,18 @@ bool versionIsNewer(const std::string& candidate) {
 }
 
 // ---- the network -----------------------------------------------------------
+// libcurl's own contract: curl_global_init() is invoked exactly once per
+// application, before any easy handle is created. Skipping it is not a crash
+// on every platform - the library initialises itself lazily in most builds -
+// but it is undefined behaviour that a different libcurl build can answer
+// with, so the call is made once, here, the first time the network is used.
+static void ensureCurlGlobal() {
+    static bool done = false;
+    if (done) return;
+    done = true;
+    curl_global_init(CURL_GLOBAL_DEFAULT);
+}
+
 // A small curl wrapper: the request is bounded by a timeout so a hung network
 // can never leave the app waiting, and the answer is capped so a huge body
 // cannot exhaust memory.
@@ -79,16 +91,25 @@ static size_t writeToString(void* ptr, size_t size, size_t nmemb, void* userdata
     return size * nmemb;
 }
 
-static HttpReply httpGet(const std::string& url) {
+// One request, two shapes. A GET reads the body; a HEAD asks for the status
+// alone, which is how the asset check avoids downloading the file it is only
+// asking about.
+static HttpReply httpRequest(const std::string& url, bool head) {
     HttpReply r;
+    ensureCurlGlobal();
     CURL* curl = curl_easy_init();
     if (!curl) return r;
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeToString);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &r.body);
+    if (head) {
+        curl_easy_setopt(curl, CURLOPT_NOBODY, 1L);
+    } else {
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeToString);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &r.body);
+    }
     // the redirect is NOT followed: the Windows build reads the Location
     // header instead, because that is where the release tag lives
-    // (src/main.cpp:2466-2479). Following it would throw the tag away.
+    // (src/main.cpp:2466-2479). Following it would throw the tag away, and
+    // the asset check wants the redirect itself as the answer.
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 0L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
@@ -105,29 +126,8 @@ static HttpReply httpGet(const std::string& url) {
     return r;
 }
 
-// A HEAD request: the answer is the status alone, the body is not wanted.
-// Used to ask whether a release's asset exists without downloading it.
-static HttpReply httpHead(const std::string& url) {
-    HttpReply r;
-    CURL* curl = curl_easy_init();
-    if (!curl) return r;
-    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-    curl_easy_setopt(curl, CURLOPT_NOBODY, 1L);
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 0L);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, ("mnpdf/" + std::string(gAppVersion)).c_str());
-    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
-    r.code = curl_easy_perform(curl);
-    if (r.code == CURLE_OK) {
-        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &r.status);
-        char* loc = nullptr;
-        if (curl_easy_getinfo(curl, CURLINFO_REDIRECT_URL, &loc) == CURLE_OK && loc)
-            r.location = loc;
-    }
-    curl_easy_cleanup(curl);
-    return r;
-}
+static HttpReply httpGet(const std::string& url) { return httpRequest(url, false); }
+static HttpReply httpHead(const std::string& url) { return httpRequest(url, true); }
 
 // The Linux counterpart of the Windows httpFailureText() (src/main.cpp:2594):
 // name the failure the reader can act on instead of one generic sentence for a
@@ -293,12 +293,23 @@ static std::string linuxAssetUrl(const std::string& tag) {
 //
 // The redirects are not followed: the answer that matters is whether the asset
 // exists, and the redirect itself is that answer.
-static bool releaseHasLinuxAsset(const std::string& tag) {
+// The answer to "does this release carry the Linux archive" is three-valued:
+// yes, no, and "the host did not answer". The third is not the same as the
+// second - a timeout or a refused connection is not evidence that the archive
+// is missing, and reporting it as missing would tell the reader that no
+// release carries a Linux build when the network simply hiccuped.
+enum class AssetAnswer { Yes, No, Unreachable };
+
+static AssetAnswer probeLinuxAsset(const std::string& tag) {
     HttpReply r = httpHead(linuxAssetUrl(tag));
-    if (r.code != CURLE_OK) return false;
-    // 200 (the file itself) or 302 (the redirect to it) both mean the asset is
-    // there; 404 means it is not
-    return r.status == 200 || r.status == 301 || r.status == 302 || r.status == 307;
+    if (r.code != CURLE_OK) return AssetAnswer::Unreachable;
+    // 200 (the file itself) or a redirect to it both mean the asset is there;
+    // 404 means it is not
+    if (r.status == 200 || r.status == 301 || r.status == 302 || r.status == 307)
+        return AssetAnswer::Yes;
+    if (r.status == 404 || r.status == 410) return AssetAnswer::No;
+    // 403, 429 and the 5xx answers are the host's state, not the asset's
+    return AssetAnswer::Unreachable;
 }
 
 // ---- the cooldown ----------------------------------------------------------
@@ -357,13 +368,23 @@ UpdateResult checkForUpdate() {
         res.error = "The update check could not reach GitHub - " + why + ".";
         return res;
     }
+    bool unreachable = false;
     for (const std::string& tag : tags) {
-        if (!releaseHasLinuxAsset(tag)) continue;
+        AssetAnswer a = probeLinuxAsset(tag);
+        if (a == AssetAnswer::Unreachable) {
+            // the host did not answer for this one; try the next, and remember
+            // that the answer was not a "no"
+            unreachable = true;
+            continue;
+        }
+        if (a == AssetAnswer::No) continue;
         res.latestTag = tag;
         break;
     }
     if (res.latestTag.empty()) {
-        res.error = "No release with a Linux build was found.";
+        res.error = unreachable
+            ? "The update check could not reach GitHub - the release host did not answer."
+            : "No release with a Linux build was found.";
         return res;
     }
 
@@ -382,40 +403,47 @@ UpdateResult checkForUpdate() {
     return res;
 }
 
-// The blocking half, called on a worker thread: it reports the newest release
-// that carries a Linux archive and whether it is newer than this build.
-bool updateCheckBlocking(std::string& latestTag, bool& newer, std::string& error) {
-    UpdateResult r = checkForUpdate();
-    if (!r.ok) {
-        error = r.error;
-        return false;
-    }
-    latestTag = r.latestTag;
-    newer = r.newer;
-    return true;
-}
-
 // The command's half: it honours the cooldown and stamps the attempt, so
 // clicking "Check for updates" twice in a row makes one request, not two. It
 // also reports the release GitHub calls current, which is a different release
 // from the newest one carrying a Linux archive.
+//
+// The stamp is NOT written here: this runs on the worker thread, and
+// writeAppPref writes a file that every other writer touches from the GTK
+// main thread. The Windows build has the same split - the worker posts its
+// result and the window procedure stamps the attempt (src/main.cpp:6085) -
+// so the stamp happens in showUpdateResult, on the UI thread.
 bool updateCheckNow(std::string& latestTag, bool& newer, std::string& error,
                     std::string& currentTag, bool& currentIsNewer) {
     if (updateCheckCooling()) {
-        error = "The update check already ran less than an hour ago.";
-        return false;
+        // A click inside the cooldown window is answered from what the last
+        // attempt learned, so the reader still gets a true answer and no
+        // request is spent. The Windows build does the same
+        // (src/main.cpp:3156-3180, reportCachedUpdateResult).
+        if (gLastUpdateTag.empty()) {
+            // the last attempt could not reach GitHub
+            int left = kUpdateCheckIntervalMin - minutesSinceLastCheck();
+            if (left < 1) left = 1;
+            error = "mnpdf checked GitHub for updates recently and could not reach it.\n"
+                    "Please try again in " + std::to_string(left) +
+                    (left == 1 ? " minute." : " minutes.");
+            return false;
+        }
+        latestTag = gLastUpdateTag;
+        newer = versionIsNewer(latestTag);
+        currentTag = latestTag;
+        currentIsNewer = newer;
+        return true;
     }
     UpdateResult r = checkForUpdate();
     if (!r.ok) {
         error = r.error;
-        noteUpdateCheck("");     // a failed attempt still counts
         return false;
     }
     latestTag = r.latestTag;
     newer = r.newer;
     currentTag = r.currentTag;
     currentIsNewer = r.currentIsNewer;
-    noteUpdateCheck(latestTag);
     return true;
 }
 

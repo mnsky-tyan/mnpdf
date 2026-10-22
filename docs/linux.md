@@ -67,7 +67,7 @@ paints the composited frame and draws its own scrollbars.
   release is a prerelease until the Windows archive is published beside it, and
   that endpoint names the Windows asset. The port reads the release feed for
   the newest release that actually carries `mnpdf-linux-x64-<tag>.tar.gz` and
-  compares versions with the Windows rules. See "The parity work" above for
+  compares versions with the Windows rules. See "The parity work" below for
   the asset that publishes that name. There is no Linux install step yet: the
   check reports what is available and hands the reader the release page.
 - **Tabs are GtkNotebook pages**, and each tab's own document, zoom, scroll and
@@ -164,7 +164,7 @@ The Windows build's print dialog is replaced by the GtkPrintOperation dialog.
 The update check differs in one deliberate way: the Windows app reads
 GitHub's `/releases/latest` and downloads `mnpdf-win-x64-<tag>.zip` by name,
 while this one reads the release feed for the newest release that actually
-carries a Linux archive - see "The update check" below.
+carries a Linux archive - see "The update check" above.
 
 ## The parity work (2026-10-21)
 
@@ -252,6 +252,29 @@ The version the port reports is generated at build time from the Windows
 `kAppVersion` constant (CMakeLists.txt reads src/main.cpp), so the two readers
 can never claim different versions - which matters, because they share one
 app.txt.
+
+Three things the Windows build does that the port now does the same way, and
+that are easy to get wrong:
+
+- **The attempt is stamped on the UI thread.** The worker thread makes the
+  request; the window procedure stamps the attempt into app.txt
+  (src/main.cpp:6085). The port stamps it in the reply handler, for the same
+  reason: `writeAppPref` writes the shared app.txt, and every other writer of
+  it runs on the GTK main thread.
+- **A click inside the cooldown is answered from the cache**, not refused. The
+  Windows build reports what the last attempt learned
+  (src/main.cpp:3156-3180), so the reader gets a true answer and no request
+  is spent. The port does the same, and says when the last attempt could not
+  reach GitHub and how long is left.
+- **The asset check is three-valued.** "The release carries the archive", "it
+  does not" and "the host did not answer" are three different answers, and the
+  third is not the second: a timeout is not evidence that the archive is
+  missing. The port says so rather than reporting a missing build.
+
+The rotation commands act on the page the context menu was opened on, not on
+the page the document happens to be showing, the way the Windows build does
+with `gMenuRotPage` (src/main.cpp:5514, :5748). A right-click on page 3
+rotates page 3 even when page 7 is on screen.
 
 ## The test seams
 
