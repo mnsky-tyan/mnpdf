@@ -310,6 +310,23 @@ else ok "the update check does not use the API's shared quota"; fi
 grep -q "releases/latest" src/linux/update.cpp
 chk $? "the update check reads the tag the way the Windows build does"
 
+echo "== the update check finds the asset, not the release notes =="
+# The releases page renders its asset list lazily, so the page's HTML carries
+# the release NOTES and not the files. A check that scanned the page for the
+# archive name would read the notes, which are prose, and would read the wrong
+# version from the first release whose notes mention no archive. The feed says
+# which releases exist; the download URL says which of them carry the file.
+if grep -q "releases.atom" src/linux/update.cpp; then
+    ok "the release list comes from the feed, which lists the prereleases"
+else bad "the release list is not read from the feed"; fi
+if grep -q "releases/download/" src/linux/update.cpp; then
+    ok "the asset is confirmed by asking for its download URL"
+else bad "the asset is not confirmed against the download URL"; fi
+# and the page must not be scanned for the archive name any more
+if grep -q "kAssetPrefix" src/linux/update.cpp; then
+    bad "the check still scans the releases page for the archive name"
+else ok "the check does not read the release notes as an asset list"; fi
+
 echo "== the command ids match the Windows command table =="
 # The parity claim is "the same command under the same menu id". The
 # authoritative table is tests/lib.ps1 (the Windows suites' CMD_* constants),

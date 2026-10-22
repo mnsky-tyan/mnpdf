@@ -14,6 +14,7 @@
 // the update check's version rules (update.cpp)
 bool parseVersion(const std::string& text, int& major, int& minor, int& patch);
 bool versionIsNewer(const std::string& candidate);
+std::vector<std::string> releaseTagsFromFeed(const std::string& body);
 #include "ui.h"
 
 #include <cstdio>
@@ -647,6 +648,38 @@ int main(int argc, char** argv) {
         CHECK(versionIsNewer("v99.0.0"), "a much newer version is recognised");
         CHECK(!versionIsNewer("v0.0.1"), "an older version is recognised as older");
         CHECK(!versionIsNewer("not-a-version"), "a broken tag is never an update");
+    }
+
+    printf("\n== the update check's release lookup ==\n");
+    {
+        // The feed's entry ids end with the tag:
+        //   <id>tag:github.com,2008:Repository/1373058058/v2.7.0</id>
+        // The first id is the feed itself, whose last segment is "releases"
+        // and not a tag, so it must be skipped rather than read as one.
+        const char* feed =
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+            "<feed xmlns=\"http://www.w3.org/2005/Atom\">\n"
+            "  <id>tag:github.com,2008:https://github.com/mnsky-tyan/mnpdf/releases</id>\n"
+            "  <entry>\n"
+            "    <id>tag:github.com,2008:Repository/1373058058/v2.7.0</id>\n"
+            "    <updated>2026-10-21T13:20:40Z</updated>\n"
+            "  </entry>\n"
+            "  <entry>\n"
+            "    <id>tag:github.com,2008:Repository/1373058058/v2.6.0</id>\n"
+            "  </entry>\n"
+            "</feed>\n";
+        std::vector<std::string> tags = releaseTagsFromFeed(feed);
+        CHECK(tags.size() == 2, "the feed yields one tag per release entry");
+        CHECK(tags.size() > 0 && tags[0] == "v2.7.0",
+              "the newest release comes first, the way the feed lists them");
+        CHECK(tags.size() > 1 && tags[1] == "v2.6.0", "the next release follows it");
+        // the feed's own id is not a release
+        for (const std::string& t : tags)
+            CHECK(t != "releases", "the feed's own id is not read as a release tag");
+        // a feed with nothing usable yields nothing rather than a wrong tag
+        CHECK(releaseTagsFromFeed("<feed><id>tag:github.com,2008:x/nonsense</id></feed>").empty(),
+              "an id that is not a version yields no tag");
+        CHECK(releaseTagsFromFeed("").empty(), "an empty feed yields no tag");
     }
 
     printf("\npass=%d fail=%d\n", gPass, gFail);
