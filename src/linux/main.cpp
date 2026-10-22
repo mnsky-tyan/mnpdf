@@ -106,12 +106,39 @@ void ui_set_title(const std::string&) {
     refreshTabLabels();
 }
 
+// ---- dialogs ---------------------------------------------------------------
+// A modal dialog is destroyed with its parent, so a window that goes down
+// while the modal is up leaves the dialog pointer dangling, and destroying it
+// a second time is a use-after-free - GTK answers that with "assertion
+// 'GTK_IS_WIDGET (widget)' failed". The update check's answer can cause
+// exactly that: the modal opens from a callback, and the quit path tears the
+// window down while it is up. The widget's own destroy signal records that it
+// is gone already, so the second destroy is skipped.
+//
+// Measured: with the update check's answer on screen and the window closing
+// under it, GTK logged the critical above, once per run.
+struct Dialog {
+    GtkWidget* w;
+    bool gone = false;
+    explicit Dialog(GtkWidget* widget) : w(widget) {
+        g_signal_connect(w, "destroy", G_CALLBACK(onDestroyed), this);
+    }
+    ~Dialog() { if (!gone && w) gtk_widget_destroy(w); }
+    Dialog(const Dialog&) = delete;
+    Dialog& operator=(const Dialog&) = delete;
+private:
+    static void onDestroyed(GtkWidget*, gpointer data) {
+        ((Dialog*)data)->gone = true;
+    }
+};
+
 // ---- message box ----
 int ui_message(const std::string& text, const std::string& caption, bool yesno) {
     GtkWidget* d = gtk_message_dialog_new(GTK_WINDOW(gWin),
         (GtkDialogFlags)(GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT),
         yesno ? GTK_MESSAGE_QUESTION : GTK_MESSAGE_INFO,
         GTK_BUTTONS_NONE, "%s", text.c_str());
+    Dialog life(d);
     if (yesno) {
         // the three Windows MB_YESNOCANCEL answers: No still writes the sidecar,
         // Cancel keeps the window open and decides later
@@ -123,7 +150,6 @@ int ui_message(const std::string& text, const std::string& caption, bool yesno) 
     }
     gtk_window_set_title(GTK_WINDOW(d), caption.c_str());
     gint r = gtk_dialog_run(GTK_DIALOG(d));
-    gtk_widget_destroy(d);
     if (r == GTK_RESPONSE_YES) return UI_MSGBOX_YES;
     // Escape and the window-manager close are Cancel, not No: dismissing a
     // "Save changes?" must not quit, exactly as IDCANCEL on Windows
@@ -141,12 +167,12 @@ static std::string runChooser(const char* title, GtkFileChooserAction act, bool 
         if (!suggested.empty())
             gtk_file_chooser_set_current_name(GTK_FILE_CHOOSER(d), suggested.c_str());
     }
+    Dialog life(d);
     std::string out;
     if (gtk_dialog_run(GTK_DIALOG(d)) == GTK_RESPONSE_ACCEPT) {
         char* fn = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(d));
         if (fn) { out = fn; g_free(fn); }
     }
-    gtk_widget_destroy(d);
     return out;
 }
 
@@ -160,6 +186,7 @@ std::string ui_save_file(const std::string& suggested) {
 std::string ui_pick_jpeg() {
     GtkWidget* d = gtk_file_chooser_dialog_new("Choose a signature image", GTK_WINDOW(gWin),
         GTK_FILE_CHOOSER_ACTION_OPEN, "_Cancel", GTK_RESPONSE_CANCEL, "_Open", GTK_RESPONSE_ACCEPT, nullptr);
+    Dialog life(d);
     GtkFileFilter* f = gtk_file_filter_new();
     gtk_file_filter_set_name(f, "JPEG image");
     gtk_file_filter_add_pattern(f, "*.jpg");
@@ -170,7 +197,6 @@ std::string ui_pick_jpeg() {
         char* fn = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(d));
         if (fn) { out = fn; g_free(fn); }
     }
-    gtk_widget_destroy(d);
     return out;
 }
 
@@ -184,9 +210,9 @@ bool ui_prompt(const std::string& label, std::string& value) {
     gtk_entry_set_text(GTK_ENTRY(e), value.c_str());
     gtk_box_pack_start(GTK_BOX(box), e, FALSE, FALSE, 6);
     gtk_widget_show_all(d);
+    Dialog life(d);
     bool ok = gtk_dialog_run(GTK_DIALOG(d)) == GTK_RESPONSE_ACCEPT;
     if (ok) value = gtk_entry_get_text(GTK_ENTRY(e));
-    gtk_widget_destroy(d);
     return ok;
 }
 
@@ -360,6 +386,7 @@ static void openNoteEditor(int idx, bool fresh) {
     gtk_container_add(GTK_CONTAINER(sw), tv);
     gtk_box_pack_start(GTK_BOX(box), sw, TRUE, TRUE, 6);
     gtk_widget_show_all(d);
+    Dialog life(d);
     bool ok = gtk_dialog_run(GTK_DIALOG(d)) == GTK_RESPONSE_ACCEPT;
     std::wstring text;
     if (ok) {
@@ -369,7 +396,6 @@ static void openNoteEditor(int idx, bool fresh) {
         if (t) { text = utf8ToWide(t); g_free(t); }
         if ((int)text.size() > kNoteMaxChars) text.resize(kNoteMaxChars);
     }
-    gtk_widget_destroy(d);
     if (!ok) { if (fresh) commitPinText(idx, true, L""); return; }   // cancel a new pin: drop it
     commitPinText(idx, fresh, text);
 }
