@@ -770,8 +770,8 @@ static void onMenuActivate(GtkMenuItem* mi, gpointer data) {
     case 207: reopenLastDocument(); break;
     case 118: doSave(); break;
     case 119: doSaveAs(); break;
-    case 114: undoOp(); refreshDrawers(); break;
-    case 115: redoOp(); refreshDrawers(); break;
+    case 114: undoOp(); break;
+    case 115: redoOp(); break;
     case 310: deletePage(gPageIndex); break;
     // a move re-points the drawer's ring at the page that moved
     // (src/main.cpp:4615-4620): the index it happens to hold now shows a
@@ -779,16 +779,19 @@ static void onMenuActivate(GtkMenuItem* mi, gpointer data) {
     case 311: if (gPageIndex > 0) { movePage(gPageIndex, gPageIndex - 1); } break;
     case 312: if (gPageIndex + 1 < gDocPages) { movePage(gPageIndex, gPageIndex + 1); } break;
     case 133: { int rp = gMenuRotPage >= 0 ? gMenuRotPage : gPageIndex;
-                rotatePage(rp, +1); refreshDrawers();
+                rotatePage(rp, +1);
                 // the capture is spent. Windows never carries it past the
                 // context menu's own dispatch - its only rotate commands are
                 // the popup's (src/main.cpp:5559), captured the instant that
                 // menu is built - while this reader also has them in the menu
                 // bar, where a stale capture would rotate a page the reader
-                // is no longer looking at
+                // is no longer looking at. The drawer refresh is the
+                // primitive's own (rotatePage, doc.cpp:550), not this
+                // handler's: a second call would rebuild every row height and
+                // walk the whole bookmark tree again for nothing
                 gMenuRotPage = -1; } break;
     case 134: { int rp = gMenuRotPage >= 0 ? gMenuRotPage : gPageIndex;
-                rotatePage(rp, -1); refreshDrawers();
+                rotatePage(rp, -1);
                 gMenuRotPage = -1; } break;
     case 200: gNight = !gNight; writeAppPref(); renderPage(); refreshMenuLabels(); break;
     case 203: if (gDoc) pickSignatureImage(); break;
@@ -891,7 +894,14 @@ static void dumpMenuShell(GtkWidget* shell, const char* title) {
 static GtkWidget* buildContextMenu(int x, int y) {
     GtkWidget* menu = gtk_menu_new();
     g_object_ref_sink(menu);
-    int pg = pageAtDocY(y);
+    // the page under the cursor, in DOCUMENT space: pageAtDocY takes a
+    // document-space y and every other caller subtracts docTop() first
+    // (charIndexAtDoc, doc.cpp:629; pinAt, doc.cpp:557). The raw event y is
+    // widget space, so without this the pin target was the page under the
+    // DOCUMENT's top - silently the wrong page whenever the view is scrolled.
+    // The rotate and highlight targets come from charIndexAtDoc, which is why
+    // only the pin branch disagreed with them.
+    int pg = pageAtDocY(y - docTop());
 
     auto add = [&](const char* label, int id) {
         gtk_menu_shell_append(GTK_MENU_SHELL(menu), menuCommand(label, id));
@@ -1098,6 +1108,32 @@ static void dumpEveryMenuShape() {
     gMenuPinPage = savedPinPage;
     gSelAnchor = savedSelA; gSelHead = savedSelH;
     gSelAnchorPage = savedSelAP; gSelHeadPage = savedSelHP;
+
+    // A right-click on a SCROLLED page is where the two page targets can
+    // disagree: buildContextMenu computes the pin's page itself and the
+    // rotate capture through charIndexAtDoc, so a coordinate-space slip in one
+    // and not the other is invisible while the view sits at the top (both read
+    // "page 1"). This shape scrolls away from the top and prints both targets
+    // for the same click, so the gate can assert they name the same page.
+    if (gDoc && gDocPages > 1) {
+        int savedScroll = gScrollY;
+        // far enough that the document's top is well above the viewport
+        scrollByDy(3 * gClientH);
+        GtkWidget* menu = buildContextMenu(gClientW / 2, gClientH / 2);
+        gtk_widget_destroy(menu);
+        g_object_unref(menu);
+        printf("== scrolled click (scroll %d) ==\n", gScrollY);
+        printf("pin-page %d\n", gMenuPinPage);
+        printf("rotate-page %d\n", gMenuRotPage);
+        // the page charIndexAtDoc names for the same click - the path
+        // onContextMenu uses for highlights and the rotate capture
+        int hp = -1;
+        charIndexAtDoc(gClientW / 2, gClientH / 2, &hp);
+        printf("hit-page %d\n", hp);
+        printf("view-page %d\n", gPageIndex + 1);
+        gScrollY = savedScroll;
+        scrollByDy(0);   // re-clamp and repaint from the restored offset
+    }
 }
 
 // ---- mouse ----

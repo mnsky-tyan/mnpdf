@@ -123,11 +123,12 @@ static void writeSidecarFor(Doc* d);
 void writeSidecarForBundle(Doc* d) { writeSidecarFor(d); }
 
 static void writeSidecarFor(Doc* d) {
-    // the same gate the Windows sidecar write carries (src/main.cpp:3276):
-    // a secondary window writes no sidecar, not even the sidecar of a
-    // document it opened itself, so opening a second document does not
-    // disturb the first window's state (README.txt, "SEVERAL WINDOWS")
-    if (!gPrimaryInstance) return;
+    // NOT gated on the primary role, and deliberately: Windows gates only
+    // the two SHARED files on it - last.txt (src/main.cpp:3276) and app.txt
+    // (:3345) - while a document's own sidecar is written by whichever
+    // window owns that document (:3243-3245). A second window that opened
+    // its own document must therefore persist that document's marks, or
+    // quitting it would silently drop them.
     if (!d || d->path.empty() || !d->doc) return;
     FILE* fp = fopen(sidecarPathFor(d->path).c_str(), "wb");
     if (!fp) return;

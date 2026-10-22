@@ -19,7 +19,7 @@ with the per-run raw output (`run-<id>-review-full.log`).
 
 ## Summary
 
-- 41 fixed, 2 deliberately deferred and documented, 0 still open.
+- 48 fixed, 1 deliberately deferred and documented, 0 still open.
 
 - The "-UNIMPLEMENTED" ids in the raw logs are the same defects re-reported after a
   daemon restart killed a fixer mid-round; they are folded into their base id here.
@@ -636,3 +636,42 @@ quit-prompt gate section stays: it locks the prompt behaviour (TOPS 3 with
 unsaved changes, TOPS 0 clean) against future refactors.
 
 Gate: 46 -> 53 checks, all passing; core 171/171.
+
+### Round 13 (the dc99dec re-review) - five real, one reverted
+
+**Fixed in the round-14 batch**
+
+- **R-ctxmenu-pg-wrong-coord-space (warning, the one real code bug)**
+  buildContextMenu called pageAtDocY(y) with the raw widget-space event y, but
+  pageAtDocY takes a DOCUMENT-space y (every other caller subtracts docTop()
+  first: charIndexAtDoc doc.cpp:629, pinAt doc.cpp:557). The subtraction was
+  lost when the builder was split out of onContextMenu (4ee5573), so a
+  right-click on a scrolled page set "Add pin here" to the page under the
+  DOCUMENT's top - silently the wrong page, written to the sidecar on the next
+  tick. Rotate and highlight were right because they come from charIndexAtDoc;
+  only the pin branch disagreed. Fixed: pageAtDocY(y - docTop()).
+- **R-sidecar-gate-not-windows-parity (info, ask-user) - MY GATE WAS WRONG,
+  REVERTED.** Windows gates only the two SHARED files on the primary role
+  (last.txt src/main.cpp:3276, app.txt :3345); a document's own sidecar is
+  written by whichever window owns that document (:3243-3245, no gate). The
+  gate I added in the previous batch would have DROPPED a second window's real
+  marks at quit - a data loss the reviewer measured the risk of. Reverted, and
+  the gate section now asserts the Windows behaviour instead: a second window
+  rotating its own document keeps that rotation ("a second window keeps its own
+  document's marks"), while the shared app.txt section still proves the shared
+  files stay untouched. README.txt's "write none of them" is the documented
+  promise, but the Windows implementation does not do that for the sidecar, and
+  matching the implementation is what keeps a reader's marks.
+- **R-gate-live-network / R-gate-update-check-not-hermetic (warning, info)**
+  the gate's update-check sections now say "untested" when GitHub cannot be
+  reached instead of failing the gate (a network outage is not a code defect),
+  guard curl with command -v, and set MNPDF_NO_UPDATE on the click-only runs so
+  the launch check cannot race the click counts.
+- **S-dup-refreshDrawers-after-rotate (info)** the four handler-level
+  refreshDrawers() calls after rotate/undo/redo were redundant - rotatePage and
+  rotApply already refresh (doc.cpp:550, :394) - so they were dropped; each cost
+  a full layoutThumbs plus a buildBmList walk.
+- **R-docs-drawer-claim-still-wrong / R-gate-check-count-stale (info)** the
+  docs/linux.md citation now points at the real clear (src/linux/main.cpp:1583-1585,
+  and the Windows call sites :4813-4817, :4968), and the counts in this record
+  are corrected.
