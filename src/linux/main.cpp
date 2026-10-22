@@ -686,7 +686,18 @@ static void onMenuActivate(GtkMenuItem* mi, gpointer data) {
     case 106: zoomAt(1 / 1.2, gClientW / 2, gClientH / 2); break;
     case 107: { std::string f = ui_open_file(); if (!f.empty()) openPath(utf8ToWide(f)); } break;
     case 108: { std::string f = ui_open_file(); if (!f.empty()) addTab(utf8ToWide(f)); } break;
-    case 109: gAutosave = !gAutosave; writeAppPref(); break;
+    case 109:
+        gAutosave = !gAutosave;
+        writeAppPref();
+        // the Windows toggle also re-arms or cancels the pending sidecar
+        // write (src/main.cpp:5702-5711): a write already pending must not
+        // fire after autosave was switched off, and anything that changed
+        // while it was off deserves a flush when it comes back. The port's
+        // tick runs for the whole session, so arming and cancelling is the
+        // pending flag, not the timer.
+        if (gAutosave) markSave();
+        else sidecarClearPending();
+        break;
     case 110: gtk_window_iconify(GTK_WINDOW(gWin)); break;
     case 111: if (gtk_window_is_maximized(GTK_WINDOW(gWin))) gtk_window_unmaximize(GTK_WINDOW(gWin)); else gtk_window_maximize(GTK_WINDOW(gWin)); break;
     case 112: requestQuit(); break;
@@ -2264,9 +2275,14 @@ int main(int argc, char** argv) {
     int scale = gtk_widget_get_scale_factor(gWin);
     gScale = scale > 0 ? scale : 1.0;
 
-    // open the file named on the command line, else the remembered last document
+    // open the file named on the command line, else the remembered last document.
+    // A plain SECOND launch is a deliberate new window (src/main.cpp:6241):
+    // the document the primary instance already has open is the last thing
+    // this window should show, so it starts empty. An explicit file argument
+    // still opens - two readers side by side is the point of a second window.
     std::wstring toOpen;
     if (argc > 1) toOpen = utf8ToWide(argv[1]);
+    else if (!gPrimaryInstance) toOpen.clear();
     else toOpen = lastDocumentPath();
     if (!toOpen.empty()) openPath(toOpen);
     else renderPage();
