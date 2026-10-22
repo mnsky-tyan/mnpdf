@@ -417,10 +417,13 @@ static gboolean showUpdateResult(gpointer data) {
         // not always the release GitHub calls current: a Linux-only release is
         // a prerelease until its Windows archive ships, and /releases/latest
         // skips prereleases. So a reader who is behind the current release is
-        // told about it here too - the same information the branch above
-        // carries.
-        std::string msg = "You are running the newest version (" + current + ").";
-        if (o->currentIsNewer && o->currentTag != o->latestTag) {
+        // told about it here too - and must not be called the newest, which
+        // would contradict the very next sentence.
+        bool behindCurrent = o->currentIsNewer && o->currentTag != o->latestTag;
+        std::string msg = behindCurrent
+            ? "You are running " + current + ". No newer release with a Linux build was found."
+            : "You are running the newest version (" + current + ").";
+        if (behindCurrent) {
             msg += "\n\nGitHub's current release is " + o->currentTag + ".";
         }
         ui_message(msg, "mnpdf update", false);
@@ -837,8 +840,13 @@ static void dumpMenuShell(GtkWidget* shell, const char* title) {
 // Build the right-click menu for the current gMenuHlIdx / gMenuPinIdx /
 // selection state. Split out from onContextMenu so the menu dump can build the
 // same menu in each of its shapes.
+//
+// The caller owns the menu: a GtkMenu is created floating and a popup that is
+// never attached to a widget is never finalized by GTK, so the reference is
+// sunk here and the caller releases it with gtk_widget_destroy + g_object_unref.
 static GtkWidget* buildContextMenu(int x, int y) {
     GtkWidget* menu = gtk_menu_new();
+    g_object_ref_sink(menu);
     int pg = pageAtDocY(y);
 
     auto add = [&](const char* label, int id) {
@@ -980,8 +988,18 @@ static void onContextMenu(GtkWidget* w, GdkEventButton* ev) {
     // a menu-bar rotate act on the page of an old right-click. The signal fires
     // after the item's activate handler has run, so the context menu's own entries
     // keep the capture.
-    g_signal_connect(menu, "selection-done", G_CALLBACK(+[](GtkMenuShell*, gpointer) {
+    //
+    // The same handler destroys the menu and drops the reference buildContextMenu
+    // sunk: a GtkMenu is created floating, and a popup that is never attached to
+    // a widget is never finalized by GTK, so a menu per right-click would leak
+    // the whole widget graph (measured over 240 right-clicks: 77 MB -> 155 MB
+    // without this, flat after it). selection-done is the canonical teardown for
+    // a never-attached popup - it fires on the item's activation AND on Escape,
+    // a click outside, or a popdown, always after the item handler ran.
+    g_signal_connect(menu, "selection-done", G_CALLBACK(+[](GtkMenuShell* shell, gpointer) {
         gMenuRotPage = -1;
+        gtk_widget_destroy(GTK_WIDGET(shell));
+        g_object_unref(shell);
     }), nullptr);
     gtk_widget_show_all(menu);
     gtk_menu_popup_at_pointer(GTK_MENU(menu), (GdkEvent*)ev);
@@ -1018,6 +1036,7 @@ static void dumpEveryMenuShape() {
             if (GTK_IS_MENU_ITEM(k->data)) dumpMenuTree(GTK_WIDGET(k->data), 0);
         g_list_free(kids);
         gtk_widget_destroy(menu);
+        g_object_unref(menu);
     }
     gMenuHlIdx = savedHl;
     gMenuPinIdx = savedPin;
@@ -1646,11 +1665,14 @@ static gboolean onThumbScrollEv(GtkWidget*, GdkEventScroll* ev, gpointer) {
 
 static void collectBookmarks(FPDF_BOOKMARK bm, int depth) {
     for (; bm; bm = FPDFBookmark_GetNextSibling(gDoc, bm)) {
-        unsigned int len = FPDFBookmark_GetTitle(bm, nullptr, 0);
-        std::vector<unsigned short> buf(len + 1, 0);
-        if (len) FPDFBookmark_GetTitle(bm, buf.data(), (int)buf.size());
+        // FPDFBookmark_GetTitle counts BYTES, including the terminating NUL
+        // (third_party/pdfium-linux/include/fpdf_doc.h), and pdfBytesToWide is
+        // where that becomes a string - the same rule annotContents follows.
+        unsigned long bytes = FPDFBookmark_GetTitle(bm, nullptr, 0);
+        std::vector<unsigned short> buf(bytes / 2 + 1, 0);
+        if (bytes) FPDFBookmark_GetTitle(bm, buf.data(), (int)bytes);
         BmEntry e;
-        e.title = u16ToWide(buf.data(), len);
+        e.title = pdfBytesToWide(buf.data(), bytes);
         e.depth = depth;
         e.page = -1;
         FPDF_DEST dest = FPDFBookmark_GetDest(gDoc, bm);

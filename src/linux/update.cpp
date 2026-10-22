@@ -21,6 +21,7 @@
 
 #include <chrono>
 #include <ctime>
+#include <functional>
 
 #include <cstdio>
 #include <cstdlib>
@@ -322,13 +323,6 @@ static std::string linuxAssetUrl(const std::string& tag) {
 //
 // The redirects are not followed: the answer that matters is whether the asset
 // exists, and the redirect itself is that answer.
-// The answer to "does this release carry the Linux archive" is three-valued:
-// yes, no, and "the host did not answer". The third is not the same as the
-// second - a timeout or a refused connection is not evidence that the archive
-// is missing, and reporting it as missing would tell the reader that no
-// release carries a Linux build when the network simply hiccuped.
-enum class AssetAnswer { Yes, No, Unreachable };
-
 static AssetAnswer probeLinuxAsset(const std::string& tag, Clock::time_point deadline) {
     HttpReply r = httpHead(linuxAssetUrl(tag), deadline);
     if (r.code != CURLE_OK) return AssetAnswer::Unreachable;
@@ -361,6 +355,33 @@ static int minutesSinceLastCheck() {
 bool updateCheckCooling() {
     int m = minutesSinceLastCheck();
     return m >= 0 && m < kUpdateCheckIntervalMin;
+}
+
+// The newest release that carries a Linux archive, from the feed's tags in
+// release order (newest first).
+//
+// The prober is a parameter so the answer can be exercised without a network:
+// what the loop does with a host that did not answer is the part worth
+// pinning.
+//
+// An Unreachable answer is NOT a "no": it means the answer is unknown, so the
+// loop stops there and says so. Falling through to the next tag would name an
+// OLDER release as the newest - telling the reader that no newer Linux build
+// exists, and caching the wrong tag for the rest of the hour.
+std::string pickLinuxRelease(const std::vector<std::string>& tags,
+                             const std::function<AssetAnswer(const std::string&)>& probe,
+                             bool* unknown) {
+    if (unknown) *unknown = false;
+    for (const std::string& tag : tags) {
+        AssetAnswer a = probe(tag);
+        if (a == AssetAnswer::Unreachable) {
+            if (unknown) *unknown = true;
+            return "";
+        }
+        if (a == AssetAnswer::No) continue;
+        return tag;
+    }
+    return "";
 }
 
 // one attempt (hit or miss) stamps the clock, so the interval holds for the
@@ -404,24 +425,13 @@ UpdateResult checkForUpdate(Clock::time_point deadline) {
         return res;
     }
     bool unreachable = false;
-    for (const std::string& tag : tags) {
+    res.latestTag = pickLinuxRelease(tags, [deadline](const std::string& tag) {
         // the budget is the cap on the probing too: a feed that lists many
-        // releases is not probed past it
-        if (Clock::now() >= deadline) {
-            unreachable = true;
-            break;
-        }
-        AssetAnswer a = probeLinuxAsset(tag, deadline);
-        if (a == AssetAnswer::Unreachable) {
-            // the host did not answer for this one; try the next, and remember
-            // that the answer was not a "no"
-            unreachable = true;
-            continue;
-        }
-        if (a == AssetAnswer::No) continue;
-        res.latestTag = tag;
-        break;
-    }
+        // releases is not probed past it, and a request cut short by it is an
+        // answer the host never gave
+        if (Clock::now() >= deadline) return AssetAnswer::Unreachable;
+        return probeLinuxAsset(tag, deadline);
+    }, &unreachable);
     if (res.latestTag.empty()) {
         res.error = unreachable
             ? "The update check could not reach GitHub - the release host did not answer."
