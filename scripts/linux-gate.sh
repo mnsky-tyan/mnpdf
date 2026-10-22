@@ -276,18 +276,22 @@ echo "== the shared-preference role: a second window writes nothing =="
 I=$STATE/instance; mkdir -p "$I/cfg/mnpdf"
 printf 'tabstrip=1\ntitlebar=1\nautosave=1\nhlcolor=0\npincolor=5\nnight=0\n' > "$I/cfg/mnpdf/app.txt"
 # the first instance holds the role for as long as it runs. It is given a
-# lifetime of its own and killed afterwards - a reader with no window to close
-# would otherwise run forever.
+# lifetime of its own and waited for afterwards - a reader with no window to
+# close would otherwise run forever. It is NOT killed: xvfb-run takes its X
+# server down in an EXIT trap, which a signal does not run, so killing the
+# wrapper would leave the server (and its temp directory) behind on every run.
+# Letting it run out its own lifetime ends it the ordinary way, and the
+# server goes with it.
 xvfb-run -a --server-args="-screen 0 1280x900x24" \
-  env GDK_BACKEND=x11 XDG_CONFIG_HOME="$I/cfg" timeout 25 "$BIN" "$PDF" >"$I/first.log" 2>&1 &
+  env GDK_BACKEND=x11 XDG_CONFIG_HOME="$I/cfg" timeout 12 "$BIN" "$PDF" >"$I/first.log" 2>&1 &
 holder=$!
 sleep 6
 # the second one toggles the titlebar, which the primary would persist
 xvfb-run -a --server-args="-screen 0 1280x900x24" \
   env GDK_BACKEND=x11 XDG_CONFIG_HOME="$I/cfg" MNPDF_CMD=113 MNPDF_SHOT_EXIT=1 \
   timeout 30 "$BIN" "$PDF" >"$I/second.log" 2>&1
-# the holder is stopped rather than waited for: it has no window to close
-kill $holder 2>/dev/null
+# the holder ends on its own timeout, a few seconds after the second one is
+# done; waiting for it is what lets xvfb-run clean up after itself
 wait $holder 2>/dev/null
 grep -q "^titlebar=1$" "$I/cfg/mnpdf/app.txt"
 chk $? "a second window does not overwrite the shared app.txt"
@@ -305,6 +309,7 @@ xvfb-run -a --server-args="-screen 0 1280x900x24" \
 # a cooled-down check must not have replaced the tag it read
 grep -q "^updtag=v2.6.0$" "$U/cfg/mnpdf/app.txt"
 chk $? "an update check inside the hour does not ask again"
+
 # The cooled-down check answers with a modal, and the app quits while it is up:
 # a modal is destroyed with its window, so the reader must not destroy it a
 # second time. GTK answers that with a critical, which the log carries.
@@ -319,6 +324,20 @@ if grep -q "Gtk-CRITICAL" "$U/log.txt"; then
     bad "the update answer's modal leaves a GTK critical behind"
     grep -m2 "Gtk-CRITICAL" "$U/log.txt" | sed 's/^/       /'
 else ok "the update answer's modal leaves no GTK critical behind"; fi
+echo "== two update clicks in a row make one request =="
+# The reader refuses a second check while the first one is still in flight,
+# the way the Windows build does before it spawns anything (src/main.cpp:3188).
+# The app prints the URL of every request it makes, so the feed it asked for
+# is the evidence: one check, one request.
+T=$STATE/updtwice; mkdir -p "$T/cfg/mnpdf"
+printf 'tabstrip=1\ntitlebar=1\nautosave=1\nhlcolor=0\npincolor=5\nnight=0\n' \
+    > "$T/cfg/mnpdf/app.txt"
+xvfb-run -a --server-args="-screen 0 1280x900x24" \
+  env GDK_BACKEND=x11 XDG_CONFIG_HOME="$T/cfg" MNPDF_CMD=170,170 MNPDF_SHOT_EXIT=1 \
+  timeout 40 "$BIN" "$PDF" >"$T/log.txt" 2>&1
+FEED=$(grep -c "releases\.atom" "$T/log.txt")
+[ "$FEED" = "1" ]
+chk $? "a second click inside the request's own window makes no second request"
 
 echo "== the update check finds the release that carries the Linux archive =="
 # The check has to answer one question: which release carries the Linux
@@ -356,11 +375,16 @@ if [ -n "$FOUND" ]; then
         bad "the release it found ($FOUND) does not carry the archive (HTTP $CODE)"
     fi
 fi
-# the check must not have used the API: that host answers 403 once the IP's
-# shared quota is spent, and the Windows build deliberately avoids it
-if grep -q '"https://api.github.com' src/linux/update.cpp; then
-    bad "the update check still asks the API"
-else ok "the update check does not use the API's shared quota"; fi
+# and the reader asked the web host, not the API: the log carries the URL each
+# request actually opened, so this is what the reader did rather than what its
+# source says. The web host is required because api.github.com's unauthenticated
+# quota is shared and answers 403 once it is spent.
+if grep -q 'https://github.com/mnsky-tyan/mnpdf/releases' "$V/log.txt" \
+     && ! grep -q 'api\.github\.com' "$V/log.txt"; then
+    ok "the update check asks the web host, not the API"
+else
+    bad "the update check did not ask the web host (see $V/log.txt)"
+fi
 
 echo "== the command ids match the Windows command table =="
 # The parity claim is "the same command under the same menu id". The
@@ -421,15 +445,21 @@ required = ["CMD_TITLEBAR", "CMD_UNDO", "CMD_REDO", "CMD_SAVE", "CMD_SAVE_AS",
             "CMD_OPEN", "CMD_QUIT", "CMD_MINIMIZE", "CMD_MAX_RESTORE",
             "CMD_HIDE_TABSTRIP", "CMD_NEW_TAB", "CMD_CLOSE_TAB",
             "CMD_ZOOM_IN", "CMD_ZOOM_OUT", "CMD_FIT_WIDTH", "CMD_FIND",
+            "CMD_AUTOSAVE",
             # the pin colour family, which the pin shape makes visible: presets
             # at 160-165 and "Custom..." at 169. The dump only sees these
             # because buildColorSubmenu records the id too.
-            "CMD_CUSTOM_PIN_COLOR"]
-# Commands that need a state the dump cannot create are driven instead, below.
-# 135 (highlight the selection) and 140/149 (the default highlight colour) need
-# a live text selection; 180 (clear custom colours) needs at least one custom
-# colour to exist. Driving them proves the handler exists and acts, which the
-# presence of an id does not.
+            "CMD_CUSTOM_PIN_COLOR",
+            # the selection family, which the selection shape makes visible:
+            # Copy (101), Highlight (135) and the default-highlight colour
+            # family (140-149).
+            "CMD_COPY", "CMD_HIGHLIGHT", "CMD_DEFAULT_HL_YELLOW",
+            "CMD_CUSTOM_HL_COLOR"]
+# The dump builds every menu shape, so the commands that need a state of their
+# own are visible anyway: the selection shape carries Copy (101), Highlight
+# (135) and the default-highlight family (140-149), the highlight shape carries
+# the highlight's own Copy text (116), and 180 (clear custom colours) needs a
+# custom colour to exist, which the seed above provides.
 missing = []
 for name in required:
     if name not in table:
@@ -437,6 +467,22 @@ for name in required:
     elif table[name] not in seen:
         missing.append("%s (%d) is a Windows command with no Linux menu entry"
                        % (name, table[name]))
+# The menu bar is dumped as its own section. Its entries post commands, so
+# every one of them carries the id it posts - the menu holders (File, View,
+# Advanced) post nothing and carry none.
+bar = []
+inbar = False
+for line in menu.splitlines():
+    if line.startswith("== "):
+        inbar = (line.strip() == "== menu bar ==")
+        continue
+    if inbar and line.strip():
+        bar.append(line)
+noId = [l for l in bar if l.startswith(" ") and not re.search(r': \d+$', l)]
+print("       menu bar entries: %d, command entries without an id: %d"
+      % (len(bar), len(noId)))
+for l in noId:
+    missing.append("the menu bar's %r carries no command id" % l.strip())
 print("       windows ids carried by the menu: %d of %d"
       % (sum(1 for n in required if n in table and table[n] in seen), len(required)))
 for m in missing:

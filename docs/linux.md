@@ -50,6 +50,11 @@ paints the composited frame and draws its own scrollbars.
   and the WM_CLOSE handler), while the Linux dialog is modal, so it must be
   saved or cancelled before the switch can happen at all. Cancelling a NEW pin
   drops it on both platforms.
+- **Custom colour entry.** Windows opens a small popup box beside the reader
+  that takes hex digits only; the Linux build asks in a modal dialog. What the
+  reader can type is the same: six hex digits, with or without the `#`, and a
+  colour that is already in one of the reader's own slots lands in that slot
+  instead of taking a new one.
 - **Window rect while maximized.** On Windows the saved `app.txt` rect is
   `rcNormalPosition`, the pre-maximize frame; on Linux the configure handler
   records the live allocation, so quitting while maximized writes the
@@ -61,15 +66,20 @@ paints the composited frame and draws its own scrollbars.
   client size the window manager handed GTK. Each platform round-trips its own
   value, so the file stays readable on both; a window sized on one just appears
   a frame's worth larger or smaller on the other.
-- **The update check.** It is the same feature, but it cannot follow the same
-  route. The Windows app reads `/releases/latest` - the newest
-  NON-prerelease - and fetches `mnpdf-win-x64-<tag>.zip` by name; a Linux-only
+- **The update check.** It is the same feature, and it reads the tag the same
+  way: `/releases/latest` answers with a redirect to the newest
+  NON-prerelease, and the tag is read off that redirect, exactly as the
+  Windows build does (src/main.cpp:2466-2479). What differs is the asset.
+  The Windows app then fetches `mnpdf-win-x64-<tag>.zip` by name; a Linux-only
   release is a prerelease until the Windows archive is published beside it, and
+
   that endpoint names the Windows asset. The port reads the release feed for
   the newest release that actually carries `mnpdf-linux-x64-<tag>.tar.gz` and
   compares versions with the Windows rules. See "The parity work" below for
   the asset that publishes that name. There is no Linux install step yet: the
-  check reports what is available and hands the reader the release page.
+  check reports what is available in a message box, and it has no "open the
+  release page" button - the Windows build has one.
+
 - **Tabs are GtkNotebook pages**, and each tab's own document, zoom, scroll and
   marks live in its `Doc` bundle exactly as on Windows.
 
@@ -99,6 +109,15 @@ Windows canonical order and carries every key it does not own (the Windows
 reader's `titlebar=`, `updcheck=` and `updtag=`) after them, verbatim and in
 their original order: a launch on one platform never loses the other's
 preferences or its update-check clock.
+
+Because the file is shared, only one window may write it. The Windows build
+claims a named mutex at startup (src/main.cpp:6138) and a window that does not
+own it writes neither app.txt nor last.txt. The port takes the same role with
+an advisory lock on `instance.lock` in the same directory: the first reader
+holds it for as long as it runs, and a second one reads the preferences but
+writes nothing, so two open readers cannot overwrite each other's settings.
+The kernel drops the lock when the process dies, so a crashed reader does not
+leave the role locked.
 
 `tests/mnpdf-baked.pdf` is a PDF carrying mnpdf's own baked annotations
 (`/Source (mnpdf 0 45)` on a Highlight, `/Source (mnpdf)` on a Text note) - the
@@ -157,15 +176,23 @@ Measured on this machine (`/usr/bin/time`, and RSS sampled from `/proc`):
   discipline as the Windows build, and the print path allocates exactly one page
   raster at a time, sized from the page's own box at 300 dpi and shrunk to the
   same 16-megapixel budget the Windows print path applies.
+- The thumbnails drawer holds one page raster at a time, where the Windows
+  drawer holds one bitmap per row (src/main.cpp:4803). The cost is invisible
+  but real: scrolling down and back up re-rasterizes every row that left the
+  viewport, and each raster is a `FPDF_LoadPage` plus `FPDF_RenderPageBitmap`
+  on the UI thread inside the draw signal, so a long document's drawer scrolls
+  more slowly than the Windows one. The bound is the reason: a per-row cache
+  would grow with the document, and the page cache the engine already keeps is
+  six pages deep (src/linux/doc.cpp:236).
 
 ## What is still missing
 
 The Windows build's print dialog is replaced by the GtkPrintOperation dialog.
+
 The update check differs in one deliberate way: the Windows app reads
 GitHub's `/releases/latest` and downloads `mnpdf-win-x64-<tag>.zip` by name,
 while this one reads the release feed for the newest release that actually
 carries a Linux archive - see "The update check" above.
-
 ## The parity work (2026-10-21)
 
 The port now carries the same command set as the Windows build, under the same
@@ -190,14 +217,19 @@ reader, the same place Windows puts them (src/main.cpp:4886 placeDrawer, side 0
 for the thumbnails and side 1 for the outline). The content is the same code
 path: a thumbnail is a page rasterized through `renderPageToBuffer`, and the
 outline is the bookmark tree collected with `FPDFBookmark_GetFirstChild`, with
-the same nesting and the same "This document has no bookmarks." fallback.
+the same nesting and the same "This document has no bookmarks." fallback. The
+thumbnail drawer answers the same keys the Windows one does (src/main.cpp:5031):
+click a preview to jump there, Ctrl+Up and Ctrl+Down move the selected page,
+Delete removes it and R turns it - on the drawer's own selection, not on the
+page the document happens to show.
 
 One GTK detail worth recording, because it is invisible until the drawer is
 missing: a widget packed into a box that has already negotiated its size keeps
 a 1-px allocation until BOTH the strip and the window are told to lay
-themselves out again and the request is then drained. Without that, the
-drawer is created, visible, and invisible on screen. Measured with a GtkBox
-probe of the app's own shape (menu bar, strip, overlay).
+themselves out again. Without that, the drawer is created, visible, and
+invisible on screen. Measured with a GtkBox probe of the app's own shape (menu
+bar, strip, overlay). The layout itself is left to the main loop, so a command
+handler never runs one from inside itself.
 
 **The colours.** Windows offers a colour submenu wherever a colour is chosen -
 a mark, a default, a pin - with the six presets, the reader's own slots, a way
@@ -210,7 +242,10 @@ platforms.
 is Save, 119 is Save As, 114 is Undo, 115 is Redo, 113 is the titlebar toggle,
 133 and 134 are the rotations, 137 is Print, 170 is the update check, 180
 clears the custom colours. The entries Windows has no menu for - Delete this
-page, Move page up, Move page down - moved into a free range (310-312).
+page, Move page up, Move page down - moved into a free range (310-312), and
+"Open in new tab..." (108) has no Windows counterpart either, so it is
+Linux-only in the same way.
+
 
 **The update check.** This is the one place the port deliberately does not
 follow the Windows route. The Windows app reads `/releases/latest`, which
@@ -220,8 +255,11 @@ the Windows archive is published beside it, and the asset that endpoint names
 is the Windows one. So the port reads the release feed, picks the newest
 release that actually carries `mnpdf-linux-x64-<tag>.tar.gz`, then compares
 versions with the Windows rules (src/main.cpp:2334). The request runs on its
-own thread and is bounded by a timeout, so a slow network cannot freeze the
-window.
+own thread and the whole check - the feed, the asset probes and the release
+lookup - fits in one budget, so one click cannot turn into minutes of waiting
+and a slow network cannot freeze the window. The suite that waits for the
+answer waits longer than that budget, so a working but slow network still
+gets its answer instead of a quit.
 
 Where the release list comes from, and where the asset list does not, was
 measured rather than guessed:
@@ -247,7 +285,6 @@ The feed's own id ends in `releases`, not in a tag, and is skipped rather than
 read as one. The parsing is split from the request so it can be tested
 without a network: the engine suite covers the feed's entry id, the feed's
 own id, an id that is not a version, and an empty feed.
-
 The version the port reports is generated at build time from the Windows
 `kAppVersion` constant (CMakeLists.txt reads src/main.cpp), so the two readers
 can never claim different versions - which matters, because they share one
@@ -260,12 +297,20 @@ that are easy to get wrong:
   request; the window procedure stamps the attempt into app.txt
   (src/main.cpp:6085). The port stamps it in the reply handler, for the same
   reason: `writeAppPref` writes the shared app.txt, and every other writer of
-  it runs on the GTK main thread.
+  it runs on the GTK main thread. Only an attempt that really asked counts:
+  an answer taken from the cache spends no request, so it must not push the
+  cooldown's end away, or a reader who clicks once an hour would never ask
+  again and would keep being told what the first attempt saw.
 - **A click inside the cooldown is answered from the cache**, not refused. The
   Windows build reports what the last attempt learned
   (src/main.cpp:3156-3180), so the reader gets a true answer and no request
   is spent. The port does the same, and says when the last attempt could not
   reach GitHub and how long is left.
+- **One check at a time.** The Windows build gates the click on the UI thread
+  before it spawns anything (src/main.cpp:3188), so a second click inside the
+  first request's own window makes one request, not two. The port gates it the
+  same way, and the gate asserts it by counting the requests the reader
+  actually made.
 - **The asset check is three-valued.** "The release carries the archive", "it
   does not" and "the host did not answer" are three different answers, and the
   third is not the second: a timeout is not evidence that the archive is
@@ -300,11 +345,23 @@ offset is clamped when the list shrinks.
 
 `MNPDF_CMD` drives one command by its menu id, the way the Windows suites post
 WM_COMMAND, so a suite can assert on chrome the page back buffer never holds.
+It runs on its own turn of the main loop and the picture is taken on the next
+one, so a drawer a command opened is laid out before it is captured. It may
+carry more than one id (`MNPDF_CMD=170,170`), and they all run in that one
+turn: a suite uses that to click twice inside one request's own window and
+see that the second click spends no request.
 `MNPDF_SHOT_WINDOW` captures the whole window instead of only the page buffer.
-`MNPDF_MENU_DUMP` prints the menu tree as text, each entry as `label: id`, which
-is how the parity comparison is made without clicking anything: the dump is
-asserted against the Windows command table in src/main.cpp, so a missing or
-reworded command fails the gate.
+`MNPDF_MENU_DUMP` prints the menu bar and the context menu as text, every
+entry that posts a command as `label: id`, then quits through the app's own
+quit path. The context menu
+is printed in every shape it has - nothing under the cursor, a highlight, a
+pin, a live selection - because the mark-specific commands exist only in
+their own shape. The dump is asserted against the command table the Windows
+suites already own (`tests/lib.ps1`'s `CMD_*` ids), so a missing command or a
+wrong id fails the gate; the menu bar's entries post the same commands and
+carry the same ids, so they are asserted there too. The gate then drives ids
+113, 170, 201 and 202 and
+asserts what each wrote to app.txt or to the pixels.
 
 `MNPDF_SHOT_EXIT` is a fourth seam, and it is a window-level one rather than a
 fourth independent thing: it appends the quit command to whatever else the run
@@ -313,30 +370,33 @@ for a command and a quit drives the command and then quits.
 
 ## Releasing
 
-`.github/workflows/release.yml` builds both platforms from a `v*` tag and
-publishes them as one release. The Windows asset is not optional even for a
-Linux release: the Windows app discovers updates through GitHub's
-`/releases/latest` and then fetches `mnpdf-win-x64-<tag>.zip` by name
-(`src/main.cpp:2572`), so a release carrying only a Linux archive would tell
-every installed Windows copy that a newer version exists and then fail to
-download it. Both assets are therefore asserted to exist before the release is
-created.
+A release is one GitHub release carrying both platform assets. The Windows
+asset is not optional even for a Linux release: the Windows app discovers
+updates through GitHub's `/releases/latest` and then fetches
+`mnpdf-win-x64-<tag>.zip` by name (`src/main.cpp:2572`), so a release carrying
+only a Linux archive would tell every installed Windows copy that a newer
+version exists and then fail to download it. Both assets therefore have to be
+attached to the same release.
 
 Cutting one:
 
 ```sh
-# the tag, kAppVersion and README.txt must agree or the contract job fails, so
-# bump both: kAppVersion in src/main.cpp and the first line of README.txt
+# the tag, kAppVersion and README.txt must agree, so bump both: kAppVersion
+# in src/main.cpp and the first line of README.txt
+./build.bat                                     # -> build\mnpdf.exe
+powershell -File scripts/make-release-zip.ps1   # -> build\mnpdf-win-x64-v2.7.0.zip
+./build-linux.sh
+./scripts/make-release-tarball.sh               # -> build-linux/mnpdf-linux-x64-v2.7.0.tar.gz
 git commit -am "release: v2.7.0" && git push origin main
 git tag v2.7.0 && git push origin v2.7.0
 ```
 
 The Linux asset is a plain tarball, and `scripts/make-release-tarball.sh`
-produces exactly the layout that is published: the binary, the vendored
-`libpdfium.so` (found through an `$ORIGIN` rpath), `README.txt`,
-`PDFIUM-LICENSE.txt` and `README-linux.txt`, named
-`mnpdf-linux-x64-<tag>.tar.gz`. It needs no install step and no root; the
-system dependencies are GTK3, which every desktop already has, and libcurl
-(`libcurl4-openssl-dev` to build, `libcurl.so.4` at runtime) for the update
-check. `ldd` on the unpacked binary resolves `libpdfium.so` from beside it, so
-there is no `LD_LIBRARY_PATH` to set.
+produces exactly the layout that is published: a `mnpdf-linux-x64-<tag>/`
+directory holding the binary, the vendored `libpdfium.so` (found through an
+`$ORIGIN` rpath), `README.txt`, `PDFIUM-LICENSE.txt` and `README-linux.txt`.
+It needs no install step and no root; the system dependencies are GTK3, which
+every desktop already has, and libcurl (`libcurl4-openssl-dev` to build,
+`libcurl.so.4` at runtime) for the update check. `ldd` on the unpacked binary
+resolves `libpdfium.so` from beside it, so there is no `LD_LIBRARY_PATH` to
+set.
