@@ -299,6 +299,11 @@ xvfb-run -a --server-args="-screen 0 1280x900x24" \
 # a cooled-down check must not have replaced the tag it read
 grep -q "^updtag=v2.6.0$" "$U/cfg/mnpdf/app.txt"
 chk $? "an update check inside the hour does not ask again"
+# the answer opens a modal, and the app quits while it is up: the modal is
+# destroyed with the window, so the reader must not destroy it a second time.
+# GTK answers that with a critical, which the log carries.
+grep -q "Gtk-CRITICAL" "$U/log.txt"; [ $? -ne 0 ]
+chk $? "the update answer's modal leaves no GTK critical behind"
 
 echo "== the update check asks the web host, not the API =="
 # The Windows build reads the tag off the web host, never api.github.com,
