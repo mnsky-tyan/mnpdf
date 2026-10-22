@@ -318,6 +318,21 @@ chk $? "an update check inside the hour does not ask again"
 if grep -q "Gtk-CRITICAL" "$U/log.txt"; then
     bad "the update answer's modal leaves a GTK critical behind"
 else ok "the update answer's modal leaves no GTK critical behind"; fi
+echo "== two update clicks in a row make one request =="
+# The reader refuses a second check while the first one is still in flight,
+# the way the Windows build does before it spawns anything (src/main.cpp:3188).
+# The app prints the URL of every request it makes, so the feed it asked for
+# is the evidence: one check, one request.
+T=$STATE/updtwice; mkdir -p "$T/cfg/mnpdf"
+printf 'tabstrip=1\ntitlebar=1\nautosave=1\nhlcolor=0\npincolor=5\nnight=0\n' \
+    > "$T/cfg/mnpdf/app.txt"
+xvfb-run -a --server-args="-screen 0 1280x900x24" \
+  env GDK_BACKEND=x11 XDG_CONFIG_HOME="$T/cfg" MNPDF_CMD=170,170 MNPDF_SHOT_EXIT=1 \
+  timeout 40 "$BIN" "$PDF" >"$T/log.txt" 2>&1
+FEED=$(grep -c "releases\.atom" "$T/log.txt")
+[ "$FEED" = "1" ]
+chk $? "a second click inside the request's own window makes no second request"
+
 echo "== the update check finds the release that carries the Linux archive =="
 # The check has to answer one question: which release carries the Linux
 # archive? The Windows build reads the tag off the web host, never
@@ -446,6 +461,22 @@ for name in required:
     elif table[name] not in seen:
         missing.append("%s (%d) is a Windows command with no Linux menu entry"
                        % (name, table[name]))
+# The menu bar is dumped as its own section. Its entries post commands, so
+# every one of them carries the id it posts - the menu holders (File, View,
+# Advanced) post nothing and carry none.
+bar = []
+inbar = False
+for line in menu.splitlines():
+    if line.startswith("== "):
+        inbar = (line.strip() == "== menu bar ==")
+        continue
+    if inbar and line.strip():
+        bar.append(line)
+noId = [l for l in bar if l.startswith(" ") and not re.search(r': \d+$', l)]
+print("       menu bar entries: %d, command entries without an id: %d"
+      % (len(bar), len(noId)))
+for l in noId:
+    missing.append("the menu bar's %r carries no command id" % l.strip())
 print("       windows ids carried by the menu: %d of %d"
       % (sum(1 for n in required if n in table and table[n] in seen), len(required)))
 for m in missing:

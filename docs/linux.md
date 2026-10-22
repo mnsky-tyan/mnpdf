@@ -50,6 +50,11 @@ paints the composited frame and draws its own scrollbars.
   and the WM_CLOSE handler), while the Linux dialog is modal, so it must be
   saved or cancelled before the switch can happen at all. Cancelling a NEW pin
   drops it on both platforms.
+- **Custom colour entry.** Windows opens a small popup box beside the reader
+  that takes hex digits only; the Linux build asks in a modal dialog. What the
+  reader can type is the same: six hex digits, with or without the `#`, and a
+  colour that is already in one of the reader's own slots lands in that slot
+  instead of taking a new one.
 - **Window rect while maximized.** On Windows the saved `app.txt` rect is
   `rcNormalPosition`, the pre-maximize frame; on Linux the configure handler
   records the live allocation, so quitting while maximized writes the
@@ -212,7 +217,11 @@ reader, the same place Windows puts them (src/main.cpp:4886 placeDrawer, side 0
 for the thumbnails and side 1 for the outline). The content is the same code
 path: a thumbnail is a page rasterized through `renderPageToBuffer`, and the
 outline is the bookmark tree collected with `FPDFBookmark_GetFirstChild`, with
-the same nesting and the same "This document has no bookmarks." fallback.
+the same nesting and the same "This document has no bookmarks." fallback. The
+thumbnail drawer answers the same keys the Windows one does (src/main.cpp:5031):
+click a preview to jump there, Ctrl+Up and Ctrl+Down move the selected page,
+Delete removes it and R turns it - on the drawer's own selection, not on the
+page the document happens to show.
 
 One GTK detail worth recording, because it is invisible until the drawer is
 missing: a widget packed into a box that has already negotiated its size keeps
@@ -246,8 +255,11 @@ the Windows archive is published beside it, and the asset that endpoint names
 is the Windows one. So the port reads the release feed, picks the newest
 release that actually carries `mnpdf-linux-x64-<tag>.tar.gz`, then compares
 versions with the Windows rules (src/main.cpp:2334). The request runs on its
-own thread and is bounded by a timeout, so a slow network cannot freeze the
-window.
+own thread and the whole check - the feed, the asset probes and the release
+lookup - fits in one budget, so one click cannot turn into minutes of waiting
+and a slow network cannot freeze the window. The suite that waits for the
+answer waits longer than that budget, so a working but slow network still
+gets its answer instead of a quit.
 
 Where the release list comes from, and where the asset list does not, was
 measured rather than guessed:
@@ -285,12 +297,20 @@ that are easy to get wrong:
   request; the window procedure stamps the attempt into app.txt
   (src/main.cpp:6085). The port stamps it in the reply handler, for the same
   reason: `writeAppPref` writes the shared app.txt, and every other writer of
-  it runs on the GTK main thread.
+  it runs on the GTK main thread. Only an attempt that really asked counts:
+  an answer taken from the cache spends no request, so it must not push the
+  cooldown's end away, or a reader who clicks once an hour would never ask
+  again and would keep being told what the first attempt saw.
 - **A click inside the cooldown is answered from the cache**, not refused. The
   Windows build reports what the last attempt learned
   (src/main.cpp:3156-3180), so the reader gets a true answer and no request
   is spent. The port does the same, and says when the last attempt could not
   reach GitHub and how long is left.
+- **One check at a time.** The Windows build gates the click on the UI thread
+  before it spawns anything (src/main.cpp:3188), so a second click inside the
+  first request's own window makes one request, not two. The port gates it the
+  same way, and the gate asserts it by counting the requests the reader
+  actually made.
 - **The asset check is three-valued.** "The release carries the archive", "it
   does not" and "the host did not answer" are three different answers, and the
   third is not the second: a timeout is not evidence that the archive is
@@ -306,18 +326,21 @@ rotates page 3 even when page 7 is on screen.
 `MNPDF_CMD` drives one command by its menu id, the way the Windows suites post
 WM_COMMAND, so a suite can assert on chrome the page back buffer never holds.
 It runs on its own turn of the main loop and the picture is taken on the next
-one, so a drawer a command opened is laid out before it is captured.
+one, so a drawer a command opened is laid out before it is captured. It may
+carry more than one id (`MNPDF_CMD=170,170`), and they all run in that one
+turn: a suite uses that to click twice inside one request's own window and
+see that the second click spends no request.
 `MNPDF_SHOT_WINDOW` captures the whole window instead of only the page buffer.
-`MNPDF_MENU_DUMP` prints the menu bar and the context menu as text, the
-context menu's entries as `label: id`, then quits through the app's own quit
-path. The context menu
+`MNPDF_MENU_DUMP` prints the menu bar and the context menu as text, every
+entry that posts a command as `label: id`, then quits through the app's own
+quit path. The context menu
 is printed in every shape it has - nothing under the cursor, a highlight, a
 pin, a live selection - because the mark-specific commands exist only in
 their own shape. The dump is asserted against the command table the Windows
 suites already own (`tests/lib.ps1`'s `CMD_*` ids), so a missing command or a
-wrong id fails the gate; the menu bar's entries post the same commands, so the
-ids are asserted through the shapes. The gate then drives ids 113, 170, 201
-and 202 and
+wrong id fails the gate; the menu bar's entries post the same commands and
+carry the same ids, so they are asserted there too. The gate then drives ids
+113, 170, 201 and 202 and
 asserts what each wrote to app.txt or to the pixels.
 
 `MNPDF_SHOT_EXIT` is a fourth seam, and it is a window-level one rather than a

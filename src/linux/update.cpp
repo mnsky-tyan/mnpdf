@@ -19,11 +19,13 @@
 
 #include <curl/curl.h>
 
+#include <chrono>
 #include <ctime>
 
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -62,16 +64,38 @@ bool versionIsNewer(const std::string& candidate) {
 }
 
 // ---- the network -----------------------------------------------------------
+// The whole check - the feed, the asset probes and the release lookup - fits
+// in one budget. A request that would run past it is cut short and the probe
+// loop stops when the budget is gone, so one click can never turn into
+// minutes of waiting. The seam that waits for the answer waits longer than
+// this (main.cpp's shot seam), so a working but slow network still gets its
+// answer instead of a quit.
+static const int kUpdateCheckBudgetSec = 20;
+
+int updateCheckBudgetSeconds() { return kUpdateCheckBudgetSec; }
+
+using Clock = std::chrono::steady_clock;
+
+// the seconds a request may still take: never more than the per-request cap
+// the check has always used, never less than one
+static int secondsLeft(Clock::time_point deadline) {
+    long long left = (long long)std::chrono::duration_cast<std::chrono::seconds>(
+        deadline - Clock::now()).count();
+    if (left < 1) return 1;
+    if (left > 15) return 15;
+    return (int)left;
+}
+
 // libcurl's own contract: curl_global_init() is invoked exactly once per
 // application, before any easy handle is created. Skipping it is not a crash
 // on every platform - the library initialises itself lazily in most builds -
 // but it is undefined behaviour that a different libcurl build can answer
 // with, so the call is made once, here, the first time the network is used.
+// std::call_once, because two checks can be in flight at once and libcurl
+// documents the global initialisation as not thread-safe.
 static void ensureCurlGlobal() {
-    static bool done = false;
-    if (done) return;
-    done = true;
-    curl_global_init(CURL_GLOBAL_DEFAULT);
+    static std::once_flag once;
+    std::call_once(once, []() { curl_global_init(CURL_GLOBAL_DEFAULT); });
 }
 
 // A small curl wrapper: the request is bounded by a timeout so a hung network
@@ -93,8 +117,9 @@ static size_t writeToString(void* ptr, size_t size, size_t nmemb, void* userdata
 
 // One request, two shapes. A GET reads the body; a HEAD asks for the status
 // alone, which is how the asset check avoids downloading the file it is only
-// asking about.
-static HttpReply httpRequest(const std::string& url, bool head) {
+// asking about. The request is bounded by the time the whole check has left,
+// so no single request can spend more than the budget it was given.
+static HttpReply httpRequest(const std::string& url, bool head, Clock::time_point deadline) {
     HttpReply r;
     ensureCurlGlobal();
     CURL* curl = curl_easy_init();
@@ -111,8 +136,9 @@ static HttpReply httpRequest(const std::string& url, bool head) {
     // (src/main.cpp:2466-2479). Following it would throw the tag away, and
     // the asset check wants the redirect itself as the answer.
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 0L);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
+    long budget = secondsLeft(deadline);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, budget);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, budget < 5 ? budget : 5);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, ("mnpdf/" + std::string(gAppVersion)).c_str());
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     // logged so a suite can assert which host was asked by observing the request
@@ -132,8 +158,8 @@ static HttpReply httpRequest(const std::string& url, bool head) {
     return r;
 }
 
-static HttpReply httpGet(const std::string& url) { return httpRequest(url, false); }
-static HttpReply httpHead(const std::string& url) { return httpRequest(url, true); }
+static HttpReply httpGet(const std::string& url, Clock::time_point deadline) { return httpRequest(url, false, deadline); }
+static HttpReply httpHead(const std::string& url, Clock::time_point deadline) { return httpRequest(url, true, deadline); }
 
 // The Linux counterpart of the Windows httpFailureText() (src/main.cpp:2594):
 // name the failure the reader can act on instead of one generic sentence for a
@@ -202,8 +228,8 @@ static std::string tagFromUrl(const std::string& url) {
 // The tag of the newest release, from the redirect /releases/latest answers
 // with. An empty answer means the host did not redirect, which is a failure
 // the caller reports rather than a release.
-static std::string latestReleaseTag(std::string* why) {
-    HttpReply r = httpGet(kLatestReleaseUrl);
+static std::string latestReleaseTag(Clock::time_point deadline, std::string* why) {
+    HttpReply r = httpGet(kLatestReleaseUrl, deadline);
     if (r.code != CURLE_OK) {
         if (why) *why = httpFailureText(r.code, r.status);
         return "";
@@ -273,8 +299,8 @@ std::vector<std::string> releaseTagsFromFeed(const std::string& body) {
     return out;
 }
 
-static std::vector<std::string> fetchReleaseTags(std::string* why) {
-    HttpReply r = httpGet(kReleaseFeedUrl);
+static std::vector<std::string> fetchReleaseTags(Clock::time_point deadline, std::string* why) {
+    HttpReply r = httpGet(kReleaseFeedUrl, deadline);
     if (r.code != CURLE_OK || r.status != 200 || r.body.empty()) {
         if (why) *why = httpFailureText(r.code, r.status);
         return std::vector<std::string>();
@@ -303,8 +329,8 @@ static std::string linuxAssetUrl(const std::string& tag) {
 // release carries a Linux build when the network simply hiccuped.
 enum class AssetAnswer { Yes, No, Unreachable };
 
-static AssetAnswer probeLinuxAsset(const std::string& tag) {
-    HttpReply r = httpHead(linuxAssetUrl(tag));
+static AssetAnswer probeLinuxAsset(const std::string& tag, Clock::time_point deadline) {
+    HttpReply r = httpHead(linuxAssetUrl(tag), deadline);
     if (r.code != CURLE_OK) return AssetAnswer::Unreachable;
     // 200 (the file itself) or a redirect to it both mean the asset is there;
     // 404 means it is not
@@ -358,7 +384,7 @@ struct UpdateResult {
 // The newest release that carries a Linux archive, prerelease or not: a Linux
 // release is a prerelease until the Windows archive is published beside it, and
 // the reader who installed it should still be told about the next one.
-UpdateResult checkForUpdate() {
+UpdateResult checkForUpdate(Clock::time_point deadline) {
     UpdateResult res;
     std::string why;
 
@@ -366,14 +392,20 @@ UpdateResult checkForUpdate() {
     // first one that really carries the Linux archive is the answer. The feed
     // only says which releases exist; the asset is confirmed by asking for its
     // download URL, because the feed carries no asset list.
-    std::vector<std::string> tags = fetchReleaseTags(&why);
+    std::vector<std::string> tags = fetchReleaseTags(deadline, &why);
     if (tags.empty()) {
         res.error = "The update check could not reach GitHub - " + why + ".";
         return res;
     }
     bool unreachable = false;
     for (const std::string& tag : tags) {
-        AssetAnswer a = probeLinuxAsset(tag);
+        // the budget is the cap on the probing too: a feed that lists many
+        // releases is not probed past it
+        if (Clock::now() >= deadline) {
+            unreachable = true;
+            break;
+        }
+        AssetAnswer a = probeLinuxAsset(tag, deadline);
         if (a == AssetAnswer::Unreachable) {
             // the host did not answer for this one; try the next, and remember
             // that the answer was not a "no"
@@ -397,7 +429,7 @@ UpdateResult checkForUpdate() {
     // release is a prerelease until its Windows archive ships and
     // /releases/latest skips prereleases. It is used to say so: a reader who
     // is behind the current release is told about the current one too.
-    std::string currentTag = latestReleaseTag(&why);
+    std::string currentTag = latestReleaseTag(deadline, &why);
     res.currentTag = currentTag;
 
     res.ok = true;
@@ -406,10 +438,14 @@ UpdateResult checkForUpdate() {
     return res;
 }
 
-// The command's half: it honours the cooldown and stamps the attempt, so
-// clicking "Check for updates" twice in a row makes one request, not two. It
-// also reports the release GitHub calls current, which is a different release
-// from the newest one carrying a Linux archive.
+// The command's half: it honours the cooldown, so a click inside the hour
+// spends no request, and it reports the release GitHub calls current, which
+// is a different release from the newest one carrying a Linux archive.
+//
+// `requested` says whether a request was really made. An answer taken from
+// the cache is not one, and it must not stamp the clock: a stamp would push
+// the cooldown's end away, so a reader who clicks once an hour would never
+// ask again.
 //
 // The stamp is NOT written here: this runs on the worker thread, and
 // writeAppPref writes a file that every other writer touches from the GTK
@@ -417,7 +453,8 @@ UpdateResult checkForUpdate() {
 // result and the window procedure stamps the attempt (src/main.cpp:6085) -
 // so the stamp happens in showUpdateResult, on the UI thread.
 bool updateCheckNow(std::string& latestTag, bool& newer, std::string& error,
-                    std::string& currentTag, bool& currentIsNewer) {
+                    std::string& currentTag, bool& currentIsNewer, bool& requested) {
+    requested = false;
     if (updateCheckCooling()) {
         // A click inside the cooldown window is answered from what the last
         // attempt learned, so the reader still gets a true answer and no
@@ -438,7 +475,10 @@ bool updateCheckNow(std::string& latestTag, bool& newer, std::string& error,
         currentIsNewer = newer;
         return true;
     }
-    UpdateResult r = checkForUpdate();
+    // a request is really made from here on, so the attempt counts: the stamp
+    // it earns is what keeps the next hour free of requests
+    requested = true;
+    UpdateResult r = checkForUpdate(Clock::now() + std::chrono::seconds(kUpdateCheckBudgetSec));
     if (!r.ok) {
         error = r.error;
         return false;
