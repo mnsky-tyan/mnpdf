@@ -106,9 +106,18 @@ is gone again after a restart.
 
 `app.txt` is one shared file, so a Linux write emits its own keys in the
 Windows canonical order and carries every key it does not own (the Windows
-reader's `titlebar=`, `updcheck=` and `updtag=`) after them, verbatim and in
-their original order: a launch on one platform never loses the other's
-preferences or its update-check clock.
+reader's `updcheck=` and `updtag=`) after them, verbatim and in their
+original order: a launch on one platform never loses the other's
+preferences or its update-check clock. The two update-check pairs are kept
+apart on purpose: `updcheck=`/`updtag=` are the Windows reader's stamp and
+mean the newest non-prerelease overall there (src/main.cpp:2435), while the
+Linux check answers a different question (the newest release carrying a
+Linux archive) and keeps its own stamp in `lnxupdcheck=`/`lnxupdtag=`. One
+key that changed meaning per platform would make a shared file tell each
+reader the other's answer, so each reader reads and writes only its own
+pair, and each pair survives the other platform's rewrites (the Linux
+writer carries the Windows pair forward; the Windows writer drops the Linux
+pair, which only costs the Linux reader one fresh check next time).
 
 Because the file is shared, only one window may write it. The Windows build
 claims a named mutex at startup (src/main.cpp:6138) and a window that does not

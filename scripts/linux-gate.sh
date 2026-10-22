@@ -296,19 +296,46 @@ wait $holder 2>/dev/null
 grep -q "^titlebar=1$" "$I/cfg/mnpdf/app.txt"
 chk $? "a second window does not overwrite the shared app.txt"
 
-echo "== the update check honours the Windows cooldown =="
+echo "== the update check honours the cooldown =="
 # The Windows build asks GitHub at most once an hour and stamps the attempt
 # into app.txt (kUpdateCheckIntervalMin, src/main.cpp:67). A check inside that
-# window must not make a request.
+# window must not make a request. The stamp this reader honours is its OWN
+# pair (lnxupdcheck=/lnxupdtag=): updcheck=/updtag= are the Windows reader's
+# stamp and mean the newest non-prerelease overall there, not the newest
+# release carrying a Linux archive, so a fresh Windows stamp must NOT stop the
+# Linux check from asking - that is the check below this one.
 U=$STATE/updcheck; mkdir -p "$U/cfg/mnpdf"
-printf 'tabstrip=1\ntitlebar=1\nautosave=1\nhlcolor=0\npincolor=5\nnight=0\nupdcheck=%s\nupdtag=v2.6.0\n' \
+printf 'tabstrip=1\ntitlebar=1\nautosave=1\nhlcolor=0\npincolor=5\nnight=0\nlnxupdcheck=%s\nlnxupdtag=v2.6.0\n' \
     "$(date +%s)" > "$U/cfg/mnpdf/app.txt"
 xvfb-run -a --server-args="-screen 0 1280x900x24" \
   env GDK_BACKEND=x11 XDG_CONFIG_HOME="$U/cfg" MNPDF_CMD=170 MNPDF_SHOT_EXIT=1 \
   timeout 40 "$BIN" "$PDF" >"$U/log.txt" 2>&1
 # a cooled-down check must not have replaced the tag it read
-grep -q "^updtag=v2.6.0$" "$U/cfg/mnpdf/app.txt"
+if grep -q "releases\\.atom" "$U/log.txt"; then
+    bad "a click inside the cooldown made a request"
+else ok "a click inside the cooldown made no request"; fi
+grep -q "^lnxupdtag=v2.6.0$" "$U/cfg/mnpdf/app.txt"
 chk $? "an update check inside the hour does not ask again"
+
+echo "== a Windows stamp is not this reader's cooldown =="
+# One key, two meanings: updtag= is the Windows reader's cached answer (the
+# newest non-prerelease overall, src/main.cpp:2435) and lnxupdtag= is this
+# reader's (the newest release carrying a Linux archive). A Windows-written
+# app.txt with a fresh updcheck= must not stop the Linux check from asking,
+# and the Linux check must carry the Windows pair forward untouched instead
+# of overwriting it with its own answer.
+W=$STATE/updwin; mkdir -p "$W/cfg/mnpdf"
+printf 'tabstrip=1\ntitlebar=1\nautosave=1\nhlcolor=0\npincolor=5\nnight=0\nupdcheck=%s\nupdtag=v2.6.0\n' \
+    "$(date +%s)" > "$W/cfg/mnpdf/app.txt"
+xvfb-run -a --server-args="-screen 0 1280x900x24" \
+  env GDK_BACKEND=x11 XDG_CONFIG_HOME="$W/cfg" MNPDF_CMD=170 MNPDF_SHOT_EXIT=1 \
+  timeout 40 "$BIN" "$PDF" >"$W/log.txt" 2>&1
+grep -q "releases\\.atom" "$W/log.txt"
+chk $? "a fresh Windows stamp does not stop the Linux check"
+grep -q "^lnxupdcheck=" "$W/cfg/mnpdf/app.txt"
+chk $? "the Linux check stamps its own pair"
+grep -q "^updtag=v2.6.0$" "$W/cfg/mnpdf/app.txt"
+chk $? "and carries the Windows pair forward untouched"
 
 # The cooled-down check answers with a modal, and the app quits while it is up:
 # a modal is destroyed with its window, so the reader must not destroy it a
@@ -358,7 +385,7 @@ xvfb-run -a --server-args="-screen 0 1280x900x24" \
   env GDK_BACKEND=x11 XDG_CONFIG_HOME="$V/cfg" MNPDF_CMD=170 MNPDF_SHOT_EXIT=1 \
   timeout 40 "$BIN" "$PDF" >"$V/log.txt" 2>&1
 # the tag the check stamped is the newest release that carries the archive
-FOUND=$(sed -n 's/^updtag=//p' "$V/cfg/mnpdf/app.txt" | head -1)
+FOUND=$(sed -n 's/^lnxupdtag=//p' "$V/cfg/mnpdf/app.txt" | head -1)
 if [ -n "$FOUND" ]; then
     ok "the update check found a release ($FOUND)"
 else

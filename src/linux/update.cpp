@@ -394,7 +394,13 @@ UpdateResult checkForUpdate(Clock::time_point deadline) {
     // download URL, because the feed carries no asset list.
     std::vector<std::string> tags = fetchReleaseTags(deadline, &why);
     if (tags.empty()) {
-        res.error = "The update check could not reach GitHub - " + why + ".";
+        // `why` says why the feed could not be fetched; an empty `why` means it
+        // was fetched fine and listed nothing this build could read - a
+        // different failure from an unreachable one, and reporting it as
+        // unreachable would blame the network for a host that answered
+        res.error = why.empty()
+            ? "The release feed listed no release this build could read."
+            : "The update check could not reach GitHub - " + why + ".";
         return res;
     }
     bool unreachable = false;

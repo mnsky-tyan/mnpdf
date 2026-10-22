@@ -256,10 +256,13 @@ extern bool gPrimaryInstance;
 bool claimPrimaryInstance();
 void releasePrimaryInstance();
 
-// the update check's own state, the same two values the Windows reader keeps
-// and writes to app.txt (updcheck= the unix time of the last attempt,
-// updtag= the newest tag ever seen). They live here because the cooldown
-// spans the whole app, not one module.
+// the update check's own state: the unix time of the last attempt and the
+// newest tag it found. It is kept in the Linux pair in app.txt
+// (lnxupdcheck=/lnxupdtag=): updcheck=/updtag= are the Windows reader's own
+// stamp and carry a different meaning there (the newest non-prerelease
+// overall, src/main.cpp:2435) than this check's answer (the newest release
+// carrying a Linux archive). They live here because the cooldown spans the
+// whole app, not one module.
 extern long long gLastUpdateCheck;
 extern std::string gLastUpdateTag;
 

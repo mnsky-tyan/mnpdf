@@ -313,11 +313,14 @@ void loadAppPref() {
         else if (sscanf(line, "hlcolor=%d", &iv) == 1) gHlDefault = (iv >= 0 && iv < kPalCount) ? iv : 0;
         else if (sscanf(line, "pincolor=%d", &iv) == 1) gPinDefault = (iv >= 0 && iv < kPalCount) ? iv : 0;
         else if (sscanf(line, "palnext=%d", &iv) == 1) gPalNext = (iv >= 0 && iv < kPalCustom) ? iv : 0;
-        // the update check's own state. These keys were carried forward as
-        // foreign lines before; the port implements the check, so it owns them
-        // now, in the same format the Windows reader writes and reads.
-        else if (sscanf(line, "updcheck=%lld", &gLastUpdateCheck) == 1) { }
-        else if (strncmp(line, "updtag=", 7) == 0) gLastUpdateTag = line + 7;
+        // the update check's own state, in the Linux pair. updcheck=/updtag=
+        // are NOT read here: they are the Windows reader's stamp and mean
+        // something else there - the newest non-prerelease overall
+        // (src/main.cpp:2435), not the newest release carrying a Linux archive
+        // - so adopting them would make one shared app.txt tell each reader
+        // the other's answer. Each reader keeps its own pair instead.
+        else if (sscanf(line, "lnxupdcheck=%lld", &gLastUpdateCheck) == 1) { }
+        else if (strncmp(line, "lnxupdtag=", 10) == 0) gLastUpdateTag = line + 10;
         // geometry is bounded the same way the Windows reader bounds it: a value
         // a window cannot have leaves the field at its default
         else if (sscanf(line, "winx=%d", &iv) == 1) { if (iv >= -100000 && iv <= 100000) gWinX = iv; }
@@ -342,14 +345,18 @@ extern void ui_windowRect(int* x, int* y, int* w, int* h, int* maxed);
 // The keys this writer owns. Everything else in app.txt belongs to another
 // reader of the same shared directory, so those lines are carried forward
 // unchanged and in their original order instead of being dropped by the
-// rewrite. titlebar= is owned here now that the port implements it, and so are
-// updcheck= and updtag=, now that the port has the update check: every key is
-// the Windows one, written in the Windows order, so a shared app.txt means the
-// same thing on both sides.
+// rewrite. titlebar= is owned here now that the port implements it. The
+// update check's keys are split by platform instead: updcheck=/updtag= stay
+// foreign, because they are the Windows reader's own stamp and answer a
+// different question there (the newest non-prerelease overall) than this
+// reader's check does (the newest release carrying a Linux archive), and one
+// key that means different things per platform is exactly what a shared
+// app.txt must not carry. This reader's stamp lives in lnxupdcheck=/lnxupdtag=
+// and is owned here; every Windows key is carried forward verbatim.
 static bool linuxAppKey(const char* line) {
     static const char* kOwned[] = { "tabstrip=", "titlebar=", "autosave=", "hlcolor=", "pincolor=", "night=",
                                     "winx=", "winy=", "winw=", "winh=", "winmax=", "palnext=",
-                                    "updcheck=", "updtag=" };
+                                    "lnxupdcheck=", "lnxupdtag=" };
     for (const char* k : kOwned)
         if (strncmp(line, k, strlen(k)) == 0) return true;
     return strncmp(line, "pal", 3) == 0 && line[3] >= '0' && line[3] <= '9' && line[4] == '=';
@@ -384,10 +391,13 @@ void writeAppPref() {
             fprintf(fp, "pal%d=%02x%02x%02x\n", c, GetRValue(gPalCustom[c]), GetGValue(gPalCustom[c]), GetBValue(gPalCustom[c]));
     fprintf(fp, "palnext=%d\n", gPalNext);
     for (const std::string& line : foreign) fprintf(fp, "%s\n", line.c_str());
-    // the update check's own state, in the Windows format: the timestamp of the
-    // last attempt and the newest tag ever seen. Both readers read them, so a
-    // shared app.txt means the same cooldown on both sides.
+    // the update check's own state, in the Linux pair. updcheck=/updtag= were
+    // carried above as foreign lines: they are the Windows reader's stamp and
+    // answer a different question there (the newest non-prerelease overall,
+    // src/main.cpp:2435) than this check does (the newest release carrying a
+    // Linux archive), so a shared app.txt keeps a pair per reader instead of
+    // one key that means different things per platform.
     if (gLastUpdateCheck > 0)
-        fprintf(fp, "updcheck=%lld\nupdtag=%s\n", gLastUpdateCheck, gLastUpdateTag.c_str());
+        fprintf(fp, "lnxupdcheck=%lld\nlnxupdtag=%s\n", gLastUpdateCheck, gLastUpdateTag.c_str());
     fclose(fp);
 }
