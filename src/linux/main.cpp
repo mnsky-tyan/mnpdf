@@ -669,9 +669,9 @@ static int gMenuPinIdx = -1;
 // of the drawer state lives with the drawer code below
 static GtkWidget* gThumbDrawer = nullptr;
 static GtkWidget* gOutlineDrawer = nullptr;
-static int gThumbSel = -1;
+int gThumbSel = -1;
 // a move re-points the drawer's ring at the page that moved
-static void movePageSelFollows(int from, int to);
+
 
 // ---- context menu ----
 static void onMenuActivate(GtkMenuItem* mi, gpointer data) {
@@ -762,8 +762,8 @@ static void onMenuActivate(GtkMenuItem* mi, gpointer data) {
     // a move re-points the drawer's ring at the page that moved
     // (src/main.cpp:4615-4620): the index it happens to hold now shows a
     // different page, so the next move would act on that one instead
-    case 311: if (gPageIndex > 0) { movePageSelFollows(gPageIndex, gPageIndex - 1); } break;
-    case 312: if (gPageIndex + 1 < gDocPages) { movePageSelFollows(gPageIndex, gPageIndex + 1); } break;
+    case 311: if (gPageIndex > 0) { movePage(gPageIndex, gPageIndex - 1); } break;
+    case 312: if (gPageIndex + 1 < gDocPages) { movePage(gPageIndex, gPageIndex + 1); } break;
     case 133: { int rp = gMenuRotPage >= 0 ? gMenuRotPage : gPageIndex;
                 rotatePage(rp, +1); refreshDrawers();
                 // the capture is spent. Windows never carries it past the
@@ -1017,6 +1017,16 @@ static void onContextMenu(GtkWidget* w, GdkEventButton* ev) {
     // even when page 7 is on screen.
     gMenuRotPage = pg >= 0 ? pg : gPageIndex;
     GtkWidget* menu = buildContextMenu(x, y);
+    // The Windows build clears the captured drop point once the dispatch has consumed
+    // it (src/main.cpp:5593-5595), so a capture never outlives the menu that made
+    // it. The port has a second entry point Windows does not - the menu bar posts
+    // 133/134 with no capture of its own - so an uncleared gMenuRotPage would let
+    // a menu-bar rotate act on the page of an old right-click. The signal fires
+    // after the item's activate handler has run, so the context menu's own entries
+    // keep the capture.
+    g_signal_connect(menu, "selection-done", G_CALLBACK(+[](GtkMenuShell*, gpointer) {
+        gMenuRotPage = -1;
+    }), nullptr);
     gtk_widget_show_all(menu);
     gtk_menu_popup_at_pointer(GTK_MENU(menu), (GdkEvent*)ev);
 }
@@ -1521,14 +1531,6 @@ static int gBmSel = -1;
 
 // The selection follows the page that moved, the way the Windows build sets
 // it inside movePage (src/main.cpp:4615-4620): the ring cannot stay on the
-// index it happens to hold, because that index now shows a different page -
-// a second Ctrl+Up would move that one instead and the repeat looks broken.
-static void movePageSelFollows(int from, int to) {
-    if (from < 0 || from >= gDocPages || to < 0 || to >= gDocPages || from == to) return;
-    movePage(from, to);
-    gThumbSel = to;
-}
-
 // Recompute the row heights and drop the cached raster. The Windows drawer
 // drops its pictures here too: layoutThumbs() calls clearThumbCache(), which
 // deletes every bitmap (src/main.cpp:4813-4821), so a refresh after a merge, a
@@ -1638,7 +1640,7 @@ static gboolean onThumbDraw(GtkWidget*, cairo_t* cr, gpointer) {
 static gboolean onThumbPress(GtkWidget*, GdkEventButton* ev, gpointer) {
     if (ev->button != GDK_BUTTON_PRIMARY) return FALSE;
     int idx = thumbAt((int)ev->y);
-    if (idx >= 0 && idx < gDocPages) { gThumbSel = idx; openPageAt(idx); }
+    if (idx >= 0 && idx < gDocPages) { gThumbSel = idx; openPageAt(idx); gtk_widget_queue_draw(gThumbArea); }
     // the drawer takes the keyboard, so the keys below reach it
     gtk_widget_grab_focus(gThumbArea);
     return TRUE;
@@ -1652,8 +1654,8 @@ static gboolean onThumbKey(GtkWidget*, GdkEventKey* ev, gpointer) {
     if (gThumbSel < 0) return FALSE;
     bool ctrl = (ev->state & GDK_CONTROL_MASK) != 0;
     if (ev->keyval == GDK_KEY_Delete) deletePage(gThumbSel);
-    else if (ev->keyval == GDK_KEY_Up && ctrl) { if (gThumbSel > 0) movePageSelFollows(gThumbSel, gThumbSel - 1); }
-    else if (ev->keyval == GDK_KEY_Down && ctrl) { if (gThumbSel + 1 < gDocPages) movePageSelFollows(gThumbSel, gThumbSel + 1); }
+    else if (ev->keyval == GDK_KEY_Up && ctrl) { if (gThumbSel > 0) movePage(gThumbSel, gThumbSel - 1); }
+    else if (ev->keyval == GDK_KEY_Down && ctrl) { if (gThumbSel + 1 < gDocPages) movePage(gThumbSel, gThumbSel + 1); }
     else if (ev->keyval == GDK_KEY_r || ev->keyval == GDK_KEY_R) rotatePage(gThumbSel, +1);
     else if (ev->keyval == GDK_KEY_Up) { if (gThumbSel > 0) gThumbSel--; openPageAt(gThumbSel); }
     else if (ev->keyval == GDK_KEY_Down) { if (gThumbSel < gDocPages - 1) gThumbSel++; openPageAt(gThumbSel); }

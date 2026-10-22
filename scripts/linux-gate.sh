@@ -359,9 +359,7 @@ echo "== a Windows stamp is not this reader's cooldown =="
 # reader's (the newest release carrying a Linux archive). A Windows-written
 # app.txt with a fresh updcheck= must not stop the Linux check from asking,
 # and the Linux check must carry the Windows pair forward untouched instead
-# of overwriting it with its own answer. The request may be spent by either
-# the launch check or the click - whichever reaches the network first - so
-# the assertion is on the trace, not on which half asked.
+# of overwriting it with its own answer.
 W=$STATE/updwin; mkdir -p "$W/cfg/mnpdf"
 printf 'tabstrip=1\ntitlebar=1\nautosave=1\nhlcolor=0\npincolor=5\nnight=0\nupdcheck=%s\nupdtag=v2.6.0\n' \
     "$(date +%s)" > "$W/cfg/mnpdf/app.txt"

@@ -26,6 +26,11 @@ void ui_invalidate();
 // this after anything that changes the pages - open, tab switch, delete, move,
 // rotate, undo/redo, a merge or a split
 void refreshDrawers();
+// the thumbnails drawer's selection (the ring, and the page its own keys act on).
+// A move points it at the page that moved, so the drawer never names a page the
+// reader did not pick. The Windows build keeps gThumbSel beside the drawer it
+// belongs to (src/main.cpp:4476) and sets it in movePage (src/main.cpp:4619).
+extern int gThumbSel;
 void ui_set_title(const std::string& t); // window/tab title
 
 // modal-ish message box (the quit prompt asks Yes/No/Cancel as Windows does;
