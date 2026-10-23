@@ -287,6 +287,8 @@ sits beside the words rather than in a right-aligned accelerator column - the
 wording is identical, the alignment is the toolkit's.
 
 
+**The launch.** Windows offers the Open dialog whenever nothing opened at launch (src/main.cpp:6251): a plain second launch, which opens nothing by design, a first launch with no remembered document, and a launch whose remembered document no longer exists - the existence is checked before opening (src/main.cpp:6248), so a reader whose file was moved is offered a chooser rather than an error. The port does the same: every launch that opened nothing ends in the Open dialog, and cancelling it leaves the empty reader. A launch-time chooser is one more toplevel, which the gate's window counts account for.
+
 **The update check.** This is the one place the port deliberately does not
 follow the Windows route. The Windows app reads `/releases/latest`, which
 answers with the newest NON-prerelease, and then fetches

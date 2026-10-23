@@ -16,7 +16,6 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
-#include <functional>
 #include <string>
 #include <vector>
 
@@ -268,21 +267,6 @@ void releasePrimaryInstance();
 // and writes them; the check's API is in update.h.
 extern long long gLastUpdateCheck;
 extern std::string gLastUpdateTag;
-
-// Does a release carry the Linux archive? The answer is three-valued: yes, no,
-// and "the host did not answer". The third is not the second - a timeout or a
-// refused connection is not evidence that the asset is missing.
-enum class AssetAnswer { Yes, No, Unreachable };
-
-// The newest release that carries a Linux archive, from the feed's tags in
-// release order (newest first). An Unreachable answer stops the search and
-// sets `unknown`, because the answer is then unknown, not "not there":
-// falling through to the next tag would name an OLDER release as the newest,
-// telling a reader on that older build it is up to date. `unknown` is false
-// when every tag really answered No.
-std::string pickLinuxRelease(const std::vector<std::string>& tags,
-                             const std::function<AssetAnswer(const std::string&)>& probe,
-                             bool* unknown);
 
 // layout helpers
 void allocPageTables(int pages);

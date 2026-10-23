@@ -953,11 +953,15 @@ static bool commandUsable(int id) {
     bool doc = gDoc != nullptr;
     switch (id) {
     case 300: return gDocCount < kMaxTabs;          // canNewTab()
+    case 108: return gDocCount < kMaxTabs;          // addTab refuses at the cap
     case 301: return gDocCount > 1;
     case 118: case 119: return doc && gDirty;      // nothing to save when clean
     case 137: case 133: case 134: return doc;
     case 114: return !gUndo.empty();
     case 115: return !gRedo.empty();
+    case 310: return doc && gDocPages > 1;
+    case 311: return doc && gPageIndex > 0;
+    case 312: return doc && gPageIndex + 1 < gDocPages;
     case 201: case 202: case 203: case 205: case 207: return doc;
     case 206: return doc && gDocPages > 1;
     case 204: return !gSigs.empty();
@@ -1106,13 +1110,12 @@ static GtkWidget* buildContextMenu(int x, int y) {
         gtk_menu_shell_append(GTK_MENU_SHELL(menu), advItem);
     }
     sep();
-    add(gtk_notebook_get_show_tabs(GTK_NOTEBOOK(gNotebook)) ? "Hide tab strip" : "Show tab strip", 302);
-    add(gTitlebar ? "Hide titlebar" : "Show titlebar", 113);
-    sep();
     add("Minimize", 110);
     // the label carries the window's state, like the Windows entry
     // (src/main.cpp:5565: IsZoomed(h) ? "Restore" : "Maximize")
     add(gWinMax ? "Restore" : "Maximize", 111);
+    add(gTitlebar ? "Hide titlebar" : "Show titlebar", 113);
+    add(gtk_notebook_get_show_tabs(GTK_NOTEBOOK(gNotebook)) ? "Hide tab strip" : "Show tab strip", 302);
     sep();
     add("Check for updates", 170);
     add("Quit", 112);
@@ -2452,12 +2455,24 @@ int main(int argc, char** argv) {
     // the document the primary instance already has open is the last thing
     // this window should show, so it starts empty. An explicit file argument
     // still opens - two readers side by side is the point of a second window.
-    std::wstring toOpen;
-    if (argc > 1) toOpen = utf8ToWide(argv[1]);
-    else if (!gPrimaryInstance) toOpen.clear();
-    else toOpen = lastDocumentPath();
-    if (!toOpen.empty()) openPath(toOpen);
-    else renderPage();
+    // A launch that opened nothing - the bare second launch, a first launch
+    // with no last document, a last document that no longer exists (its
+    // existence is checked before opening, like Windows'
+    // GetFileAttributesW, src/main.cpp:6248) - offers the Open dialog, like
+    // Windows (src/main.cpp:6251).
+    bool opened = false;
+    if (argc > 1) {
+        opened = openPath(utf8ToWide(argv[1]));
+    } else if (gPrimaryInstance) {
+        std::wstring last = lastDocumentPath();
+        if (!last.empty() && g_file_test(wideToUtf8(last).c_str(), G_FILE_TEST_EXISTS))
+            opened = openPath(last);
+    }
+    if (!opened) {
+        std::string f = ui_open_file();
+        if (!f.empty()) opened = openPath(utf8ToWide(f));
+    }
+    if (!opened) renderPage();
 
     gSaveTimer = g_timeout_add(800, onSaveTick, nullptr);
     gtk_widget_grab_focus(gCurArea);

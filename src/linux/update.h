@@ -2,12 +2,14 @@
 //
 // One header for the check's two halves and the version rules they share:
 // main.cpp runs the blocking half on a worker thread, update.cpp implements
-// it, and tests/core-test.cpp drives the parsing and the comparison directly.
+// it, and tests/core-test.cpp drives the parsing, the comparison and the
+// release lookup directly.
 // They live here rather than in doc.h because the check is not part of the
 // document model; doc.h keeps only the cooldown's own state, which
 // sidecar.cpp is the one to persist.
 #pragma once
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -28,6 +30,21 @@ bool versionIsNewer(const std::string& candidate);
 // id that ends with "releases" and is not a release at all, and an id whose
 // last segment is not a version.
 std::vector<std::string> releaseTagsFromFeed(const std::string& body);
+
+// Does a release carry the Linux archive? The answer is three-valued: yes, no,
+// and "the host did not answer". The third is not the second - a timeout or a
+// refused connection is not evidence that the asset is missing.
+enum class AssetAnswer { Yes, No, Unreachable };
+
+// The newest release that carries a Linux archive, from the feed's tags in
+// release order (newest first). An Unreachable answer stops the search and
+// sets `unknown`, because the answer is then unknown, not "not there":
+// falling through to the next tag would name an OLDER release as the newest,
+// telling a reader on that older build it is up to date. `unknown` is false
+// when every tag really answered No.
+std::string pickLinuxRelease(const std::vector<std::string>& tags,
+                             const std::function<AssetAnswer(const std::string&)>& probe,
+                             bool* unknown);
 
 // The check's blocking half, run on a worker thread: it honours the cooldown,
 // so a click inside the hour spends no request, and `requested` says whether a

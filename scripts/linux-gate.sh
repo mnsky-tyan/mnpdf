@@ -363,6 +363,12 @@ if grep -q "page 1/13" "$E/plain-names.txt"; then bad "a plain second launch reo
 fi
 grep -q '"mnpdf".*800x600' "$E/plain-names.txt"
 chk $? "its window is the empty reader"
+# Windows ends a launch that opened nothing with the Open dialog
+# (src/main.cpp:6251) - a bare second launch included, because it opens nothing
+# by design (src/main.cpp:6244). The chooser is a toplevel with its own title,
+# so the same dump names it.
+grep -q '"Open PDF"' "$E/plain-names.txt"
+chk $? "a plain second launch offers the Open dialog, like Windows"
 # a second launch WITH a file argument opens it, and it writes THAT document's
 # own sidecar - Windows gates only the two SHARED files on the primary role
 # (last.txt src/main.cpp:3276, app.txt :3345); a document's sidecar belongs to
@@ -510,8 +516,20 @@ xvfb-run -a --server-args="-screen 0 800x600x24" \
          echo TOPS $(xwininfo -root -children 2>/dev/null | grep -c "\"Mnpdf\"")' \
   "$BIN" "$PDF" "$L/one" >"$L/one/tops.txt" 2>&1
 TOPS=$(sed -n 's/^TOPS //p' "$L/one/tops.txt")
-[ "$TOPS" = "2" ]
-chk $? "a launch whose check found the reader current says nothing (tops: $TOPS)"
+# The silence is conditional on the outcome: a check that found nothing newer,
+# or could not ask, says nothing, while a check that found a newer release
+# must open the update dialog - a third toplevel. The outcome the check
+# reached is in the run's own log, so the assertion reads it instead of
+# assuming today's answer.
+if grep -q 'update check: outcome newer' "$L/one/log.txt"; then
+    # the count is taken at 26 s while the check's own budget is 20 s, so on a
+    # slow network the dialog can still be unmapped when the count runs
+    [ "$TOPS" = "2" ] || [ "$TOPS" = "3" ]
+    chk $? "a launch whose check found a newer release offers it (tops: $TOPS)"
+else
+    [ "$TOPS" = "2" ]
+    chk $? "a launch whose check found nothing to say, or could not ask, says nothing (tops: $TOPS)"
+fi
 # a host that cannot reach GitHub is not a code failure: the silence above is
 # the behaviour under test, and the stamp only exists when the check answered.
 # The reader prints the outcome it reached on stdout ("update check: outcome
