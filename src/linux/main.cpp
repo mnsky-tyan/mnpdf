@@ -174,6 +174,7 @@ int ui_message(const std::string& text, const std::string& caption, bool yesno) 
 static std::string runChooser(const char* title, GtkFileChooserAction act, bool save, const std::string& suggested) {
     GtkWidget* d = gtk_file_chooser_dialog_new(title, GTK_WINDOW(gWin), act,
         "_Cancel", GTK_RESPONSE_CANCEL, save ? "_Save" : "_Open", GTK_RESPONSE_ACCEPT, nullptr);
+    gtk_window_set_destroy_with_parent(GTK_WINDOW(d), TRUE);
     if (act == GTK_FILE_CHOOSER_ACTION_SAVE) {
         gtk_file_chooser_set_do_overwrite_confirmation(GTK_FILE_CHOOSER(d), TRUE);
         if (!suggested.empty())
@@ -198,6 +199,7 @@ std::string ui_save_file(const std::string& suggested) {
 std::string ui_pick_jpeg() {
     GtkWidget* d = gtk_file_chooser_dialog_new("Choose a signature image", GTK_WINDOW(gWin),
         GTK_FILE_CHOOSER_ACTION_OPEN, "_Cancel", GTK_RESPONSE_CANCEL, "_Open", GTK_RESPONSE_ACCEPT, nullptr);
+    gtk_window_set_destroy_with_parent(GTK_WINDOW(d), TRUE);
     Dialog life(d);
     GtkFileFilter* f = gtk_file_filter_new();
     gtk_file_filter_set_name(f, "JPEG image");
@@ -213,7 +215,8 @@ std::string ui_pick_jpeg() {
 }
 
 bool ui_prompt(const std::string& label, std::string& value) {
-    GtkWidget* d = gtk_dialog_new_with_buttons("mnpdf", GTK_WINDOW(gWin), GTK_DIALOG_MODAL,
+    GtkWidget* d = gtk_dialog_new_with_buttons("mnpdf", GTK_WINDOW(gWin),
+        (GtkDialogFlags)(GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT),
         "_Cancel", GTK_RESPONSE_CANCEL, "_OK", GTK_RESPONSE_ACCEPT, nullptr);
     GtkWidget* box = gtk_dialog_get_content_area(GTK_DIALOG(d));
     gtk_container_set_border_width(GTK_CONTAINER(box), 12);
@@ -523,7 +526,8 @@ static void runUpdateCheck(bool manual) {
 // ---- note editor: a dialog with a text view, committed on OK ----
 static void openNoteEditor(int idx, bool fresh) {
     if (idx < 0 || idx >= (int)gPins.size()) return;
-    GtkWidget* d = gtk_dialog_new_with_buttons("Note", GTK_WINDOW(gWin), GTK_DIALOG_MODAL,
+    GtkWidget* d = gtk_dialog_new_with_buttons("Note", GTK_WINDOW(gWin),
+        (GtkDialogFlags)(GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT),
         "_Cancel", GTK_RESPONSE_CANCEL, "_Save", GTK_RESPONSE_ACCEPT, nullptr);
     GtkWidget* box = gtk_dialog_get_content_area(GTK_DIALOG(d));
     gtk_container_set_border_width(GTK_CONTAINER(box), 10);
@@ -2472,43 +2476,45 @@ int main(int argc, char** argv) {
         std::string f = ui_open_file();
         if (!f.empty()) opened = openPath(utf8ToWide(f));
     }
-    if (!opened) renderPage();
+    if (!gShuttingDown) {
+        if (!opened) renderPage();
 
-    gSaveTimer = g_timeout_add(800, onSaveTick, nullptr);
-    gtk_widget_grab_focus(gCurArea);
-    // The Windows build checks for a newer release before its message loop
-    // starts (startUpdateCheck(false), src/main.cpp:6286): a reader is told
-    // about a newer release at launch, silently unless there is one, and
-    // never more often than the cooldown allows. MNPDF_NO_UPDATE skips only
-    // this launch check - the same kind of seam the suites use (below), so a
-    // suite that is not about the update check stays off the network. A
-    // clicked check (case 170) runs regardless: a suite that clicks is
-    // asking for the answer.
-    if (!getenv("MNPDF_NO_UPDATE")) runUpdateCheck(false);
-    // The shot has to wait for the window to be mapped AND for the drawers a
-    // command opened to be allocated: an idle callback fires before the first
-    // size negotiation, so a drawer created by MNPDF_CMD would be captured at
-    // zero width. A short timeout runs after the layout pass instead.
-    // The seams are independent: MNPDF_CMD drives a command, MNPDF_SHOT
-    // writes a picture, MNPDF_SHOT_EXIT quits, MNPDF_MENU_DUMP prints the menu
-    // and quits - a run that asked only for the tree must not sit in the main
-    // loop forever.
-    // Registering only for MNPDF_SHOT (as this did) meant a run that asked for
-    // a command and a quit but no picture did neither, which is how a broken
-    // seam hides; MNPDF_MENU_DUMP was missing for the same reason and made the
-    // dump silently print nothing.
-    if (getenv("MNPDF_SHOT") || getenv("MNPDF_SHOT_EXIT") || getenv("MNPDF_CMD")
-        || getenv("MNPDF_MENU_DUMP"))
-        g_timeout_add(getenv("MNPDF_CMD") ? 400 : 0, onShotIdle, nullptr);
-    // The app runs a loop of its own, so the window's destroy signal can end
-    // exactly that loop: gtk_main_quit() would leave the innermost running
-    // loop instead, and a modal's nested loop would take that one with it
-    gAppLoop = g_main_loop_new(nullptr, FALSE);
-    gAppLoopRunning = true;
-    g_main_loop_run(gAppLoop);
-    gAppLoopRunning = false;
-    g_main_loop_unref(gAppLoop);
-    gAppLoop = nullptr;
+        gSaveTimer = g_timeout_add(800, onSaveTick, nullptr);
+        gtk_widget_grab_focus(gCurArea);
+        // The Windows build checks for a newer release before its message loop
+        // starts (startUpdateCheck(false), src/main.cpp:6286): a reader is told
+        // about a newer release at launch, silently unless there is one, and
+        // never more often than the cooldown allows. MNPDF_NO_UPDATE skips only
+        // this launch check - the same kind of seam the suites use (below), so a
+        // suite that is not about the update check stays off the network. A
+        // clicked check (case 170) runs regardless: a suite that clicks is
+        // asking for the answer.
+        if (!getenv("MNPDF_NO_UPDATE")) runUpdateCheck(false);
+        // The shot has to wait for the window to be mapped AND for the drawers a
+        // command opened to be allocated: an idle callback fires before the first
+        // size negotiation, so a drawer created by MNPDF_CMD would be captured at
+        // zero width. A short timeout runs after the layout pass instead.
+        // The seams are independent: MNPDF_CMD drives a command, MNPDF_SHOT
+        // writes a picture, MNPDF_SHOT_EXIT quits, MNPDF_MENU_DUMP prints the menu
+        // and quits - a run that asked only for the tree must not sit in the main
+        // loop forever.
+        // Registering only for MNPDF_SHOT (as this did) meant a run that asked for
+        // a command and a quit but no picture did neither, which is how a broken
+        // seam hides; MNPDF_MENU_DUMP was missing for the same reason and made the
+        // dump silently print nothing.
+        if (getenv("MNPDF_SHOT") || getenv("MNPDF_SHOT_EXIT") || getenv("MNPDF_CMD")
+            || getenv("MNPDF_MENU_DUMP"))
+            g_timeout_add(getenv("MNPDF_CMD") ? 400 : 0, onShotIdle, nullptr);
+        // The app runs a loop of its own, so the window's destroy signal can end
+        // exactly that loop: gtk_main_quit() would leave the innermost running
+        // loop instead, and a modal's nested loop would take that one with it
+        gAppLoop = g_main_loop_new(nullptr, FALSE);
+        gAppLoopRunning = true;
+        g_main_loop_run(gAppLoop);
+        gAppLoopRunning = false;
+        g_main_loop_unref(gAppLoop);
+        gAppLoop = nullptr;
+    }
 
     if (gSaveTimer) g_source_remove(gSaveTimer);
     writeAllSidecars();

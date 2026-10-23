@@ -522,10 +522,20 @@ TOPS=$(sed -n 's/^TOPS //p' "$L/one/tops.txt")
 # reached is in the run's own log, so the assertion reads it instead of
 # assuming today's answer.
 if grep -q 'update check: outcome newer' "$L/one/log.txt"; then
-    # the count is taken at 26 s while the check's own budget is 20 s, so on a
-    # slow network the dialog can still be unmapped when the count runs
-    [ "$TOPS" = "2" ] || [ "$TOPS" = "3" ]
-    chk $? "a launch whose check found a newer release offers it (tops: $TOPS)"
+    # the count is taken at 26 s while the check's own budget is 20 s, so a
+    # check the machine slowed past the count cannot have opened its dialog
+    # yet, and the count stays 2. The two mtimes tell the cases apart: log.txt
+    # was last written when the outcome was reached, tops.txt when the count
+    # was taken. An answer that predates the count had its dialog mapped well
+    # before it, so the count must be 3; only an answer that postdates the
+    # count tolerates 2.
+    if [ "$(stat -c %Y "$L/one/log.txt")" -lt "$(stat -c %Y "$L/one/tops.txt")" ]; then
+        [ "$TOPS" = "3" ]
+        chk $? "a launch whose check found a newer release offers it (tops: $TOPS)"
+    else
+        [ "$TOPS" = "2" ] || [ "$TOPS" = "3" ]
+        chk $? "a launch whose check answered after the count cannot be counted yet (tops: $TOPS)"
+    fi
 else
     [ "$TOPS" = "2" ]
     chk $? "a launch whose check found nothing to say, or could not ask, says nothing (tops: $TOPS)"
