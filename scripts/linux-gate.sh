@@ -513,6 +513,7 @@ NOW=$(date +%s)
 xvfb-run -a --server-args="-screen 0 800x600x24" \
   env GDK_BACKEND=x11 XDG_CONFIG_HOME="$L/one" \
   sh -c 'timeout 30 "$0" "$1" > "$2/log.txt" 2>&1 & sleep 26; \
+         if grep -q "update check: outcome newer" "$2/log.txt"; then echo outcome-newer-already-in-log; fi; \
          echo TOPS $(xwininfo -root -children 2>/dev/null | grep -c "\"Mnpdf\"")' \
   "$BIN" "$PDF" "$L/one" >"$L/one/tops.txt" 2>&1
 TOPS=$(sed -n 's/^TOPS //p' "$L/one/tops.txt")
@@ -524,17 +525,22 @@ TOPS=$(sed -n 's/^TOPS //p' "$L/one/tops.txt")
 if grep -q 'update check: outcome newer' "$L/one/log.txt"; then
     # the count is taken at 26 s while the check's own budget is 20 s, so a
     # check the machine slowed past the count cannot have opened its dialog
-    # yet, and the count stays 2. The two mtimes tell the cases apart: log.txt
-    # was last written when the outcome was reached, tops.txt when the count
-    # was taken. An answer that predates the count had its dialog mapped well
-    # before it, so the count must be 3; only an answer that postdates the
-    # count tolerates 2.
-    if [ "$(stat -c %Y "$L/one/log.txt")" -lt "$(stat -c %Y "$L/one/tops.txt")" ]; then
+    # yet, and the count stays 2. The run itself records which case it was in:
+    # it looks for the outcome line BEFORE the count, in the same subshell, and
+    # prints a marker when it was already there. That order is what makes the
+    # marker mean something - the reply handler prints the outcome line and
+    # opens the dialog in the same callback, so a line that predates the count
+    # means the dialog had to be mapped before the count ran, and the count must
+    # be 3. A marker that is missing means the answer landed at or after the
+    # grep, so it may have opened its dialog in the moment between the grep and
+    # the xwininfo read, and either count is honest. The file's mtime cannot
+    # answer this: any later write to log.txt moves it.
+    if grep -q '^outcome-newer-already-in-log$' "$L/one/tops.txt"; then
         [ "$TOPS" = "3" ]
         chk $? "a launch whose check found a newer release offers it (tops: $TOPS)"
     else
         [ "$TOPS" = "2" ] || [ "$TOPS" = "3" ]
-        chk $? "a launch whose check answered after the count cannot be counted yet (tops: $TOPS)"
+        chk $? "a launch whose check answered at or after the count cannot be counted yet (tops: $TOPS)"
     fi
 else
     [ "$TOPS" = "2" ]

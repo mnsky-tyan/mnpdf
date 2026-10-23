@@ -21,6 +21,11 @@ with the per-run raw output (`run-<id>-review-full.log`).
 
 - 48 fixed, 1 deliberately deferred and documented, 0 still open.
 
+- That count covers the findings below up to Round 11. Rounds 12-17 are the
+  re-reviews that ran after the hold, appended in landing order; Round 17 leaves
+  one finding open (a drifted citation) and declines one (a duplicate case
+  label), both with their reason stated.
+
 - The "-UNIMPLEMENTED" ids in the raw logs are the same defects re-reported after a
   daemon restart killed a fixer mid-round; they are folded into their base id here.
 
@@ -733,3 +738,115 @@ the greying checks use a `greyed <id> <file>` helper, so a future wording change
 cannot silently turn them vacuous. A new check asserts all thirteen hinted
 wordings against the live menu dump. Measured on this head: gate 62 checks,
 all passing (the run's own `pass=62 fail=0`); core 171/171.
+
+### Round 15 (the 1e12e4b re-review) - five findings, all real
+
+**Fixed in `efb690a`**
+
+- **gate-launch-silence-assertion-is-outcome-blind (warning)** the gate's
+  silent-launch check asserted exactly two `Mnpdf` toplevels unconditionally,
+  but the behaviour it tests is conditional: a launch whose check found a newer
+  release must open the update dialog, which makes a third. Today the check
+  answers "current" and the assertion passes; the first release newer than
+  `kAppVersion` that carries a Linux archive makes the CORRECT behaviour fail
+  it - precisely when the release pipeline runs the gate. The assertion now
+  reads the outcome the run itself printed.
+- **plain-second-launch-offers-no-open-dialog (info, ask-user)** Windows ends a
+  launch that opened nothing with the Open dialog (src/main.cpp:6251), which
+  covers the bare second launch, a first launch with no remembered document,
+  and a last document that no longer exists (:6248 checks it first). The port
+  showed an empty reader in all three cases. The launch path now offers the
+  chooser, and a cancelled chooser leaves the empty reader.
+- **update-check-api-declared-in-doch-against-updatehs-own-contract (info)**
+  `update.h` states that the check's API lives there and that `doc.h` keeps only
+  the cooldown's state, while `AssetAnswer` and `pickLinuxRelease` were declared
+  in `doc.h` and dragged a `std::function` probe type into the document-model
+  header. Both declarations moved to `update.h`; no caller changed.
+- **linux-only-menu-entries-are-never-greyed (info)** `commandUsable` had no
+  cases for the port's own ids 108, 310, 311, 312, so "Delete this page", "Move
+  page up" and "Move page down" were offered live with no document and on a
+  one-page document, and "Open in new tab..." stayed live at the tab cap. All
+  four now grey from the same predicate the shared ids use.
+- **context-menu-tail-order-differs-from-windows-and-from-its-own-comment
+  (info)** the menu-dump contract claims "the same entries, in the same order",
+  but the tail printed tab strip and titlebar before Minimize and Maximize where
+  Windows prints 110, 111, 113, 302 (src/main.cpp:5564-5570). Reordered to the
+  Windows order.
+
+### Round 16 (the efb690a re-review) - three findings, two fixed here
+
+**Fixed in `ece27bf`**
+
+- **R15-launch-chooser-window-close-leaves-zombie (warning)** the new launch
+  chooser ran before `gAppLoop` existed and carried neither
+  `DESTROY_WITH_PARENT` nor the `Dialog` guard, so closing the reader window
+  under it left a process with no window that never exited - and startup then
+  continued into `renderPage` on destroyed widgets. Tracing the invariant found
+  four modal-creation sites missing the flag (`runChooser`, `ui_pick_jpeg`,
+  `ui_prompt`, `openNoteEditor` - the last three at runtime as well as at
+  launch), so all four got it, and one shared `if (!gShuttingDown)` now guards
+  the widget-touching startup and the main loop. Proven both ways with an
+  external window destroy: before, the process was alive 8 s after its window
+  died; after, exit 0 in 1 s with no criticals.
+- **R15-gate-update-dialog-branch-cannot-fail (info)** the outcome-aware launch
+  check accepted `TOPS` 2 or 3 in the branch labelled "a launch whose check
+  found a newer release offers it" - and 2 is exactly the no-dialog case, so
+  the branch could not fail on the behaviour it claimed. It now demands 3 when
+  the answer predates the count. That discriminator was wrong in a way Round 17
+  fixes; see below.
+
+**Left open here, still open at HEAD:** `R15-docs-launch-chooser-gate-claim-unbacked`
+- docs/linux.md claims "A launch-time chooser is one more toplevel, which the
+  gate's window counts account for", and no count-based check runs a launch that
+  opens nothing: every count passes a document argument, so it never reaches the
+  chooser. The chooser itself IS observed, by title, in the plain-second-launch
+  section; only the sentence about window counts is unbacked.
+
+### Round 17 (the ece27bf re-review) - four findings, two fixed, one open, one declined
+
+**Fixed in this batch**
+
+- **findings-doc-missing-rounds-15-16 (info)** this record stopped at Round 14
+  while HEAD carried two further fix batches (`efb690a`, `ece27bf`), so their
+  findings, fixes and the declined item were unrecorded, and the tail's counts
+  were stale for them. Rounds 15-17 are appended above and the tail is
+  re-measured below.
+- **gate-newer-dialog-assertion-masked-by-any-late-log-write (info)** the
+  Round 16 discriminator was the log file's LAST write time, not the outcome
+  line's own moment, so any later write to `log.txt` (a GTK critical at quit, a
+  future trace line) moved the mtime past the count and dropped the run into the
+  lenient branch that accepts `TOPS=2` - a regression where the newer-release
+  dialog never maps would then pass silently. The counting subshell now looks
+  for the outcome line BEFORE it counts and prints a marker into the same file
+  the count goes to, and the strict branch keys on that marker instead of on
+  either mtime. Proven both ways against the finding's exact sequence (newer
+  answer already in the log, dialog never mapped so `TOPS=2`, then a late write
+  to `log.txt`): the old mtime branch passes it and the new marker branch fails
+  it. Also checked against the seven other log/count combinations, and against
+  a real run of the section on Xvfb, which reports 5/5.
+
+**Left open, reported not fixed**
+
+- **linux-surgery-citation-drifted-fourth-time (info)** the Round 14 citation
+  correction was correct at `1e12e4b` and had drifted again by HEAD, because two
+  later commits added lines above it: the drawer's Ctrl+Up/Ctrl+Down moved from
+  main.cpp:1831-1832 to :1838-1839 and cases 311/312 from :827-828 to :831-832.
+  Not selected for this batch; the remedy the record already prescribes for this
+  recurring class is a name-based citation ("in `onThumbKey`", "cases 311/312"),
+  and the comment still carries the line numbers.
+
+**Declined**
+
+- **commandusable-108-300-duplicate-predicate (info)** `commandUsable(108)` and
+  `commandUsable(300)` both return `gDocCount < kMaxTabs`. The reviewer's own
+  note is that one merged case label would drop a line and the duplication is
+  one expression, not a drifted rule; the separate labels keep each id's
+  rationale named beside it, so the code is left as it is.
+
+Measured on this head: the gate carries 79 check sites (59 `chk` invocations
+plus 9 `ok` and 11 `bad`, counted by matching each helper's invocation and
+skipping its definition), and the engine suite carries 171 checks. A run's pass
+total is lower than the site count because some sites are the two branches of
+one condition. The `pass=62 fail=0` quoted at the end of Round 14 belongs to the
+head before Rounds 15-16 added checks; the run totals on this head are the
+executor's to measure.
