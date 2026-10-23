@@ -22,12 +22,12 @@ with the per-run raw output (`run-<id>-review-full.log`).
 
 - 48 fixed, 1 deliberately deferred and documented, 0 still open.
 
-- That count covers the findings below up to Round 11. Rounds 12-18 are the
+- That count covers the findings below up to Round 11. Rounds 12-19 are the
   re-reviews that ran after the hold, appended in landing order; across them
-  this record carries 81 findings in total - 79 fixed, the 1 deferred above and
+  this record carries 84 findings in total - 82 fixed, the 1 deferred above and
   1 declined (a duplicate case label) - with 0 open at HEAD. `dc4bd85` closed
-  the two items Rounds 16 and 17 had left open, and Round 18 fixes the three
-  findings it raised.
+  the two items Rounds 16 and 17 had left open, Round 18 fixes the three
+  findings it raised, and Round 19 the three findings it raised.
 
 - The "-UNIMPLEMENTED" ids in the raw logs are the same defects re-reported after a
   daemon restart killed a fixer mid-round; they are folded into their base id here.
@@ -911,3 +911,45 @@ total is lower than the site count because some sites are the two branches of
 one condition. The `pass=62 fail=0` quoted at the end of Round 14 belongs to the
 head before Rounds 15-16 added checks; the run totals on this head are the
 executor's to measure.
+
+### Round 19 (the ab6ca54 re-review) - three findings, all real
+
+**Fixed in `e63f8af`**
+
+- **instance-lock-demotes-on-any-flock-failure (info)** `claimPrimaryInstance`
+  demoted the window on EVERY `flock` failure, not only the already-held one:
+  it returned `false` whenever `flock(fd, LOCK_EX | LOCK_NB) != 0`, where the
+  Windows check it ports demotes only on `ERROR_ALREADY_EXISTS`
+  (src/main.cpp:6138) and treats a failure to create the mutex at all as
+  "leaves the box primary" (the old behaviour). A transient `flock` error
+  (`EINTR`, `ENOLCK`) therefore turned a window that SHOULD be primary into a
+  silent one - it would read preferences but write no `app.txt` and no
+  `last.txt` for the whole session, with nothing naming why. The port now
+  answers `errno != EWOULDBLOCK`, so only an actually-held lock demotes, and
+  the comment says so; the `EWOULDBLOCK` case keeps the already-held
+  behaviour, which the shared-directory guard in docs/linux.md still
+  describes exactly.
+- **R19-asset-probe-redirect-list-inconsistent (info)** two status lists in
+  `src/linux/update.cpp` disagreed about what a redirect is:
+  `probeLinuxAsset()` (the asset probe) read `200 || 301 || 302 || 307` as
+  `AssetAnswer::Yes` while `latestReleaseTag()` (the tag lookup) accepted
+  `301, 302, 303, 307` AND `308`. An asset probe answered `303` or `308`
+  therefore fell through to `Unreachable` - reported as "the update check
+  could not reach GitHub" for a release that does carry the archive - and
+  because `pickLinuxRelease()` stops its search at the first `Unreachable`,
+  the newest release's missing answer poisoned the whole check. GitHub's asset
+  URLs answer `302` today (measured, docs/linux.md), so this was latent rather
+  than observed. Fixed with the one shared predicate the finding prescribed:
+  `isRedirectStatus()` (301, 302, 303, 307, 308) now answers for both call
+  sites.
+- **R19-merge-split-no-doc-guard-parity (info)** Round 18 rewrote case 205's
+  body (src/linux/main.cpp:867) as the titled multi-select chooser but left
+  both dialog-opening document commands unguarded, where Windows guards them
+  at the case itself: `case 205: if (gDoc) mergeDialog();` and
+  `case 206: if (gDoc && gDocPages > 1) openRangePrompt();`
+  (src/main.cpp:5638-5639). A document-less drive (e.g. `MNPDF_CMD=205`)
+  opened the picker and `mergeFiles()` then silently dropped the picks, and
+  case 206 prompted for a range and a save path before `splitExport()`
+  silently returned on `!gDoc`. Both menus already greyed the ids without a
+  document, so the UI could not reach the divergence; the fix is the
+  case-level parity Windows carries.

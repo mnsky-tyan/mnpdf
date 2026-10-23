@@ -55,6 +55,11 @@ paints the composited frame and draws its own scrollbars.
   reader can type is the same: six hex digits, with or without the `#`, and a
   colour that is already in one of the reader's own slots lands in that slot
   instead of taking a new one.
+- **Print dialog.** Windows opens the standard Windows print dialog; the Linux
+  build opens the GTK one (`GtkPrintOperation`). What is printed is the same:
+  each page rendered clean, no annotations, highlights or pins, at the same
+  16-megapixel budget the Windows print path applies (see "Resource cost"
+  below).
 - **Window rect while maximized.** On Windows the saved `app.txt` rect is
   `rcNormalPosition`, the pre-maximize frame; on Linux the configure handler
   records the live allocation, so quitting while maximized writes the
@@ -165,7 +170,8 @@ drive the real binary:
   `build-linux.sh` (a core regression fails the build) and by the gate's first
   layer. It covers open, geometry, selection, search, marks, undo/redo, the
   sidecar round trip, save/bake and re-read, page surgery, merge, tabs, prefs
-  (including the `app.txt` keys only the Windows reader owns), the JPEG guard and
+  (including the `app.txt` keys only the Windows reader owns), the update
+  check's version rules, feed parsing and release lookup, the JPEG guard and
   the format interop.
 - `scripts/linux-gate.sh`'s second layer runs the real binary on Xvfb and asserts
   on the pixels it paints (the page is mostly paper and carries text), on the
@@ -181,7 +187,8 @@ Measured on this machine (`/usr/bin/time`, and RSS sampled from `/proc`):
 
 - Headless core test, 171 checks including two full save/bake round trips:
   **0.26 s wall, 21 MB peak RSS** (measured, `/usr/bin/time -v`; the suite
-  links libcurl and exercises the update and instance modules).
+  links libcurl and the update and instance modules, and exercises the
+  update check's parsing, comparison and release lookup).
 - The GUI with a 13-page document open, idle after 20 s: **98.6 MB RSS, steady
   state, no growth** (measured, sampled from `/proc/<pid>/status`). Of that,
   the vendored `libpdfium.so` file itself is 7.9 MB (measured, `ls`); how much of
@@ -197,16 +204,8 @@ Measured on this machine (`/usr/bin/time`, and RSS sampled from `/proc`):
   on the UI thread inside the draw signal, so a long document's drawer scrolls
   more slowly than the Windows one. The bound is the reason: a per-row cache
   would grow with the document, and the page cache the engine already keeps is
-  six pages deep (src/linux/doc.cpp:236).
+  six pages deep (`PCACHE 6` in src/linux/doc.cpp).
 
-## What is still missing
-
-The Windows build's print dialog is replaced by the GtkPrintOperation dialog.
-
-The update check differs in one deliberate way: the Windows app reads
-GitHub's `/releases/latest` and downloads `mnpdf-win-x64-<tag>.zip` by name,
-while this one reads the release feed for the newest release that actually
-carries a Linux archive - see "The update check" above.
 ## The parity work (2026-10-21)
 
 The port now carries the same command set as the Windows build, under the same
@@ -286,7 +285,6 @@ true here as well. GTK renders the `\t` as whitespace in the label, so the hint
 sits beside the words rather than in a right-aligned accelerator column - the
 wording is identical, the alignment is the toolkit's.
 
-
 **The launch.** Windows offers the Open dialog whenever nothing opened at launch (src/main.cpp:6251): a plain second launch, which opens nothing by design, a first launch with no remembered document, and a launch whose remembered document no longer exists - the existence is checked before opening (src/main.cpp:6248), so a reader whose file was moved is offered a chooser rather than an error. The port does the same: every launch that opened nothing ends in the Open dialog, and cancelling it leaves the empty reader. The gate observes that chooser by its title, not by a window count: the plain-second-launch section greps the "Open PDF" toplevel name (every count in the gate runs with a document argument, so no count can see a chooser that only a document-less launch opens).
 
 **The update check.** This is the one place the port deliberately does not
@@ -333,8 +331,8 @@ The version the port reports is generated at build time from the Windows
 can never claim different versions - which matters, because they share one
 app.txt.
 
-Four things the Windows build does that the port now does the same way, and
-that are easy to get wrong:
+Five parity rules the Windows build taught the port, each easy to get wrong,
+and two more of the port's own that the check needs:
 
 - **The check runs at launch too, silently.** The Windows build starts a
   check before its message loop (startUpdateCheck(false), src/main.cpp:6286)
@@ -446,12 +444,13 @@ answered and has none" and "the host did not answer": the last is a network
 fact, and the gate reports it as untested rather than as a failure.
 
 The trace is a production behaviour, not only a seam: the Windows reader prints
-nothing at all, while a Linux launch from a terminal shows one line per check
-(the request URL, then the outcome). It is deliberate and diagnostic - a reader
-who wonders whether the check ran can see it did - and the lines carry only the
-request URL and the outcome; the error text is the fixed sentences
-`src/linux/update.cpp` builds from curl codes and HTTP statuses, never a body
-read from the host.
+nothing at all, while a Linux launch from a terminal shows a line per request
+(the method and the URL) and then the outcome - one check makes several
+requests, the feed, the asset probes and the release lookup among them. It is
+deliberate and diagnostic - a reader who wonders whether the check ran can see
+it did - and the lines carry only the request URL and the outcome; the error
+text is the fixed sentences `src/linux/update.cpp` builds from curl codes and
+HTTP statuses, never a body read from the host.
 
 `MNPDF_SHOT_EXIT` is a fourth seam, and it is a window-level one rather than a
 fourth independent thing: it appends the quit command to whatever else the run
