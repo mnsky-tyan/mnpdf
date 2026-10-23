@@ -171,7 +171,9 @@ int ui_message(const std::string& text, const std::string& caption, bool yesno) 
 }
 
 // ---- file pickers ----
-static std::string runChooser(const char* title, GtkFileChooserAction act, bool save, const std::string& suggested) {
+static std::vector<std::string> runChooser(const char* title, GtkFileChooserAction act,
+                                           bool save, const std::string& suggested,
+                                           bool multi = false) {
     GtkWidget* d = gtk_file_chooser_dialog_new(title, GTK_WINDOW(gWin), act,
         "_Cancel", GTK_RESPONSE_CANCEL, save ? "_Save" : "_Open", GTK_RESPONSE_ACCEPT, nullptr);
     gtk_window_set_destroy_with_parent(GTK_WINDOW(d), TRUE);
@@ -180,21 +182,35 @@ static std::string runChooser(const char* title, GtkFileChooserAction act, bool 
         if (!suggested.empty())
             gtk_file_chooser_set_current_name(GTK_FILE_CHOOSER(d), suggested.c_str());
     }
+    if (multi) gtk_file_chooser_set_select_multiple(GTK_FILE_CHOOSER(d), TRUE);
     Dialog life(d);
-    std::string out;
+    std::vector<std::string> out;
     if (gtk_dialog_run(GTK_DIALOG(d)) == GTK_RESPONSE_ACCEPT) {
-        char* fn = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(d));
-        if (fn) { out = fn; g_free(fn); }
+        if (multi) {
+            GSList* l = gtk_file_chooser_get_filenames(GTK_FILE_CHOOSER(d));
+            for (GSList* p = l; p; p = p->next) {
+                if (p->data) out.push_back((const char*)p->data);
+                g_free(p->data);
+            }
+            g_slist_free(l);
+        } else {
+            char* fn = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(d));
+            if (fn) { out.push_back(fn); g_free(fn); }
+        }
     }
     return out;
 }
 
-std::string ui_open_file() { return runChooser("Open PDF", GTK_FILE_CHOOSER_ACTION_OPEN, false, ""); }
+std::string ui_open_file() {
+    std::vector<std::string> f = runChooser("Open PDF", GTK_FILE_CHOOSER_ACTION_OPEN, false, "");
+    return f.empty() ? std::string() : f.front();
+}
 std::string ui_save_file(const std::string& suggested) {
     std::string name = suggested;
     size_t s = name.find_last_of('/');
     if (s != std::string::npos) name = name.substr(s + 1);
-    return runChooser("Save as", GTK_FILE_CHOOSER_ACTION_SAVE, true, name);
+    std::vector<std::string> f = runChooser("Save as", GTK_FILE_CHOOSER_ACTION_SAVE, true, name);
+    return f.empty() ? std::string() : f.front();
 }
 std::string ui_pick_jpeg() {
     GtkWidget* d = gtk_file_chooser_dialog_new("Choose a signature image", GTK_WINDOW(gWin),
@@ -849,8 +865,18 @@ static void onMenuActivate(GtkMenuItem* mi, gpointer data) {
     case 203: if (gDoc) pickSignatureImage(); break;
     case 204: clearSignatures(); refreshMenuLabels(); break;
     case 205: {
-        std::string f = ui_open_file();
-        if (!f.empty()) mergeFiles({ utf8ToWide(f) });
+        // Windows' Merge PDFs dialog is multi-select and titled for the merge
+        // (mergeDialog in src/main.cpp), and every picked file goes to
+        // mergeFiles in one call
+        std::vector<std::string> fs =
+            runChooser("Add files to the end of this document",
+                       GTK_FILE_CHOOSER_ACTION_OPEN, false, "", true);
+        if (!fs.empty()) {
+            std::vector<std::wstring> w;
+            w.reserve(fs.size());
+            for (const std::string& f : fs) w.push_back(utf8ToWide(f));
+            mergeFiles(w);
+        }
         break;
     }
     case 206: {
@@ -1225,6 +1251,10 @@ static void dumpEveryMenuShape() {
         int savedScroll = gScrollY;
         // far enough that the document's top is well above the viewport
         scrollByDy(3 * gClientH);
+        // how far the view actually moved: a zero delta means the scroll never
+        // happened, and then every target below reads the top page and the
+        // gate's agreement would be vacuous
+        int scrolled = gScrollY - savedScroll;
         // the same hit-testing onContextMenu does, without the popup
         int cpg = -1;
         charIndexAtDoc(gClientW / 2, gClientH / 2, &cpg);
@@ -1232,7 +1262,7 @@ static void dumpEveryMenuShape() {
         GtkWidget* menu = buildContextMenu(gClientW / 2, gClientH / 2);
         gtk_widget_destroy(menu);
         g_object_unref(menu);
-        printf("== scrolled click (scroll %d) ==\n", gScrollY);
+        printf("== scrolled click (scroll delta %d) ==\n", scrolled);
         printf("pin-page %d\n", gMenuPinPage);
         printf("rotate-page %d\n", gMenuRotPage);
         // the page charIndexAtDoc names for the same click - the path

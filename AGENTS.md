@@ -65,7 +65,7 @@ docs/linux.md            the Linux port: decisions, format contract, tests,
 docs/reviews/            codebase review reports (dated per pass)
   2026-10-19-codebase-review.md   the first review of the Linux port (30 findings)
   2026-10-21-pipeline-findings.md every pipeline finding, its fix commit and why
-  2026-10-21-pipeline-findings.json  the same, machine-readable
+  2026-10-21-pipeline-findings.json  the rounds up to 11 only, machine-readable
 test-*.ps1               the Windows feature suites (drive the real binary)
 select-msg-test.ps1      a Windows suite driving the selection path
 README.md / README.txt   the user README; README.txt is the version contract

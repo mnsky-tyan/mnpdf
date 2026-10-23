@@ -7,9 +7,10 @@ their fixes are in `21326d5`.
 
 Companion files in this directory:
 
-- `2026-10-21-pipeline-findings.json` - the same findings, machine-readable,
-  one entry per finding id with its description, severity, file and the run that
-  reported it.
+- `2026-10-21-pipeline-findings.json` - the findings of the rounds up to
+  Round 11, machine-readable, one entry per finding id with its description,
+  severity, file and the run that reported it. Rounds 12 and later are recorded
+  in this file only.
 
 The gate daemon's own log for that session (the record of why each run ended: a
 global kernel OOM, a router rotation to a provider that refuses this region, and
@@ -21,10 +22,12 @@ with the per-run raw output (`run-<id>-review-full.log`).
 
 - 48 fixed, 1 deliberately deferred and documented, 0 still open.
 
-- That count covers the findings below up to Round 11. Rounds 12-17 are the
-  re-reviews that ran after the hold, appended in landing order; Round 17 leaves
-  one finding open (a drifted citation) and declines one (a duplicate case
-  label), both with their reason stated.
+- That count covers the findings below up to Round 11. Rounds 12-18 are the
+  re-reviews that ran after the hold, appended in landing order; across them
+  this record carries 81 findings in total - 79 fixed, the 1 deferred above and
+  1 declined (a duplicate case label) - with 0 open at HEAD. `dc4bd85` closed
+  the two items Rounds 16 and 17 had left open, and Round 18 fixes the three
+  findings it raised.
 
 - The "-UNIMPLEMENTED" ids in the raw logs are the same defects re-reported after a
   daemon restart killed a fixer mid-round; they are folded into their base id here.
@@ -801,6 +804,9 @@ all passing (the run's own `pass=62 fail=0`); core 171/171.
   opens nothing: every count passes a document argument, so it never reaches the
   chooser. The chooser itself IS observed, by title, in the plain-second-launch
   section; only the sentence about window counts is unbacked.
+- **CLOSED in `dc4bd85`** (see Round 18): the sentence now says the gate observes
+  the chooser by title, which is what the plain-second-launch section does, and
+  no count-based check is claimed for it.
 
 ### Round 17 (the ece27bf re-review) - four findings, two fixed, one open, one declined
 
@@ -834,6 +840,9 @@ all passing (the run's own `pass=62 fail=0`); core 171/171.
   Not selected for this batch; the remedy the record already prescribes for this
   recurring class is a name-based citation ("in `onThumbKey`", "cases 311/312"),
   and the comment still carries the line numbers.
+- **CLOSED in `dc4bd85`** (see Round 18): the Windows line numbers are gone from
+  both sites and replaced with the name-based citation, and `src/linux/doc.h`
+  got the same treatment.
 
 **Declined**
 
@@ -842,6 +851,58 @@ all passing (the run's own `pass=62 fail=0`); core 171/171.
   note is that one merged case label would drop a line and the duplication is
   one expression, not a drifted rule; the separate labels keep each id's
   rationale named beside it, so the code is left as it is.
+
+### Round 18 (the dc4bd85 re-review) - three findings, all real
+
+**Fixed in `dc4bd85`**
+
+- **R15-docs-launch-chooser-gate-claim-unbacked (info)** the item Round 16 left
+  open: docs/linux.md claimed "A launch-time chooser is one more toplevel, which
+  the gate's window counts account for", and no count-based check runs a launch
+  that opens nothing, because every count passes a document argument and never
+  reaches the chooser. The chooser IS observed, by title, in the
+  plain-second-launch section; the window-count sentence was the part nothing
+  backed. Rewritten to describe what the gate actually does.
+- **linux-surgery-citation-drifted-fourth-time (info)** the item Round 17 left
+  open: `movePage`'s comment carried Windows line numbers that had drifted for
+  the fourth time (`efb690a` added 3 lines and `ece27bf` 4 more above them).
+  Replaced with the name-based citation this record prescribes for the class -
+  "in `onThumbKey`" and "cases 311/312" - and `src/linux/doc.h` got the same
+  treatment.
+
+**Fixed in this batch**
+
+- **R18-merge-single-file-chooser (warning, ask-user)** "Merge PDFs..." reused
+  the single-selection, unfiltered "Open PDF" chooser and called `mergeFiles`
+  with a one-element vector, where Windows opens a multi-select dialog titled
+  "Add files to the end of this document" (`mergeDialog` in src/main.cpp,
+  `OFN_ALLOWMULTISELECT`) and hands every picked file to `mergeFiles` in one
+  call. Appending three documents therefore took three menu invocations and
+  three full document rewrites on Linux where Windows takes one. Decision made:
+  implement the Windows behaviour, do not document the difference.
+  `runChooser` grew a `multi` flag (`gtk_file_chooser_set_select_multiple` plus
+  `gtk_file_chooser_get_filenames`) and returns the picked list, so case 205
+  opens the titled multi-select chooser and passes every picked file to
+  `mergeFiles` in one invocation. `ui_open_file` and `ui_save_file` keep their
+  single-string contract through the same construction site, which is why no
+  second dialog builder was added.
+- **R18-ledger-statuses-stale-at-head (warning)** this record said two findings
+  were open at HEAD when `dc4bd85` had fixed exactly both (see above), so the
+  "still open at HEAD" claims were false at HEAD. Round 18 is appended here, the
+  summary is re-counted, both stale claims are annotated with the commit that
+  closed them, and the companion JSON's coverage claim - AGENTS.md called it
+  "the same, machine-readable" while it stops at Round 11 - is corrected in both
+  places that made it rather than left standing over a partial artifact.
+- **R18-gate-scrolled-shape-can-pass-vacuously (info)** the three-target parity
+  check, the guard for the round-14 pin-page coordinate bug, could pass without
+  the state it was written for: if the menu dump ever ran before the first size
+  allocation, `gClientH` is 0, the scroll is a no-op, every target reads page 1
+  and `PINP + 1 == VIEWP` holds trivially. It held only because a measured run
+  happened to show `hit-page 1`, which is empirical rather than guaranteed. The
+  dump now prints the scroll DELTA beside "scrolled click", and the assertion
+  requires that delta to be non-zero and `view-page` to be at least 2, so a
+  vacuous pass is impossible: a zero delta or a top-of-document view fails the
+  check instead of passing it.
 
 Measured on this head: the gate carries 79 check sites (59 `chk` invocations
 plus 9 `ok` and 11 `bad`, counted by matching each helper's invocation and

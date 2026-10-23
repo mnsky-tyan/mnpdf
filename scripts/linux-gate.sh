@@ -771,13 +771,18 @@ chk $? "the menu carries the Windows command ids (tests/lib.ps1)"
 # rotate capture through charIndexAtDoc, so a coordinate-space slip in one and
 # not the other is invisible while the view sits at the top (both read page 1)
 # and silently misplaces the pin once it does not. The dump prints both for one
-# click after scrolling away from the top.
+# click after scrolling away from the top, and prints how far that click's view
+# really moved, so the agreement below cannot be a vacuous one: a dump that ran
+# before the first size allocation has a zero scroll delta and every target
+# reading page 1, which must fail here rather than pass.
+SCROLLD=$(sed -n 's/^== scrolled click (scroll delta \([0-9-]*\)) ==$/\1/p' "$E/menu.txt" | head -1)
 PINP=$(sed -n 's/^pin-page //p' "$E/menu.txt" | head -1)
 ROTP=$(sed -n 's/^rotate-page //p' "$E/menu.txt" | head -1)
 HITP=$(sed -n 's/^hit-page //p' "$E/menu.txt" | head -1)
 VIEWP=$(sed -n 's/^view-page //p' "$E/menu.txt" | head -1)
-[ -n "$PINP" ] && [ "$PINP" = "$ROTP" ] && [ "$ROTP" = "$HITP" ] && [ "$((PINP + 1))" = "$VIEWP" ]
-chk $? "a right-click on a scrolled page names one page for all three targets (pin $PINP, rotate $ROTP, hit $HITP, view $VIEWP)"
+[ -n "$SCROLLD" ] && [ "$SCROLLD" -gt 0 ] && [ -n "$PINP" ] && [ "$PINP" = "$ROTP" ] \
+  && [ "$ROTP" = "$HITP" ] && [ "$((PINP + 1))" = "$VIEWP" ] && [ "$VIEWP" -ge 2 ]
+chk $? "a right-click on a scrolled page names one page for all three targets (scrolled $SCROLLD, pin $PINP, rotate $ROTP, hit $HITP, view $VIEWP)"
 
 # The wording is the Windows menu's, accelerator hint included (src/main.cpp:5530,
 # :5542-5557). The dump prints the label the reader sees, so this asserts the
