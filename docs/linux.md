@@ -276,6 +276,16 @@ The label of 111 carries the window's state too, as the Windows one does
 (src/main.cpp:5565: `IsZoomed(h) ? "Restore" : "Maximize"`), and 131 reads
 "Edit text" like Windows rather than the port's old "Edit note".
 
+**The wording.** The whole menu is worded as the Windows menu is, capitalization
+and accelerator hint included: "New Tab\tCtrl+T", "Close Tab\tCtrl+W",
+"Save\tCtrl+S", "Save As...\tCtrl+Shift+S", "Print...\tCtrl+P",
+"Fit Width\tCtrl+0", "Zoom In\t+", "Zoom Out\t-", "Undo\tCtrl+Z",
+"Redo\tCtrl+Y", "Find...\tCtrl+F", "Open...\tCtrl+O" and "Copy\tCtrl+C"
+(src/main.cpp:5530, :5542-5557). The port implements those keys, so the hint is
+true here as well. GTK renders the `\t` as whitespace in the label, so the hint
+sits beside the words rather than in a right-aligned accelerator column - the
+wording is identical, the alignment is the toolkit's.
+
 
 **The update check.** This is the one place the port deliberately does not
 follow the Windows route. The Windows app reads `/releases/latest`, which
@@ -287,9 +297,10 @@ release that actually carries `mnpdf-linux-x64-<tag>.tar.gz`, then compares
 versions with the Windows rules (src/main.cpp:2334). The request runs on its
 own thread and the whole check - the feed, the asset probes and the release
 lookup - fits in one budget, so one click cannot turn into minutes of waiting
-and a slow network cannot freeze the window. The suite that waits for the
-answer waits longer than that budget, so a working but slow network still
-gets its answer instead of a quit.
+and a slow network cannot freeze the window. Every run that waits for the
+answer waits longer than that budget - the shot-and-quit seam
+(`MNPDF_SHOT_EXIT`) and the two launch runs alike - so a working but slow
+network still gets its answer instead of a quit.
 
 Where the release list comes from, and where the asset list does not, was
 measured rather than guessed:
@@ -391,11 +402,12 @@ build's own row cache is not carried over until the port can hold it.
 Everything else about the drawer follows the Windows shape: a refresh rebuilds
 the row heights and drops the pictures on both platforms - the Windows
 refreshThumbDrawer calls layoutThumbs, which opens with clearThumbCache
-(src/main.cpp:4813-4817, :4825, :4968), and the port drops its single raster
-(src/linux/main.cpp:1697-1699) - the only difference is the granularity, one
-raster here against a picture per row there. The selection stays on the page
-it named unless that page is gone (src/main.cpp:4964-4967), and the scroll
-offset is clamped when the list shrinks.
+(src/main.cpp:4813-4817, :4825, :4968), and the port drops its single raster in
+the `gThumbPix.clear()` that opens `layoutThumbs` (src/linux/main.cpp) - the
+only difference is the granularity, one raster here against a picture per row
+there. The selection stays on the page it named unless that page is gone
+(src/main.cpp:4964-4967), and the scroll offset is clamped when the list
+shrinks.
 
 ## The test seams
 
@@ -430,6 +442,14 @@ grep the source, which proves what the source says rather than what the reader
 did. The three answers it keeps apart are "a release was found", "the host
 answered and has none" and "the host did not answer": the last is a network
 fact, and the gate reports it as untested rather than as a failure.
+
+The trace is a production behaviour, not only a seam: the Windows reader prints
+nothing at all, while a Linux launch from a terminal shows one line per check
+(the request URL, then the outcome). It is deliberate and diagnostic - a reader
+who wonders whether the check ran can see it did - and the lines carry only the
+request URL and the outcome; the error text is the fixed sentences
+`src/linux/update.cpp` builds from curl codes and HTTP statuses, never a body
+read from the host.
 
 `MNPDF_SHOT_EXIT` is a fourth seam, and it is a window-level one rather than a
 fourth independent thing: it appends the quit command to whatever else the run

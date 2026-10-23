@@ -1022,7 +1022,7 @@ static GtkWidget* buildContextMenu(int x, int y) {
                 buildColorSubmenu(gHlDefault, 140, 146, 149));
             gtk_menu_shell_append(GTK_MENU_SHELL(menu), it);
         }
-        add("Copy", 101);
+        add("Copy\tCtrl+C", 101);
         sep();
     } else if (gDoc && pg >= 0) {
         double px, py;
@@ -1037,15 +1037,15 @@ static GtkWidget* buildContextMenu(int x, int y) {
         }
         sep();
     }
-    add("Open...", 107);
+    add("Open...\tCtrl+O", 107);
     add("Open in new tab...", 108);
-    add("New tab", 300);
-    add("Close tab", 301);
+    add("New Tab\tCtrl+T", 300);
+    add("Close Tab\tCtrl+W", 301);
     sep();
-    add("Save", 118);
-    add("Save as...", 119);
+    add("Save\tCtrl+S", 118);
+    add("Save As...\tCtrl+Shift+S", 119);
     sep();
-    add("Print...", 137);
+    add("Print...\tCtrl+P", 137);
     {
         // Windows draws a tick next to Autosave when it is on (MF_CHECKED). A
         // GtkCheckMenuItem flips itself on activate, so the handler would undo
@@ -1055,14 +1055,14 @@ static GtkWidget* buildContextMenu(int x, int y) {
         gtk_menu_shell_append(GTK_MENU_SHELL(menu), it);
     }
     sep();
-    add("Undo", 114);
-    add("Redo", 115);
+    add("Undo\tCtrl+Z", 114);
+    add("Redo\tCtrl+Y", 115);
     sep();
-    add("Find...", 103);
+    add("Find...\tCtrl+F", 103);
     sep();
-    add("Fit width", 104);
-    add("Zoom in", 105);
-    add("Zoom out", 106);
+    add("Fit Width\tCtrl+0", 104);
+    add("Zoom In\t+", 105);
+    add("Zoom Out\t-", 106);
     sep();
     add("Rotate clockwise", 133);
     add("Rotate counter-clockwise", 134);
@@ -2251,12 +2251,12 @@ static void installMenuBar(GtkWidget* box) {
         if (!commandUsable(id)) gtk_widget_set_sensitive(it, FALSE);
         return it;
     };
-    GtkWidget* open = mi("_Open...", 107);
+    GtkWidget* open = mi("_Open...\tCtrl+O", 107);
     gtk_menu_shell_append(GTK_MENU_SHELL(fileMenu), open);
-    gtk_menu_shell_append(GTK_MENU_SHELL(fileMenu), mi("_Save", 118));
-    gtk_menu_shell_append(GTK_MENU_SHELL(fileMenu), mi("Save _as...", 119));
+    gtk_menu_shell_append(GTK_MENU_SHELL(fileMenu), mi("_Save\tCtrl+S", 118));
+    gtk_menu_shell_append(GTK_MENU_SHELL(fileMenu), mi("Save _As...\tCtrl+Shift+S", 119));
     gtk_menu_shell_append(GTK_MENU_SHELL(fileMenu), gtk_separator_menu_item_new());
-    gtk_menu_shell_append(GTK_MENU_SHELL(fileMenu), mi("_Print...", 137));
+    gtk_menu_shell_append(GTK_MENU_SHELL(fileMenu), mi("_Print...\tCtrl+P", 137));
     gtk_menu_shell_append(GTK_MENU_SHELL(fileMenu), gtk_separator_menu_item_new());
     gtk_menu_shell_append(GTK_MENU_SHELL(fileMenu), mi("_Quit", 112));
     gtk_menu_item_set_submenu(GTK_MENU_ITEM(file), fileMenu);
@@ -2265,11 +2265,11 @@ static void installMenuBar(GtkWidget* box) {
 
     GtkWidget* view = gtk_menu_item_new_with_mnemonic("_View");
     GtkWidget* viewMenu = gtk_menu_new();
-    gtk_menu_shell_append(GTK_MENU_SHELL(viewMenu), mi("_Find...", 103));
+    gtk_menu_shell_append(GTK_MENU_SHELL(viewMenu), mi("_Find...\tCtrl+F", 103));
     gtk_menu_shell_append(GTK_MENU_SHELL(viewMenu), gtk_separator_menu_item_new());
-    gtk_menu_shell_append(GTK_MENU_SHELL(viewMenu), mi("_Fit width", 104));
-    gtk_menu_shell_append(GTK_MENU_SHELL(viewMenu), mi("Zoom _in", 105));
-    gtk_menu_shell_append(GTK_MENU_SHELL(viewMenu), mi("Zoom _out", 106));
+    gtk_menu_shell_append(GTK_MENU_SHELL(viewMenu), mi("_Fit Width\tCtrl+0", 104));
+    gtk_menu_shell_append(GTK_MENU_SHELL(viewMenu), mi("Zoom _In\t+", 105));
+    gtk_menu_shell_append(GTK_MENU_SHELL(viewMenu), mi("Zoom _Out\t-", 106));
     gtk_menu_shell_append(GTK_MENU_SHELL(viewMenu), gtk_separator_menu_item_new());
     gtk_menu_shell_append(GTK_MENU_SHELL(viewMenu), mi("_Rotate clockwise", 133));
     gtk_menu_shell_append(GTK_MENU_SHELL(viewMenu), mi("Rotate c_ounter-clockwise", 134));

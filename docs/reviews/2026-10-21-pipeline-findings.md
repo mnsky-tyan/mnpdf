@@ -635,7 +635,7 @@ own comment says so), so the rerouting was redundant and was reverted. The
 quit-prompt gate section stays: it locks the prompt behaviour (TOPS 3 with
 unsaved changes, TOPS 0 clean) against future refactors.
 
-Gate: 46 -> 53 checks, all passing; core 171/171.
+Gate: 40 -> 53 checks, all passing; core 171/171.
 
 ### Round 13 (the dc99dec re-review) - five real, one reverted
 
@@ -675,3 +675,61 @@ Gate: 46 -> 53 checks, all passing; core 171/171.
   docs/linux.md citation now points at the real clear (src/linux/main.cpp:1583-1585,
   and the Windows call sites :4813-4817, :4968), and the counts in this record
   are corrected.
+
+### Round 14 (the d4184e9 re-review) - seven findings, all real
+
+- **R-gate-secondwin-xvfb-run-swallowed-into-comment (error) - a defect this
+  batch's own predecessor introduced.** Replacing the reverted sidecar section
+  glued `xvfb-run -a --server-args=...` onto the end of the preceding comment
+  line. Bash splices the backslash-newline BEFORE comment processing, so the
+  whole call was a comment and the second-window run executed without
+  xvfb-run, on whatever DISPLAY the gate inherited - passing here only because
+  the agent shell inherits DISPLAY=:99, and failing on a headless runner.
+  Fixed by restoring the newline, and proven both ways: with the newline the
+  section passes 3/3 under `env -u DISPLAY -u WAYLAND_DISPLAY`; with the glued
+  line restored it reports FAIL on "its window is the empty reader" and "a
+  second window keeps its own document's marks". `bash -n` cannot see this
+  class, so the rule is that no comment line ends in a backslash
+  (`grep -n '^#.*\\$' scripts/linux-gate.sh` returns nothing).
+- **R-gate-outage-untested-incomplete-launch-timeout-below-budget (warning)**
+  the two launch runs killed the reader at 12 s while the check's own budget is
+  20 s (src/linux/update.cpp:74), so on a slow link the run died before it
+  could print the outcome and the gate reported "the launch check asks on its
+  own" as a FAIL - the exact conflation of network state with code failure the
+  previous round removed. Both runs now outlive the budget (30 s run, 26 s
+  before the TOPS read), and docs/linux.md says what the runs actually do.
+- **R-menu-wording-parity-partial-six-labels-still-diverge (warning, ask-user)**
+  the wording criterion reaches capitalization and accelerator hints, and the
+  Windows menu is the reference. Every entry now carries the Windows words and
+  hint: New Tab\tCtrl+T, Close Tab\tCtrl+W, Save\tCtrl+S,
+  Save As...\tCtrl+Shift+S, Print...\tCtrl+P, Fit Width\tCtrl+0, Zoom In\t+,
+  Zoom Out\t-, Undo\tCtrl+Z, Redo\tCtrl+Y, Find...\tCtrl+F, Open...\tCtrl+O,
+  Copy\tCtrl+C (src/main.cpp:5530, :5542-5557). GTK renders the tab as
+  whitespace, so the wording is identical while the alignment is the
+  toolkit's; docs/linux.md records that.
+- **R-update-stdout-trace-ships-in-production (info, ask-user)** kept as is -
+  the outcome trace is the same family as the existing request trace, and one
+  line per check is deliberate. docs/linux.md now records it as a production
+  behaviour difference from Windows (which prints nothing), not only as a test
+  seam.
+- **R-docs-drawer-citation-wrong-third-correction (info)** the same citation
+  had drifted for the third time, because it named line numbers in a file this
+  branch rewrites every round. It is now name-based - "the `gThumbPix.clear()`
+  that opens `layoutThumbs` in src/linux/main.cpp" - with the Windows call
+  sites still cited by line.
+- **R-surgery-citation-points-at-paint-loop (info)** the comment naming the
+  two movePage call sites cited a paint loop and a colour case; it now names
+  the real ones (drawer Ctrl+Up/Ctrl+Down main.cpp:1831-1832, cases 311/312
+  main.cpp:827-828), and the Windows range is corrected to :4615-4620.
+- **R-rotate-target-printed-but-never-asserted (info)** the dump printed
+  `rotate-page` and the gate never read it, so the third target of the
+  scrolled-click check was a claim with no assertion. The gate now requires
+  pin-page = rotate-page = hit-page with view-page one past them, and fails on
+  the old code (measured at the reviewed head: pin 1, rotate 1, hit 1, view 2).
+
+The gate's label-coupled assertions moved with the labels and now read command
+ids instead of wording wherever the fact is about a command rather than a word:
+the greying checks use a `greyed <id> <file>` helper, so a future wording change
+cannot silently turn them vacuous. A new check asserts all thirteen hinted
+wordings against the live menu dump. Measured on this head: gate 62 checks,
+all passing (the run's own `pass=62 fail=0`); core 171/171.

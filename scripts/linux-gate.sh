@@ -369,7 +369,8 @@ chk $? "its window is the empty reader"
 # whichever window owns it (:3243-3245), so a second window's marks must
 # persist rather than be dropped at its exit. Proven by rotating in the second
 # window: the rotation must reach the sidecar (the shared app.txt staying
-# untouched is what the section above proves).xvfb-run -a --server-args="-screen 0 800x600x24" \
+# untouched is what the section above proves).
+xvfb-run -a --server-args="-screen 0 800x600x24" \
   env GDK_BACKEND=x11 MNPDF_NO_UPDATE=1 XDG_CONFIG_HOME="$E/cfg" MNPDF_CMD=133 \
       MNPDF_SHOT="$E/second.png" MNPDF_SHOT_EXIT=1 \
   timeout 20 "$BIN" "$PDF" > "$E/file.log" 2>&1
@@ -499,11 +500,13 @@ echo "== the reader checks for updates at launch, silently =="
 # window - and a dialog makes a third.
 L=$STATE/updlaunch; mkdir -p "$L/one/mnpdf" "$L/two/mnpdf"
 # run one: no stamp, no click, no seam. The launch check must ask on its own
-# and stamp what it found.
+# and stamp what it found. The run outlives the check's own budget
+# (kUpdateCheckBudgetSec, src/linux/update.cpp:74): a reader killed first would
+# look like a check that found nothing.
 NOW=$(date +%s)
 xvfb-run -a --server-args="-screen 0 800x600x24" \
   env GDK_BACKEND=x11 XDG_CONFIG_HOME="$L/one" \
-  sh -c 'timeout 12 "$0" "$1" > "$2/log.txt" 2>&1 & sleep 11; \
+  sh -c 'timeout 30 "$0" "$1" > "$2/log.txt" 2>&1 & sleep 26; \
          echo TOPS $(xwininfo -root -children 2>/dev/null | grep -c "\"Mnpdf\"")' \
   "$BIN" "$PDF" "$L/one" >"$L/one/tops.txt" 2>&1
 TOPS=$(sed -n 's/^TOPS //p' "$L/one/tops.txt")
@@ -532,7 +535,7 @@ SEEDED=$(date +%s)
 printf 'lnxupdcheck=%s\nlnxupdtag=v9.9.9\n' "$SEEDED" > "$L/two/mnpdf/app.txt"
 xvfb-run -a --server-args="-screen 0 800x600x24" \
   env GDK_BACKEND=x11 XDG_CONFIG_HOME="$L/two" \
-  sh -c 'timeout 12 "$0" "$1" > "$2/log.txt" 2>&1 & sleep 11; \
+  sh -c 'timeout 30 "$0" "$1" > "$2/log.txt" 2>&1 & sleep 26; \
          echo TOPS $(xwininfo -root -children 2>/dev/null | grep -c "\"Mnpdf\"")' \
   "$BIN" "$PDF" "$L/two" >"$L/two/tops.txt" 2>&1
 TOPS=$(sed -n 's/^TOPS //p' "$L/two/tops.txt")
@@ -736,35 +739,63 @@ chk $? "the menu carries the Windows command ids (tests/lib.ps1)"
 # and silently misplaces the pin once it does not. The dump prints both for one
 # click after scrolling away from the top.
 PINP=$(sed -n 's/^pin-page //p' "$E/menu.txt" | head -1)
+ROTP=$(sed -n 's/^rotate-page //p' "$E/menu.txt" | head -1)
 HITP=$(sed -n 's/^hit-page //p' "$E/menu.txt" | head -1)
 VIEWP=$(sed -n 's/^view-page //p' "$E/menu.txt" | head -1)
-[ -n "$PINP" ] && [ "$PINP" = "$HITP" ] && [ "$((PINP + 1))" = "$VIEWP" ]
-chk $? "a right-click on a scrolled page names one page for both targets (pin $PINP, hit $HITP, view $VIEWP)"
+[ -n "$PINP" ] && [ "$PINP" = "$ROTP" ] && [ "$ROTP" = "$HITP" ] && [ "$((PINP + 1))" = "$VIEWP" ]
+chk $? "a right-click on a scrolled page names one page for all three targets (pin $PINP, rotate $ROTP, hit $HITP, view $VIEWP)"
+
+# The wording is the Windows menu's, accelerator hint included (src/main.cpp:5530,
+# :5542-5557). The dump prints the label the reader sees, so this asserts the
+# words the reader is shown rather than what the source says.
+missing=""
+while IFS= read -r want; do
+    [ -z "$want" ] && continue
+    grep -qxF "$want" "$E/menu.txt" || grep -qxF "$want [greyed]" "$E/menu.txt" \
+        || missing="$missing [$want]"
+done <<'WANT'
+Open...	Ctrl+O: 107
+New Tab	Ctrl+T: 300
+Close Tab	Ctrl+W: 301
+Save	Ctrl+S: 118
+Save As...	Ctrl+Shift+S: 119
+Print...	Ctrl+P: 137
+Undo	Ctrl+Z: 114
+Redo	Ctrl+Y: 115
+Find...	Ctrl+F: 103
+Fit Width	Ctrl+0: 104
+Zoom In	+: 105
+Zoom Out	-: 106
+Copy	Ctrl+C: 101
+WANT
+[ -z "$missing" ]
+chk $? "the menu words its entries the way the Windows menu does${missing:+ (missing:$missing)}"
 
 # The greying, asserted rather than assumed: Windows greys a command out when
 # it cannot run (src/main.cpp:5543-5560), and the port greyed NOTHING - every
 # entry was live whether or not it could act. The dump marks a greyed entry
 # " [greyed]", so the two states are visible to a check.
 #
+# These read the ID, not the label: whether a command can run is a fact about
+# the command and the state, so a wording change must not be able to turn one
+# of these into a check that can no longer fail.
+greyed() { grep -qE ": $1 \[greyed\]$" "$2"; }
 # The run above seeds a highlight and a pin, so it is DIRTY by design: restored
 # marks are unsaved work (openPath marks the document dirty when the sidecar
 # carried marks the file does not have). That is the state Windows answers with
-# Save live and the undo stack empty, so those are the assertions here. Undo,
-# Redo and Close tab are context-menu entries, so they carry no indentation.
-GREY=$(sed -n 's/^Undo: 114\( \[greyed\]\)\?$/\1/p' "$E/menu.txt" | head -1)
-[ -n "$GREY" ]
+# Save live and the undo stack empty, so those are the assertions here.
+greyed 114 "$E/menu.txt"
 chk $? "Undo is greyed out with an empty undo stack"
-GREY=$(sed -n 's/^Redo: 115\( \[greyed\]\)\?$/\1/p' "$E/menu.txt" | head -1)
-[ -n "$GREY" ]
+greyed 115 "$E/menu.txt"
 chk $? "Redo is greyed out with an empty redo stack"
-GREY=$(sed -n 's/^Close tab: 301\( \[greyed\]\)\?$/\1/p' "$E/menu.txt" | head -1)
-[ -n "$GREY" ]
-chk $? "Close tab is greyed out with one tab (src/main.cpp:5544)"
-if grep -qE '^(Save|Save as\.\.\.|Print\.\.\.|Rotate clockwise): (118|119|137|133) \[greyed\]$' "$E/menu.txt"; then
-    bad "a command that applies was greyed out"
-else
-    ok "Save, Print and the rotations stay live on a document with unsaved marks"
-fi
+greyed 301 "$E/menu.txt"
+chk $? "Close Tab is greyed out with one tab (src/main.cpp:5544)"
+stuck=""
+for id in 118 119 137 133; do
+    greyed "$id" "$E/menu.txt" && stuck="$stuck $id"
+done
+[ -z "$stuck" ]
+chk $? "Save, Print and the rotations stay live on a document with unsaved marks${stuck:+ (greyed:$stuck)}"
 # The other half needs the state the dump run cannot be in: a CLEAN document.
 # Save and Save As are dead then (nothing to save), which is the Windows
 # predicate gDoc && gDirty. A menu that greyed everything would fail the block
@@ -774,11 +805,11 @@ printf 'tabstrip=1\ntitlebar=1\nautosave=1\nhlcolor=0\npincolor=5\nnight=0\n' > 
 xvfb-run -a --server-args="-screen 0 1280x900x24" \
   env GDK_BACKEND=x11 MNPDF_NO_UPDATE=1 XDG_CONFIG_HOME="$C/cfg" MNPDF_MENU_DUMP=1 \
   timeout 30 "$BIN" "$PDF" >"$C/menu.txt" 2>&1
-grep -qE '^  Save: 118 \[greyed\]$' "$C/menu.txt"
-chk $? "Save is greyed out on a clean document (src/main.cpp:5543)"
-grep -qE '^  Save as\.\.\.: 119 \[greyed\]$' "$C/menu.txt"
+greyed 118 "$C/menu.txt"
+chk $? "Save is greyed out on a clean document (src/main.cpp:5545)"
+greyed 119 "$C/menu.txt"
 chk $? "Save As is greyed out on a clean document"
-grep -qE '^  Print\.\.\.: 137$' "$C/menu.txt"
+grep -qE ": 137$" "$C/menu.txt"
 chk $? "Print stays live on a clean document with a document open"
 
 echo
