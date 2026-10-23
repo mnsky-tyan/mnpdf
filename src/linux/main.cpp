@@ -1146,7 +1146,8 @@ static void onContextMenu(GtkWidget* w, GdkEventButton* ev) {
     gMenuRotPage = pg >= 0 ? pg : gPageIndex;
     GtkWidget* menu = buildContextMenu(x, y);
     // The Windows build clears the captured drop point once the dispatch has consumed
-    // it (src/main.cpp:5593-5595), so a capture never outlives the menu that made
+    // it (the clear in onContextMenu, src/main.cpp:5597-5598), so a capture never
+    // outlives the menu that made
     // it. The port has a second entry point Windows does not - the menu bar posts
     // 133/134 with no capture of its own - so an uncleared gMenuRotPage would let
     // a menu-bar rotate act on the page of an old right-click. The signal fires

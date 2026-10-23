@@ -263,8 +263,10 @@ void releasePrimaryInstance();
 // (lnxupdcheck=/lnxupdtag=): updcheck=/updtag= are the Windows reader's own
 // stamp and carry a different meaning there (the newest non-prerelease
 // overall, src/main.cpp:2435) than this check's answer (the newest release
-// carrying a Linux archive). They live here because sidecar.cpp is what reads
-// and writes them; the check's API is in update.h.
+// carrying a Linux archive). They live here because BOTH modules touch the
+// pair: update.cpp reads and writes it (noteUpdateCheck stamps the attempt, the
+// cached answer short-circuits the next one), while sidecar.cpp parses and
+// persists the app.txt keys; the check's API is in update.h.
 extern long long gLastUpdateCheck;
 extern std::string gLastUpdateTag;
 
