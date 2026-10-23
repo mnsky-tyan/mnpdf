@@ -49,9 +49,11 @@ bool claimPrimaryInstance() {
         return true;
     }
     if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
-        // another reader holds it: this window is the secondary one
         close(fd);
-        return false;
+        // Only the already-held answer demotes the window; any other failure
+        // leaves it primary, the way the Windows mutex check demotes only on
+        // ERROR_ALREADY_EXISTS (src/main.cpp:6138).
+        return errno != EWOULDBLOCK;
     }
     gLockFd = fd;   // held for the process lifetime
     return true;

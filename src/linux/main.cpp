@@ -865,6 +865,7 @@ static void onMenuActivate(GtkMenuItem* mi, gpointer data) {
     case 203: if (gDoc) pickSignatureImage(); break;
     case 204: clearSignatures(); refreshMenuLabels(); break;
     case 205: {
+        if (!gDoc) break;
         // Windows' Merge PDFs dialog is multi-select and titled for the merge
         // (mergeDialog in src/main.cpp), and every picked file goes to
         // mergeFiles in one call
@@ -880,6 +881,7 @@ static void onMenuActivate(GtkMenuItem* mi, gpointer data) {
         break;
     }
     case 206: {
+        if (!gDoc || gDocPages <= 1) break;
         std::string range = "";
         if (ui_prompt_range(range) && !range.empty()) {
             std::string out = ui_save_file("split.pdf");

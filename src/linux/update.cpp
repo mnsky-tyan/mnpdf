@@ -226,6 +226,12 @@ static std::string tagFromUrl(const std::string& url) {
     return tag;
 }
 
+// the statuses a GitHub redirect answers with - one predicate, so the two
+// requests that read a redirect agree on what a redirect is
+static bool isRedirectStatus(int status) {
+    return status == 301 || status == 302 || status == 303 || status == 307 || status == 308;
+}
+
 // The tag of the newest release, from the redirect /releases/latest answers
 // with. An empty answer means the host did not redirect, which is a failure
 // the caller reports rather than a release.
@@ -235,7 +241,7 @@ static std::string latestReleaseTag(Clock::time_point deadline, std::string* why
         if (why) *why = httpFailureText(r.code, r.status);
         return "";
     }
-    if (r.status != 301 && r.status != 302 && r.status != 303 && r.status != 307 && r.status != 308) {
+    if (!isRedirectStatus(r.status)) {
         if (why) *why = "the release host answered HTTP " + std::to_string(r.status);
         return "";
     }
@@ -328,7 +334,7 @@ static AssetAnswer probeLinuxAsset(const std::string& tag, Clock::time_point dea
     if (r.code != CURLE_OK) return AssetAnswer::Unreachable;
     // 200 (the file itself) or a redirect to it both mean the asset is there;
     // 404 means it is not
-    if (r.status == 200 || r.status == 301 || r.status == 302 || r.status == 307)
+    if (r.status == 200 || isRedirectStatus(r.status))
         return AssetAnswer::Yes;
     if (r.status == 404 || r.status == 410) return AssetAnswer::No;
     // 403, 429 and the 5xx answers are the host's state, not the asset's
