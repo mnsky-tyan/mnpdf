@@ -187,6 +187,10 @@ void renderPage();
 double clampZoom(double z);
 
 int tabStripH();
+// a design measurement in device pixels (ui_scale aware); every layout constant
+// that reaches the frame goes through this, so a fractional desktop scale
+// renders at native resolution instead of being upscaled by the compositor
+int designPx(int designPx);
 int docWpx();
 int docHpx();
 int rotWpt(int i);

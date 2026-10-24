@@ -26,6 +26,13 @@ rotation, undo/redo, and printing. Thumbnails and an outline panel open as side
 drawers, the titlebar can be hidden, and there is a night mode. All of it works
 offline.
 
+SCREEN SCALE
+The reader takes its scale from the desktop and paints at that density. If it
+guesses wrong on yours, name the factor yourself - 1 is unscaled, 2 doubles
+everything, and 1 to 4 is accepted:
+
+    MNPDF_SCALE=1.6 ./mnpdf
+
 SHARED STATE WITH WINDOWS
 It reads and writes the same per-document sidecar files and the same app.txt as
 the Windows build, so marks, pins, rotations and notes made in either build open

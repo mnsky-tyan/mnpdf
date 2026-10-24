@@ -190,21 +190,25 @@ Measured on this machine (`/usr/bin/time`, and RSS sampled from `/proc`):
   links libcurl and the update and instance modules, and exercises the
   update check's parsing, comparison and release lookup).
 - The GUI with a 13-page document open, idle after 20 s: **98.6 MB RSS, steady
-  state, no growth** (measured, sampled from `/proc/<pid>/status`). Of that,
-  the vendored `libpdfium.so` file itself is 7.9 MB (measured, `ls`); how much of
-  it is resident is an estimate, and GTK accounts for the rest. The only
-  allocation that scales with the window is one client-sized BGRA buffer, the same
-  discipline as the Windows build, and the print path allocates exactly one page
-  raster at a time, sized from the page's own box at 300 dpi and shrunk to the
-  same 16-megapixel budget the Windows print path applies.
-- The thumbnails drawer holds one page raster at a time, where the Windows
-  drawer holds one bitmap per row (src/main.cpp:4803). The cost is invisible
-  but real: scrolling down and back up re-rasterizes every row that left the
-  viewport, and each raster is a `FPDF_LoadPage` plus `FPDF_RenderPageBitmap`
-  on the UI thread inside the draw signal, so a long document's drawer scrolls
-  more slowly than the Windows one. The bound is the reason: a per-row cache
-  would grow with the document, and the page cache the engine already keeps is
-  six pages deep (`PCACHE 6` in src/linux/doc.cpp).
+  state, no growth** (measured before the frame became a device-pixel buffer, so
+  a scaled desktop costs more; sampled from `/proc/<pid>/status`). Of that, the
+  vendored `libpdfium.so` file itself is 7.9 MB (measured, `ls`); how
+  much of it is resident is an estimate, and GTK accounts for the rest. The only
+  allocation that scales with the window is one BGRA buffer holding the client
+  area in device pixels - the client area times the device scale, so a 2x
+  desktop costs four times the bytes - the same discipline as the Windows build,
+  and the print path allocates exactly one page raster at a time, sized from the
+  page's own box at 300 dpi and shrunk to the same 16-megapixel budget the
+  Windows print path applies.
+- The thumbnails drawer holds one page raster at a time, rendered at the device
+  density, where the Windows drawer holds one bitmap per row
+  (src/main.cpp:4803). The cost is invisible but real: scrolling down and back
+  up re-rasterizes every row that left the viewport, and each raster is a
+  `FPDF_LoadPage` plus `FPDF_RenderPageBitmap` on the UI thread inside the draw
+  signal, so a long document's drawer scrolls more slowly than the Windows one.
+  The bound is the reason: a per-row cache would grow with the document, and the
+  page cache the engine already keeps is six pages deep (`PCACHE 6` in
+  src/linux/doc.cpp).
 
 ## The parity work (2026-10-21)
 
@@ -214,7 +218,12 @@ menu ids, so the two readers can be driven the same way.
 **Advanced.** Windows keeps everything past plain reading in an "Advanced"
 cascade (src/main.cpp:5449). The port has the same cascade in the menu bar and
 in the right-click menu: Thumbnails, Outline panel, Night mode, Merge PDFs,
-Split pages, Insert signature, Clear signatures, Reopen last document.
+Split pages, Insert signature, Clear signatures, Reopen last document. The
+menu bar's cascade also carries the titlebar toggle (113) beside Night mode;
+the right-click menu keeps that command by Maximize instead, rebuilt per open.
+The bar is built once, so the toggle's own handler re-words its entry through
+`refreshMenuLabels` - without that a captionless reader kept offering "Hide
+titlebar", which reads as the toggle doing nothing.
 
 **The titlebar.** Windows clears `WS_CAPTION` and then re-implements
 `WM_NCCALCSIZE` and `WM_NCHITTEST` (src/main.cpp:5825, 6014), because
@@ -463,6 +472,43 @@ loop, `startUpdateCheck(false)`, src/main.cpp:6286): a suite that is not
 about the update check sets it so its runs stay off the network. It skips only
 the launch check - a suite that clicks "Check for updates" gets the real
 answer, because a click is the reader asking.
+
+## Device scale and input
+
+The frame is a device-pixel buffer: the drawing area's allocation is logical, so
+`onAreaSize` multiplies it by `ui_scale()`, and the layout constants and page
+coordinates in `doc.cpp` are device pixels (`px()`/`designPx()` for the former,
+`pagePtToPx`/`pagePxToPt` for the latter). GTK3 only reports an integer scale
+factor, and the default desktop launch is a native Wayland client: KDE
+publishes wl_output scale 2 for its 1.6 desktop (measured with wayland-info), so
+the toolkit's own factor already renders the frame sharp - the compositor
+downsamples the 2x buffer onto the 1.6x panel. A backend without a usable factor
+falls back to the X screen's published DPI: XWayland's millimetre size works out
+to exactly 96 dpi whatever the desktop scale is (measured: 2880 px over 762 mm),
+so it is only trusted when it is not that default, and the desktop's Xft.dpi -
+153 here, 1.6 x 96 - carries the fraction. `MNPDF_SCALE=<factor>` overrides every
+source, always, so a desktop whose scale cannot be discovered has a documented
+escape - the recipe a reader gets is in `README-linux.txt`, which ships in the
+release tarball. The compositor then receives a native-resolution frame instead
+of stretching a 1x one - the "low resolution" report. `ui_paint` sets the
+surface's device scale so the device-pixel buffer maps onto the widget's logical
+coordinates, and the scale is re-derived when the window moves to an output with
+a different one (`notify::scale-factor`).
+
+Pointer coordinates arrive in logical pixels and the page canvas converts them
+once, at each handler (`devX`/`devY`), so its hit-test code stays in one space.
+The side drawers keep their own layout in logical pixels (`layoutThumbs`,
+`thumbAt`), so their scroll offsets and hit-tests are unaffected by the device
+scale; only the thumbnail raster is rendered at device density and mapped back
+with a surface device scale.
+
+Touchpad scrolling takes GDK's smooth deltas directly, one notch still being one
+step, instead of accumulating them until a whole unit and then moving a fixed
+120 px - the quantisation is what made a two-finger scroll feel unresponsive and
+coarse. A delta now moves a proportional 120 design pixels per unit, so the page
+follows the fingers and the step keeps the same apparent size at any density. A
+scroll that arrives while a context popup is open is ignored rather than
+repainting under the menu.
 
 ## Desktop integration
 

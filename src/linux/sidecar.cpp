@@ -292,7 +292,7 @@ void restoreSidecar(const std::wstring& path) {
     else if (zoom > 0) { gZoom = clampZoom(zoom); gFitWidth = false; }
     if (page >= 1 && page <= gDocPages) {
         loadPage(page - 1);
-        gScrollY = yTopPx(page - 1) - MARGIN;
+        gScrollY = yTopPx(page - 1) - designPx(MARGIN);
         gRestoredPage = true;
     }
 }

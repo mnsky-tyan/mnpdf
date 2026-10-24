@@ -46,7 +46,7 @@ static void adoptDoc(FPDF_DOCUMENT nd, int oldCount) {
     if (gPageIndex >= gDocPages) gPageIndex = gDocPages - 1;
     if (gPageIndex < 0) gPageIndex = 0;
     loadPage(gPageIndex);
-    gScrollY = yTopPx(gPageIndex) - MARGIN;
+    gScrollY = yTopPx(gPageIndex) - designPx(MARGIN);
     clampScroll();
     gUndo.clear();
     gRedo.clear();

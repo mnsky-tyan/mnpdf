@@ -13,7 +13,7 @@
 
 #include <string>
 
-double ui_scale();                       // device pixels per design pixel (GTK scale factor)
+double ui_scale();                       // device pixels per design pixel (detectUiScale, main.cpp)
 
 // saved window geometry: sidecar.cpp owns it (app.txt); the window layer consumes
 // it at startup and updates it on configure/state changes

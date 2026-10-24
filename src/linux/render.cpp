@@ -27,6 +27,11 @@ static unsigned char* gBits = nullptr;
 static int gBufW = 0, gBufH = 0;
 static FPDF_BITMAP gPdfBitmap = nullptr;
 
+// The frame is a DEVICE-pixel buffer: the client area is reported in logical
+// pixels by GTK, and every geometry function works in device pixels, so the
+// buffer is the client size times the device scale. Without this a fractional
+// desktop scale paints a 1x frame that the compositor upscales - the "low
+// resolution" report.
 static void ensureBuffer() {
     int w = gClientW, h = gClientH;
     if (w <= 0 || h <= 0) return;
@@ -115,7 +120,7 @@ static void drawPins(cairo_t* cr) {
 static void drawEmptyHint(cairo_t* cr) {
     if (gDoc) return;
     cairo_select_font_face(cr, "sans", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
-    cairo_set_font_size(cr, 15.0 * ui_scale());
+    cairo_set_font_size(cr, 15.0 * ui_scale());   // device pixels
     cairo_set_source_rgb(cr, 0.72, 0.72, 0.75);
     const char* t = "Open a PDF  (Ctrl+O)";
     cairo_text_extents_t ext;
@@ -192,10 +197,16 @@ void renderPage() {
 }
 
 // GTK's draw signal: blit the current back buffer.
+// The buffer holds DEVICE pixels; the draw context works in the widget's own
+// coordinates. Setting the surface's device scale makes cairo map device pixels
+// to logical ones, so the compositor receives a native-resolution frame instead
+// of upscaling a 1x one (the "low resolution" report at a fractional scale).
 void ui_paint(cairo_t* cr) {
     if (!gBits || gBufW <= 0) return;
     cairo_surface_t* src = cairo_image_surface_create_for_data(
         gBits, CAIRO_FORMAT_ARGB32, gBufW, gBufH, gBufW * 4);
+    double s = ui_scale() > 0 ? ui_scale() : 1.0;
+    if (s != 1.0) cairo_surface_set_device_scale(src, s, s);
     cairo_set_source_surface(cr, src, 0, 0);
     cairo_paint(cr);
     cairo_surface_destroy(src);
