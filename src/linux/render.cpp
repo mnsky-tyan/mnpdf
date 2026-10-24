@@ -30,8 +30,8 @@ static FPDF_BITMAP gPdfBitmap = nullptr;
 // The frame is a DEVICE-pixel buffer: the client area is reported in logical
 // pixels by GTK, and every geometry function works in device pixels, so the
 // buffer is the client size times the device scale. Without this a fractional
-// desktop scale (KDE 1.6, where GTK reports 1) paints a 1x frame that the
-// compositor upscales - the "low resolution" report.
+// desktop scale paints a 1x frame that the compositor upscales - the "low
+// resolution" report.
 static void ensureBuffer() {
     int w = gClientW, h = gClientH;
     if (w <= 0 || h <= 0) return;

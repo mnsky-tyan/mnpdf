@@ -661,27 +661,32 @@ static void closeTab() {
 
 // ---- scrollbars ----
 static const int kSbThick = 12;
+// the strip's thickness in device pixels: sbRects, the thumb helpers, the drag
+// mapping and the paint all read this one value, so the hit-test and the drawn
+// band stay the same rectangle at any device scale
+static int sbThick() { return designPx(kSbThick); }
 static void sbRects(int* vx, int* vy, int* vw, int* vh, int* hx, int* hy, int* hw, int* hh) {
-    int vhgt = gClientH - kSbThick;
-    *vx = gClientW - kSbThick; *vy = 0; *vw = kSbThick; *vh = vhgt;
-    *hx = 0; *hy = gClientH - kSbThick; *hw = gClientW - kSbThick; *hh = kSbThick;
+    int S = sbThick();
+    int vhgt = gClientH - S;
+    *vx = gClientW - S; *vy = 0; *vw = S; *vh = vhgt;
+    *hx = 0; *hy = gClientH - S; *hw = gClientW - S; *hh = S;
 }
 static bool vThumb(int* ty, int* th) {
     int total = docHpx(), view = docViewH();
     if (total <= view || total <= 0) return false;
-    int h = gClientH - kSbThick;
+    int h = gClientH - sbThick();
     *th = (int)((double)view / total * h);
-    if (*th < 24) *th = 24;
+    if (*th < designPx(24)) *th = designPx(24);
     int maxScroll = total - view;
     *ty = (int)((double)gScrollY / maxScroll * (h - *th));
     return true;
 }
 static bool hThumb(int* tx, int* tw) {
-    int total = docWpx() + 2 * MARGIN, view = gClientW;
+    int total = docWpx() + designPx(2 * MARGIN), view = gClientW;
     if (total <= view || total <= 0) return false;
-    int w = gClientW - kSbThick;
+    int w = gClientW - sbThick();
     *tw = (int)((double)view / total * w);
-    if (*tw < 24) *tw = 24;
+    if (*tw < designPx(24)) *tw = designPx(24);
     int maxScroll = total - view;
     *tx = (int)((double)gScrollX / maxScroll * (w - *tw));
     return true;
@@ -689,26 +694,26 @@ static bool hThumb(int* tx, int* tw) {
 
 // ---- device scale ----
 // ui_scale() is "device pixels per design pixel". GTK only ever reports an
-// INTEGER scale factor, so on a fractional desktop scale (KDE at 1.6, measured
-// on this machine: gtk_widget_get_scale_factor() returns 1 while the panel is
-// 2880x1800 at scale 1.6) a reader that trusts it paints a 1x buffer that the
-// compositor upscales - the "low resolution" report. The DPI the desktop
-// publishes carries the fraction (gdk_screen_get_resolution() = 153.6 here, i.e.
-// 1.6 x 96), so use it when it is a plausible desktop scale and fall back to the
-// integer factor otherwise.
-// The physical DPI of the screen, or 0 when the toolkit will not say. On X11
-// (XWayland included) the server's millimetre size is authoritative even when
-// the toolkit rounds the DPI away: measured on this desktop, GDK reports 96
-// while the panel's 2880x1800 over 477x297 mm is 153.9 dpi - the 1.6 desktop
-// scale. That is the only cross-backend source of a fractional scale GTK3
-// exposes, so it is what lets the reader render at native resolution on KDE at
-// a fractional scale instead of being upscaled by the compositor.
+// INTEGER scale factor: the default desktop launch here is a native Wayland
+// client, and KDE publishes wl_output scale 2 for its 1.6 desktop (measured with
+// wayland-info), so the toolkit's own factor already renders the frame sharp -
+// the compositor downsamples the 2x buffer onto the 1.6x panel. A backend with
+// no useful factor still has a fractional source in the X screen's published
+// DPI, which is what detectUiScale reaches for; MNPDF_SCALE overrides all of it.
+// The screen's physical DPI, or 0 when nothing usable is published. On X11 the
+// server's millimetre size is the honest measurement - except on XWayland,
+// which reports a millimetre size that works out to exactly 96 dpi whatever the
+// desktop scale is (measured here: 2880 px over 762 mm on the 1.6-scaled panel),
+// so there the fraction lives in the desktop's Xft.dpi instead (153 here,
+// 1.6 x 96, read through gdk_screen_get_resolution). The millimetre figure is
+// therefore only trusted when it is not that default.
 static double physicalDpi(GtkWidget* w) {
     if (!w) return 0;
     GdkScreen* scr = gtk_widget_get_screen(w);
     if (!scr) return 0;
     GdkDisplay* dpy = gdk_screen_get_display(scr);
     if (!dpy) return 0;
+    double xdpi = 0;
     // X11 backend: DisplayWidthMM/DisplayHeightMM carry the panel's real size
     if (GDK_IS_X11_DISPLAY(dpy)) {
         Display* xd = GDK_DISPLAY_XDISPLAY(dpy);
@@ -716,24 +721,29 @@ static double physicalDpi(GtkWidget* w) {
         int mm = DisplayWidthMM(xd, DefaultScreen(xd));
         if (mm > 0 && px > 0) {
             double dpi = px * 25.4 / mm;
-            if (dpi >= 48 && dpi <= 480) return dpi;
+            if (dpi >= 48 && dpi <= 480) xdpi = dpi;
         }
     }
+    if (xdpi > 0 && fabs(xdpi - 96.0) >= 1.0) return xdpi;
     double dpi = gdk_screen_get_resolution(scr);
-    return dpi > 0 ? dpi : 0;
+    if (dpi > 0) return dpi;
+    return xdpi;
 }
 
 static double detectUiScale(GtkWidget* w) {
     // An explicit override wins: a fractional desktop scale is not always
     // discoverable, so MNPDF_SCALE=1.6 is the documented escape.
     if (const char* env = getenv("MNPDF_SCALE")) {
-        double v = atof(env);
+        // g_ascii_strtod, not atof: gtk_init has already run setlocale(LC_ALL),
+        // and in a comma-decimal locale atof("1.6") reads 1.0 - which still
+        // passes the range check and silently forces scale 1
+        double v = g_ascii_strtod(env, nullptr);
         if (v >= 1.0 && v <= 4.0) return v;
     }
     double best = 0;
     GdkDisplay* dpy = gdk_display_get_default();
     // the integer scale factor the toolkit reports: right for a 1x or 2x
-    // desktop, and 1 on a fractional one (GTK3 cannot express 1.6)
+    // desktop, and rounded up on a fractional one (KDE's 1.6 publishes 2)
     if (dpy && w) {
         GdkWindow* gw = gtk_widget_get_window(w);
         GdkMonitor* mon = gw ? gdk_display_get_monitor_at_window(dpy, gw) : nullptr;
@@ -762,29 +772,28 @@ static inline int devY(double y) { return (int)(y * ui_scale() + 0.5); }
 static void onDraw(GtkWidget* w, cairo_t* cr, gpointer) {
     ui_paint(cr);
     (void)w;
-    // Scrollbars painted over the frame. The back buffer is device pixels, but
-    // this context draws in the widget's logical coordinates, so scale by the
-    // same factor the buffer uses - otherwise the bars come out 1.6x too thick
-    // and offset at a fractional desktop scale.
+    // Scrollbars painted over the frame. sbRects and the thumb helpers work in
+    // device pixels; this context draws in the widget's logical ones, so the
+    // band is the device geometry divided by the same ui_scale the buffer maps
+    // with - the painted band and the hit-test stay one rectangle.
     double s = ui_scale() > 0 ? ui_scale() : 1.0;
-    const int sb = (int)(kSbThick * s + 0.5);
-    const int cw = (int)(gClientW / s + 0.5), ch = (int)(gClientH / s + 0.5);
+    int S = sbThick();
+    double bx = (gClientW - S) / s, by = (gClientH - S) / s;
     cairo_set_source_rgb(cr, 0.14, 0.14, 0.15);
-    cairo_rectangle(cr, cw - kSbThick, 0, kSbThick, ch);
-    cairo_rectangle(cr, 0, ch - kSbThick, cw, kSbThick);
+    cairo_rectangle(cr, bx, 0, S / s, gClientH / s);
+    cairo_rectangle(cr, 0, by, gClientW / s, S / s);
     cairo_fill(cr);
     int ty, th, tx, tw;
     if (vThumb(&ty, &th)) {
         cairo_set_source_rgb(cr, 0.42, 0.42, 0.45);
-        cairo_rectangle(cr, cw - kSbThick + 2, ty / s, kSbThick - 4, th / s);
+        cairo_rectangle(cr, bx + 2, ty / s, kSbThick - 4, th / s);
         cairo_fill(cr);
     }
     if (hThumb(&tx, &tw)) {
         cairo_set_source_rgb(cr, 0.42, 0.42, 0.45);
-        cairo_rectangle(cr, tx / s, ch - kSbThick + 2, tw / s, kSbThick - 4);
+        cairo_rectangle(cr, tx / s, by + 2, tw / s, kSbThick - 4);
         cairo_fill(cr);
     }
-    (void)sb;
 }
 
 static void onAreaSize(GtkWidget* w, GtkAllocation* a, gpointer) {
@@ -1395,7 +1404,7 @@ static void onButtonPress(GtkWidget* w, GdkEventButton* ev, gpointer) {
     if (ey >= hy && hThumb(&tx, &tw)) {
         if (ex >= tx && ex < tx + tw) { gSbDragging = true; gSbWhich = 2; gSbGrab = (int)ex - tx; }
         else {
-            int total = docWpx() + 2 * MARGIN, view = gClientW;
+            int total = docWpx() + designPx(2 * MARGIN), view = gClientW;
             if (total > view) {
                 gScrollX += (ex < tx ? -1 : 1) * view * 9 / 10;
                 clampScroll(); renderPage();
@@ -1457,7 +1466,7 @@ static void onMotion(GtkWidget* w, GdkEventMotion* ev, gpointer) {
         (void)vy; (void)vw; (void)vh; (void)hx; (void)hy; (void)hw; (void)hh;
         int ty, th, tx, tw;
         if (gSbWhich == 1 && vThumb(&ty, &th)) {
-            int h = gClientH - kSbThick;
+            int h = gClientH - sbThick();
             int span = h - th;
             double frac = span > 0 ? ((double)devY(ev->y) - gSbGrab) / span : 0;
             if (frac < 0) frac = 0;
@@ -1467,12 +1476,12 @@ static void onMotion(GtkWidget* w, GdkEventMotion* ev, gpointer) {
             gRestoredPage = false;
             clampScroll(); ensureActivePage(); renderPage();
         } else if (gSbWhich == 2 && hThumb(&tx, &tw)) {
-            int ww = gClientW - kSbThick;
+            int ww = gClientW - sbThick();
             int span = ww - tw;
             double frac = span > 0 ? ((double)devX(ev->x) - gSbGrab) / span : 0;
             if (frac < 0) frac = 0;
             if (frac > 1) frac = 1;
-            int total = docWpx() + 2 * MARGIN, view = gClientW;
+            int total = docWpx() + designPx(2 * MARGIN), view = gClientW;
             gScrollX = (int)(frac * (total - view));
             clampScroll(); renderPage();
         }
@@ -1932,18 +1941,24 @@ static gboolean onThumbDraw(GtkWidget*, cairo_t* cr, gpointer) {
             }
             // one page rasterized at a time, only when it reaches the screen:
             // drawing the whole document up front would parse every page before
-            // the drawer appeared, exactly what the Windows drawer avoids
+            // the drawer appeared, exactly what the Windows drawer avoids.
+            // The raster is rendered at the device density and mapped with the
+            // surface's device scale, the way ui_paint maps the frame, so a 2x
+            // desktop shows a 2x raster instead of an upscaled 1x one
+            double ds = ui_scale() > 0 ? ui_scale() : 1.0;
+            int tw = designPx(kThumbW), rh = designPx(th);
             if (gThumbDrawnFor != (int)i) {
                 std::vector<unsigned char> buf;
                 int stride = 0;
-                if (renderPageToBuffer((int)i, kThumbW, th, buf, &stride)) {
+                if (renderPageToBuffer((int)i, tw, rh, buf, &stride)) {
                     gThumbPix.swap(buf);
                     gThumbDrawnFor = (int)i;
                 }
             }
             if (gThumbDrawnFor == (int)i && !gThumbPix.empty()) {
                 cairo_surface_t* s = cairo_image_surface_create_for_data(
-                    gThumbPix.data(), CAIRO_FORMAT_ARGB32, kThumbW, th, kThumbW * 4);
+                    gThumbPix.data(), CAIRO_FORMAT_ARGB32, tw, rh, tw * 4);
+                cairo_surface_set_device_scale(s, ds, ds);
                 cairo_set_source_surface(cr, s, x, cy);
                 cairo_paint(cr);
                 cairo_surface_destroy(s);
@@ -2373,6 +2388,7 @@ static void refreshMenuLabels() {
     setLabel("thumbs-item", std::string("_Thumbnails") + (gThumbDrawer ? " \u2713" : ""));
     setLabel("outline-item", std::string("_Outline panel") + (gOutlineDrawer ? " \u2713" : ""));
     setLabel("night-item", gNight ? "Night mode \u2713" : "Night mode");
+    setLabel("titlebar-item", gTitlebar ? "Hide titlebar" : "Show titlebar");
 }
 
 // A submenu is shown again on every popup, so this is the port's counterpart of
@@ -2441,6 +2457,7 @@ static void installMenuBar(GtkWidget* box) {
     advItem("thumbs-item", "_Thumbnails", 202);
     advItem("outline-item", "_Outline panel", 201);
     advItem("night-item", gNight ? "Night mode \u2713" : "Night mode", 200);
+    advItem("titlebar-item", gTitlebar ? "Hide titlebar" : "Show titlebar", 113);
     gtk_menu_shell_append(GTK_MENU_SHELL(advMenu), gtk_separator_menu_item_new());
     advItem("merge-item", "_Merge PDFs...", 205);
     advItem("split-item", "Split _pages...", 206);
@@ -2535,6 +2552,23 @@ static void doPrint() {
     if (printFailed) ui_message("A page could not be printed, so the job was stopped.", "mnpdf", false);
 }
 
+// A window that moves to an output with a different scale factor must re-derive
+// the device space it was sized for at startup, or the whole reader renders at
+// the old density on the new monitor.
+static void onScaleFactorChanged(GObject*, GParamSpec*, gpointer) {
+    double s = detectUiScale(gWin);
+    if (s == gScale) return;
+    gScale = s;
+    // only the density changed, so size-allocate may not fire again on its own:
+    // run the client-area derivation against the current allocation directly.
+    // The drawers re-render from the new density too - the cached thumbnail
+    // raster was rendered at the old one.
+    GtkAllocation a;
+    gtk_widget_get_allocation(gCurArea, &a);
+    onAreaSize(gCurArea, &a, nullptr);
+    refreshDrawers();
+}
+
 int main(int argc, char** argv) {
     gtk_init(&argc, &argv);
     FPDF_InitLibrary();
@@ -2609,6 +2643,9 @@ int main(int argc, char** argv) {
     // any frame painted before the next resize) at 1x - the "low resolution"
     // report. detectUiScale() only needs the screen, which exists by now.
     gScale = detectUiScale(gWin);
+    // and re-derived whenever GTK changes the window's scale factor (a move
+    // between outputs of different density, a live desktop-scale change)
+    g_signal_connect(gWin, "notify::scale-factor", G_CALLBACK(onScaleFactorChanged), nullptr);
 
     gtk_widget_show_all(gWin);
     // the overlay children must be re-hidden AFTER show_all: show_all walks every

@@ -328,10 +328,12 @@ xvfb-run -a --server-args="-screen 0 1280x900x24" \
   env GDK_BACKEND=x11 MNPDF_NO_UPDATE=1 XDG_CONFIG_HOME="$D/cfg" MNPDF_SHOT="$D/again.png" MNPDF_SHOT_EXIT=1 \
   timeout 30 "$BIN" "$PDF" >"$D/log2.txt" 2>&1
 grep -q "^titlebar=0$" "$D/cfg/mnpdf/app.txt"; chk $? "the captionless state survives a relaunch"
-# The menu is built once, so the entry's wording is state the reader has to
-# refresh: before this check the label kept saying "Hide titlebar" after the
+# The menu bar is built once, so its entry's wording is state the reader has to
+# refresh: before this check the bar kept saying "Hide titlebar" after the
 # window was already captionless, which is what a reader reads as "the toggle
-# did nothing". Drive the toggle and dump the menu in the same run.
+# did nothing". The context menu is rebuilt per open and can never go stale, so
+# the assertion reads the bar's own section of the dump. Drive the toggle and
+# dump the menu in the same run.
 rm -rf "$D/lbl"; mkdir -p "$D/lbl/cfg/mnpdf"
 printf 'titlebar=1\ntabstrip=1\n' > "$D/lbl/cfg/mnpdf/app.txt"
 xvfb-run -a --server-args="-screen 0 1280x900x24" \
@@ -340,8 +342,9 @@ xvfb-run -a --server-args="-screen 0 1280x900x24" \
   timeout 40 "$BIN" "$PDF" >"$D/lbl/log.txt" 2>&1
 grep -q "^titlebar=0$" "$D/lbl/cfg/mnpdf/app.txt"
 chk $? "the titlebar toggle flips the stored state"
-grep -q "Show titlebar: 113" "$D/lbl/log.txt" && ! grep -q "Hide titlebar: 113" "$D/lbl/log.txt"
-chk $? "and the menu entry says Show titlebar afterwards, not Hide titlebar"
+bar=$(awk '/^== menu bar ==$/{f=1; next} /^== /{f=0} f' "$D/lbl/log.txt")
+echo "$bar" | grep -q "Show titlebar: 113" && ! echo "$bar" | grep -q "Hide titlebar: 113"
+chk $? "and the menu bar's own entry says Show titlebar afterwards, not Hide titlebar"
 
 echo "== the Windows app.txt field order is kept =="
 D=$STATE/order; mkdir -p "$D"

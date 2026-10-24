@@ -149,8 +149,8 @@ std::string wideToUtf8(const std::wstring& s) {
 // of layout (a margin, a gap, the scroll step) costs ui_scale() device pixels,
 // and the page scale (gZoom) is a zoom factor over the page's own points, not a
 // logical-pixel unit. Keeping this conversion here - one boundary, every
-// geometry function - is what makes a fractional desktop scale (KDE at 1.6, where
-// GTK reports 1) render sharp instead of being upscaled by the compositor.
+// geometry function - is what makes a fractional desktop scale render sharp
+// instead of being upscaled by the compositor.
 static inline int px(int designPx) { return (int)(designPx * ui_scale() + 0.5); }
 
 int designPx(int d) { return px(d); }
@@ -198,7 +198,7 @@ bool clipPageRect(int page, int* x0, int* y0, int* x1, int* y1) {
 
 void clampScroll() {
     if (!gPrefixPt || !gDocPages) { gScrollX = gScrollY = 0; return; }
-    int maxX = docWpx() + 2 * MARGIN - gClientW;
+    int maxX = docWpx() + px(2 * MARGIN) - gClientW;
     int maxY = docHpx() - docViewH();
     if (maxX < 0) maxX = 0;
     if (maxY < 0) maxY = 0;
@@ -359,9 +359,9 @@ void zoomAt(double factor, int cx, int cy) {
     if (nz == gZoom) return;
     gRestoredPage = false;
     gFitWidth = false;
-    double oldH = docHpx(), oldW = docWpx() + 2 * MARGIN;
+    double oldH = docHpx(), oldW = docWpx() + px(2 * MARGIN);
     gZoom = nz;
-    double newH = docHpx(), newW = docWpx() + 2 * MARGIN;
+    double newH = docHpx(), newW = docWpx() + px(2 * MARGIN);
     gScrollX = (int)((gScrollX + cx) * newW / oldW) - cx;
     gScrollY = (int)((gScrollY + cy - tabStripH()) * newH / oldH) - cy + tabStripH();
     clampScroll();

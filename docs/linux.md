@@ -470,15 +470,19 @@ The frame is a device-pixel buffer: the drawing area's allocation is logical, so
 `onAreaSize` multiplies it by `ui_scale()` and every geometry function in
 `doc.cpp` works in device pixels (`px()`/`designPx()` for the layout constants,
 `pagePtToPx`/`pagePxToPt` for page coordinates). GTK3 only reports an integer
-scale factor, so a fractional desktop scale is invisible to it: on this machine
-KDE runs the panel at 1.6 and `gtk_widget_get_scale_factor()` returns 1 while the
-frame is 2880x1800 over 477x297 mm = 153.9 dpi. `detectUiScale()` therefore
-prefers the screen's physical DPI (the X11 millimetre size, which XWayland
-reports correctly) and falls back to the toolkit's integer factor;
-`MNPDF_SCALE=<factor>` overrides it when a setup publishes no usable DPI. The
-compositor then receives a native-resolution frame instead of stretching a 1x
-one - the "low resolution" report. `ui_paint` sets the surface's device scale so
-the device-pixel buffer maps onto the widget's logical coordinates.
+scale factor, and the default desktop launch is a native Wayland client: KDE
+publishes wl_output scale 2 for its 1.6 desktop (measured with wayland-info), so
+the toolkit's own factor already renders the frame sharp - the compositor
+downsamples the 2x buffer onto the 1.6x panel. A backend without a usable factor
+falls back to the X screen's published DPI: XWayland's millimetre size works out
+to exactly 96 dpi whatever the desktop scale is (measured: 2880 px over 762 mm),
+so it is only trusted when it is not that default, and the desktop's Xft.dpi -
+153 here, 1.6 x 96 - carries the fraction. `MNPDF_SCALE=<factor>` overrides every
+source when a setup publishes nothing usable. The compositor then receives a
+native-resolution frame instead of stretching a 1x one - the "low resolution"
+report. `ui_paint` sets the surface's device scale so the device-pixel buffer
+maps onto the widget's logical coordinates, and the scale is re-derived when the
+window moves to an output with a different one (`notify::scale-factor`).
 
 Pointer coordinates arrive in logical pixels and are converted once, at each
 handler (`devX`/`devY`), so the hit-test code stays in one space.
