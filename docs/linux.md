@@ -214,7 +214,12 @@ menu ids, so the two readers can be driven the same way.
 **Advanced.** Windows keeps everything past plain reading in an "Advanced"
 cascade (src/main.cpp:5449). The port has the same cascade in the menu bar and
 in the right-click menu: Thumbnails, Outline panel, Night mode, Merge PDFs,
-Split pages, Insert signature, Clear signatures, Reopen last document.
+Split pages, Insert signature, Clear signatures, Reopen last document. The
+menu bar's cascade also carries the titlebar toggle (113) beside Night mode;
+the right-click menu keeps that command by Maximize instead, rebuilt per open.
+The bar is built once, so the toggle's own handler re-words its entry through
+`refreshMenuLabels` - without that a captionless reader kept offering "Hide
+titlebar", which reads as the toggle doing nothing.
 
 **The titlebar.** Windows clears `WS_CAPTION` and then re-implements
 `WM_NCCALCSIZE` and `WM_NCHITTEST` (src/main.cpp:5825, 6014), because
