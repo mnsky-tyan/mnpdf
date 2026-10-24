@@ -464,6 +464,21 @@ about the update check sets it so its runs stay off the network. It skips only
 the launch check - a suite that clicks "Check for updates" gets the real
 answer, because a click is the reader asking.
 
+## Desktop integration
+
+An unpacked tarball is runnable but invisible: nothing in an application menu
+lists it, and pinning its window to a taskbar leaves an icon that cannot
+re-launch it (measured on KDE: the menu search found nothing, and the pinned
+entry went blank once the window closed - a pinned window resolves through a
+desktop file, and there was none). `scripts/install-menu-entry.sh`, which ships
+in the archive, fixes that in one command: it writes
+`~/.local/share/applications/mnpdf.desktop` pointing at the copy it sits beside,
+converts the Windows icon (`mnpdf.ico`, PIL if present) into themed PNGs, and
+refreshes the desktop's caches. The entry carries
+`StartupWMClass=Mnpdf` - the class the port's windows report (measured with
+`xwininfo`: `("mnpdf" "Mnpdf")`) - so the taskbar groups the running window with
+the pinned launcher instead of leaving it dead.
+
 ## Releasing
 
 A release is one GitHub release carrying both platform assets. The Windows

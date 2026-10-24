@@ -59,6 +59,12 @@ cp build-linux/mnpdf "$stage/mnpdf"
 # asset's version is its tag-named directory; the Windows ZIP keeps README.txt
 # as its version contract.
 [ -e README-linux.txt ] && cp README-linux.txt "$stage/README-linux.txt"
+# the menu-entry installer and the Windows icon it converts: without them the
+# unpacked reader cannot be found by name in a desktop's application menu, and
+# pinning its window leaves a dead taskbar icon (measured: KDE search finds
+# nothing, the pin cannot re-launch it)
+[ -e scripts/install-menu-entry.sh ] && cp scripts/install-menu-entry.sh "$stage/install-menu-entry.sh" && chmod +x "$stage/install-menu-entry.sh"
+[ -e mnpdf.ico ] && cp mnpdf.ico "$stage/mnpdf.ico"
 
 out=build-linux/mnpdf-linux-x64-$tag.tar.gz
 # The archive carries the tag directory, the way the published asset unpacks

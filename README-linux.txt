@@ -5,6 +5,19 @@ PDFium shared library it links against, and the licences. No installation, no
 root, and no system packages beyond GTK3 and libcurl, which every desktop
 already has.
 
+ADD IT TO THE MENU (recommended)
+A reader you cannot find in the application menu is a reader you will not use.
+Run once, from this directory:
+
+    ./install-menu-entry.sh
+
+It writes a desktop entry pointing at this copy (wherever you unpacked it) plus
+the icon, into ~/.local/share - no root. After that, searching the menu for
+"mnpdf" finds it, right-clicking a PDF offers it under Open With, and pinning it
+to the taskbar works: the pinned icon re-launches the reader instead of going
+blank. `./install-menu-entry.sh --remove` undoes it. If you move this directory,
+run the installer again so the entry points at the new place.
+
 WHAT IT DOES
 A small native PDF reader: continuous scrolling, text selection and copy,
 search with Ctrl+F and F3, zoom with Ctrl+wheel or +/- and Ctrl+0 to fit the
