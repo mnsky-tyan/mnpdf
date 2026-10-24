@@ -2017,8 +2017,8 @@ static gboolean onThumbScrollEv(GtkWidget*, GdkEventScroll* ev, gpointer) {
         if (dy) gThumbSmoothAcc -= dy;
     }
     if (!dy) return TRUE;
-    // the same positive-is-forward convention the document itself uses; see the
-    // scroll probe note in docs/linux.md
+    // the same positive-is-forward convention the document itself uses; onScroll
+    // records the measurement behind it
     gThumbScroll += dy * 60;
     int maxScroll = thumbListHeight() - thumbAreaHeight();
     if (maxScroll < 0) maxScroll = 0;
