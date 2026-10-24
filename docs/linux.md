@@ -474,28 +474,38 @@ only a Linux archive would tell every installed Windows copy that a newer
 version exists and then fail to download it. Both assets therefore have to be
 attached to the same release.
 
-Cutting one:
+Cutting one: push a matching tag and let the release workflow build and
+publish both platforms from it (`.github/workflows/release.yml`). The tag,
+`kAppVersion` in `src/main.cpp` and the first line of `README.txt` must agree -
+the workflow's contract job enforces exactly that before either build runs,
+because the updater downloads `mnpdf-win-x64-<tag>.zip` by name and a release
+whose version nobody built is worse than no release.
 
 ```sh
-# the tag, kAppVersion and README.txt must agree, so bump both: kAppVersion
-# in src/main.cpp and the first line of README.txt
+# bump both version lines (kAppVersion in src/main.cpp, README.txt), commit
+git commit -am "release: v2.8.1" && git push origin main
+git tag v2.8.1 && git push origin v2.8.1
+# the workflow builds Windows (build.bat + the nine suites) and Linux
+# (build-linux.sh + the gate) on their own runners, asserts both assets
+# exist, and creates the release with both of them - nothing to run by hand
+```
+
+Building the assets by hand still works the same way, and a Linux-only
+release (no Windows zip yet) must stay a prerelease: `/releases/latest` skips
+prereleases, so it keeps naming the newest release a Windows reader can
+actually fetch.
+
+```sh
 ./build.bat                                     # -> build\mnpdf.exe
-powershell -File scripts/make-release-zip.ps1   # -> build\mnpdf-win-x64-v2.7.0.zip
+powershell -File scripts/make-release-zip.ps1   # -> build\mnpdf-win-x64-<tag>.zip
 ./build-linux.sh
-./scripts/make-release-tarball.sh               # -> build-linux/mnpdf-linux-x64-v2.7.0.tar.gz
-git commit -am "release: v2.7.0" && git push origin main
-git tag v2.7.0 && git push origin v2.7.0
-# the tag alone publishes nothing: one GitHub release carries BOTH assets,
-# because the Windows app discovers updates through /releases/latest and
-# then fetches its zip by name (src/main.cpp:2572)
-gh release create v2.7.0 --title "mnpdf v2.7.0" \
-    build/mnpdf-win-x64-v2.7.0.zip build-linux/mnpdf-linux-x64-v2.7.0.tar.gz
-# a Linux-only release (no Windows zip yet) must stay a prerelease:
-# /releases/latest skips prereleases, so it keeps naming the newest release
-# a Windows reader can actually fetch - publish with --prerelease, then when
-# the Windows zip ships, upload it and clear the flag:
-#   gh release upload v2.7.0 build/mnpdf-win-x64-v2.7.0.zip
-#   gh release edit v2.7.0 --prerelease=false
+./scripts/make-release-tarball.sh               # -> build-linux/mnpdf-linux-x64-<tag>.tar.gz
+# hand-publish only when the workflow cannot run; a Linux-only hand release:
+gh release create v2.8.1 --prerelease --title "mnpdf v2.8.1" \
+    build-linux/mnpdf-linux-x64-v2.8.1.tar.gz
+# then when the Windows zip ships, upload it and clear the flag:
+#   gh release upload v2.8.1 build/mnpdf-win-x64-v2.8.1.zip
+#   gh release edit v2.8.1 --prerelease=false
 ```
 
 The Linux asset is a plain tarball, and `scripts/make-release-tarball.sh`

@@ -1,0 +1,171 @@
+name: release
+
+# One release, both platforms, built from the tag.
+#
+# Why the Windows asset is not optional: the Windows app finds updates through
+# GitHub's /releases/latest, then downloads
+#   releases/download/<tag>/mnpdf-win-x64-<tag>.zip
+# by name (src/main.cpp:2572). So a release that carried only a Linux archive
+# would tell every Windows copy that a newer version exists and then fail to
+# fetch it. Every release therefore publishes the Windows ZIP as well, and the
+# version contract is checked against README.txt before anything is uploaded.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  # The version contract comes first and gates both builds: the tag, the app's
+  # kAppVersion and README.txt must agree, or a release is published whose
+  # updater asks for a ZIP whose name nobody built.
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      tag: ${{ steps.check.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: The tag, kAppVersion and README.txt must agree
+        id: check
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          # the same two expressions scripts/make-release-zip.ps1 uses, so the
+          # workflow and the local script cannot disagree about the contract
+          app=$(grep -oP 'kAppVersion\s*=\s*L"\K[0-9]+\.[0-9]+\.[0-9]+' src/main.cpp | head -1)
+          readme=$(grep -oP 'mnpdf v\K[0-9]+\.[0-9]+\.[0-9]+' README.txt | head -1)
+          echo "tag=$tag app=$app readme=$readme"
+          if [ -z "$app" ] || [ -z "$readme" ]; then
+            echo "::error::could not read the version from src/main.cpp or README.txt"; exit 1
+          fi
+          if [ "v$app" != "$tag" ]; then
+            echo "::error::the tag ($tag) does not match kAppVersion ($app) in src/main.cpp"; exit 1
+          fi
+          if [ "$readme" != "$app" ]; then
+            echo "::error::README.txt says $readme but the app says $app"; exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  windows:
+    needs: contract
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      # build.bat is the same recipe the user runs, and it fails loudly on a
+      # missing toolchain, a failed compile or a pdfium.dll that never landed.
+      - name: Build (build.bat)
+        shell: cmd
+        run: build.bat
+
+      # The suites drive the real binary, so a release is only cut from a tree
+      # whose behaviour is still tested. Same nine suites as ci.yml.
+      - name: Run the nine suites
+        shell: cmd
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test-ci.ps1
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+
+      - name: Package the Windows ZIP
+        shell: pwsh
+        run: ./scripts/make-release-zip.ps1 -OutDir build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-zip
+          path: build/mnpdf-win-x64-*.zip
+          if-no-files-found: error
+
+  linux:
+    needs: contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      # GTK3 is the only build dependency the port adds; PDFium is vendored
+      # under third_party/pdfium-linux and linked with an $ORIGIN rpath, so the
+      # archive needs no LD_LIBRARY_PATH and no system PDFium.
+      - name: Install GTK3
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libgtk-3-dev
+
+      # build-linux.sh runs the PDFium probe and the engine suite first, so a
+      # release cannot be cut from a tree whose engine regressed.
+      - name: Build and test
+        run: ./build-linux.sh
+
+      # The gate drives the real binary on a virtual display and asserts on the
+      # pixels it paints and the state files it writes - the Linux counterpart
+      # of the PowerShell suites above.
+      - name: Run the Linux gate
+        run: |
+          sudo apt-get install -y --no-install-recommends xvfb x11-apps python3-pil
+          ./scripts/linux-gate.sh
+
+      # The repo's own packager, so the workflow and a local release produce the
+      # same archive: the binary, libpdfium.so, README-linux.txt and the
+      # licences, named the way the update check looks for.
+      - name: Package the Linux tarball
+        run: ./scripts/make-release-tarball.sh "${GITHUB_REF_NAME}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-tar
+          path: build-linux/mnpdf-linux-x64-*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    needs: [contract, windows, linux]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-zip
+          path: dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-tar
+          path: dist
+
+      # Both assets are asserted before the release is created: an upload that
+      # silently carried one file would leave the Windows updater pointing at a
+      # ZIP that does not exist, which is worse than no release at all.
+      - name: Assert both platform assets are present
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ needs.contract.outputs.tag }}"
+          win="dist/mnpdf-win-x64-${tag}.zip"
+          lin="dist/mnpdf-linux-x64-${tag}.tar.gz"
+          for f in "$win" "$lin"; do
+            [ -s "$f" ] || { echo "::error::missing release asset: $f"; exit 1; }
+            echo "asset: $f ($(stat -c%s "$f") bytes)"
+          done
+
+      - name: Create the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${{ needs.contract.outputs.tag }}"
+          gh release create "$tag" \
+            --title "mnpdf ${tag}" \
+            --generate-notes \
+            dist/mnpdf-win-x64-${tag}.zip \
+            dist/mnpdf-linux-x64-${tag}.tar.gz

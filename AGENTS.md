@@ -60,6 +60,8 @@ build-linux.sh           the Linux build recipe (cmake, plus the PDFium probe
                          and the engine suite first)
 CMakeLists.txt           the Linux build, including the mnpdf-core-test target
 .github/workflows/ci.yml the Windows CI (test-ci.ps1 on a Windows runner)
+.github/workflows/release.yml the release pipeline: both platforms built from
+                         a v* tag, both assets asserted, then published
 docs/linux.md            the Linux port: decisions, format contract, tests,
                          measured resource cost
 docs/reviews/            codebase review reports (dated per pass)
