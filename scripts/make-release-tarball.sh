@@ -59,15 +59,22 @@ cp build-linux/mnpdf "$stage/mnpdf"
 # asset's version is its tag-named directory; the Windows ZIP keeps README.txt
 # as its version contract.
 [ -e README-linux.txt ] && cp README-linux.txt "$stage/README-linux.txt"
-# the menu-entry installer and the Windows icon it converts: without them the
-# unpacked reader cannot be found by name in a desktop's application menu, and
-# pinning its window leaves a dead taskbar icon (measured: KDE search finds
-# nothing, the pin cannot re-launch it)
-[ -e scripts/install-menu-entry.sh ] && cp scripts/install-menu-entry.sh "$stage/install-menu-entry.sh" && chmod +x "$stage/install-menu-entry.sh"
-[ -e mnpdf.ico ] && cp mnpdf.ico "$stage/mnpdf.ico"
-# the Linux window/launcher artwork: same source as mnpdf.ico, used directly
-# by the reader (gtk_window_set_icon_from_file) and by install-menu-entry.sh
-[ -e mnpdf.png ] && cp mnpdf.png "$stage/mnpdf.png"
+# The menu-entry installer: without it the unpacked reader cannot be found by
+# name in a desktop's application menu, and pinning its window leaves a dead
+# taskbar icon (measured: KDE search finds nothing, the pin cannot re-launch it).
+# Each staged file is required - a missing source is a broken release, so this
+# refuses rather than silently shipping without it (the [ -e ] && cp form under
+# `set -e` used to skip a missing source without a word).
+[ -e scripts/install-menu-entry.sh ] || { echo "tarball: scripts/install-menu-entry.sh is missing" >&2; exit 1; }
+cp scripts/install-menu-entry.sh "$stage/install-menu-entry.sh"
+chmod +x "$stage/install-menu-entry.sh"
+# The Linux window/launcher artwork. It is the SAME source as the Windows
+# mnpdf.ico, but it is not that file: the installer resizes this PNG into the
+# themed sizes and the reader loads it by its own path. The .ico is a Windows
+# resource (mnpdf.rc -> build.bat) and is not staged here - carrying it would
+# ship 33 KB the Linux tarball never reads.
+[ -e mnpdf.png ] || { echo "tarball: mnpdf.png is missing" >&2; exit 1; }
+cp mnpdf.png "$stage/mnpdf.png"
 
 out=build-linux/mnpdf-linux-x64-$tag.tar.gz
 # The archive carries the tag directory, the way the published asset unpacks

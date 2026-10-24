@@ -519,7 +519,9 @@ entry went blank once the window closed - a pinned window resolves through a
 desktop file, and there was none). `scripts/install-menu-entry.sh`, which ships
 in the archive, fixes that in one command: it writes
 `~/.local/share/applications/mnpdf.desktop` pointing at the copy it sits beside,
-converts the Windows icon (`mnpdf.ico`, PIL if present) into themed PNGs, and
+resizes the shipped `mnpdf.png` (the same artwork as the Windows `mnpdf.ico`,
+which stays a Windows-only resource) into the themed PNG sizes (Pillow when
+present, otherwise the PNG itself as 48/256), and
 refreshes the desktop's caches. The entry carries
 `StartupWMClass=Mnpdf` - the class the port's windows report (measured with
 `xwininfo`: `("mnpdf" "Mnpdf")`) - so the taskbar groups the running window with
@@ -537,18 +539,22 @@ attached to the same release.
 
 Cutting one: push a matching tag and let the release workflow build and
 publish both platforms from it (`.github/workflows/release.yml`). The tag,
-`kAppVersion` in `src/main.cpp` and the first line of `README.txt` must agree -
-the workflow's contract job enforces exactly that before either build runs,
-because the updater downloads `mnpdf-win-x64-<tag>.zip` by name and a release
-whose version nobody built is worse than no release.
+`kAppVersion` in `src/main.cpp` and the version line in `README.txt` must agree
+- the workflow's contract job enforces exactly that before either build runs
+(both greps are anchored to the end of the version, so a `2.9.0-rc1` line
+cannot satisfy a `v2.9.0` tag), because the updater downloads
+`mnpdf-win-x64-<tag>.zip` by name and a release whose version nobody built is
+worse than no release. Replace `X.Y.Z` below; the placeholders are literal.
 
 ```sh
 # bump both version lines (kAppVersion in src/main.cpp, README.txt), commit
-git commit -am "release: v2.8.1" && git push origin main
-git tag v2.8.1 && git push origin v2.8.1
+git commit -am "release: vX.Y.Z" && git push origin main
+git tag vX.Y.Z && git push origin vX.Y.Z
 # the workflow builds Windows (build.bat + the nine suites) and Linux
 # (build-linux.sh + the gate) on their own runners, asserts both assets
-# exist, and creates the release with both of them - nothing to run by hand
+# exist and are intact, and creates the release with both of them - nothing to
+# run by hand. If a run fails, the workflow can also be started by hand for the
+# same tag (workflow_dispatch, tag input), so the tag never has to be deleted.
 ```
 
 Building the assets by hand still works the same way, and a Linux-only

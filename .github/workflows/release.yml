@@ -12,6 +12,13 @@ name: release
 on:
   push:
     tags: ['v*']
+  # A failed release run must be restartable for the SAME tag: v2.8.0 needed
+  # three pushes to go green, and the only recovery was deleting the tag.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to (re)publish, e.g. v2.9.0'
+        required: true
 
 permissions:
   contents: write
@@ -37,10 +44,25 @@ jobs:
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
-          # the same two expressions scripts/make-release-zip.ps1 uses, so the
-          # workflow and the local script cannot disagree about the contract
-          app=$(grep -oP 'kAppVersion\s*=\s*L"\K[0-9]+\.[0-9]+\.[0-9]+' src/main.cpp | head -1)
-          readme=$(grep -oP 'mnpdf v\K[0-9]+\.[0-9]+\.[0-9]+' README.txt | head -1)
+          # A manual run names the tag directly, so a re-run for a tag that
+          # already has a release targets that tag and not the default branch
+          if [ "${GITHUB_EVENT_NAME:-}" = "workflow_dispatch" ]; then
+            tag="${{ inputs.tag }}"
+          fi
+          # Both greps require the version to END at the same place the tag
+          # ends, so a partial match cannot pass the contract: kAppVersion =
+          # L"2.9.0-rc1" must not satisfy a v2.9.0 tag, and README.txt saying
+          # "mnpdf v2.9.0-rc1" must not either. (The real README header reads
+          # "mnpdf v2.9.0 - Windows x64 portable release", so the README leg
+          # allows end-of-line or whitespace after the version.) scripts/make-release-zip.ps1 anchors
+          # its own kAppVersion regex the same way (a closing quote) but leaves
+          # its README check file-wide, so this job is STRICTER than the local
+          # script on that leg, not a copy of it. head -1 is kept for
+          # determinism; the assignment's exit status is discarded so the -z
+          # guard below - with its ::error:: annotation - is what reports a
+          # missing version, instead of the shell dying with a bare exit 1.
+          app=$(grep -oP 'kAppVersion\s*=\s*L"\K[0-9]+\.[0-9]+\.[0-9]+(?=")' src/main.cpp | head -1 || true)
+          readme=$(grep -oP 'mnpdf v\K[0-9]+\.[0-9]+\.[0-9]+(?=$|[ \t])' README.txt | head -1 || true)
           echo "tag=$tag app=$app readme=$readme"
           if [ -z "$app" ] || [ -z "$readme" ]; then
             echo "::error::could not read the version from src/main.cpp or README.txt"; exit 1
@@ -159,6 +181,11 @@ jobs:
             [ -s "$f" ] || { echo "::error::missing release asset: $f"; exit 1; }
             echo "asset: $f ($(stat -c%s "$f") bytes)"
           done
+          # Non-empty is not intact: a truncated archive would publish and then
+          # fail on the user's machine. Listing it costs nothing next to
+          # building it.
+          unzip -tq "$win" || { echo "::error::the Windows zip is corrupt: $win"; exit 1; }
+          tar tzf "$lin" >/dev/null || { echo "::error::the Linux tarball is corrupt: $lin"; exit 1; }
 
       - name: Create the release
         shell: bash
@@ -167,7 +194,10 @@ jobs:
         run: |
           set -euo pipefail
           tag="${{ needs.contract.outputs.tag }}"
-          gh release create "$tag" \
+          # --verify-tag: without it gh silently creates a tag from the default
+          # branch's HEAD when the named tag does not exist, which would publish
+          # the wrong commit. This workflow is only ever entered with a real tag.
+          gh release create --verify-tag "$tag" \
             --title "mnpdf ${tag}" \
             --generate-notes \
             dist/mnpdf-win-x64-${tag}.zip \

@@ -919,6 +919,102 @@ chk $? "Save As is greyed out on a clean document"
 grep -qE ": 137$" "$C/menu.txt"
 chk $? "Print stays live on a clean document with a document open"
 
+
+echo
+echo "== the release plumbing this branch is trusted for =="
+# These checks exist because six release/packaging commits once reached main
+# without the pipeline's reviewer, and a fresh review found a partial-match
+# version check, an installer that installed no icons, and a gate that reported
+# ok when a tool was missing. Each is locked here so the regression cannot come
+# back silently.
+
+REPO=$(cd "$(dirname "$0")/.." && pwd)
+
+# 1. The contract job's greps are anchored: a partial version must not pass.
+#    kAppVersion = L"2.9.0-rc1" against tag v2.9.0 must FAIL the contract.
+CONTRACT=$STATE/contract; mkdir -p "$CONTRACT"
+sed 's/L"2\.9\.0"/L"2.9.0-rc1"/' "$REPO/src/main.cpp" > "$CONTRACT/main.cpp"
+app=$(grep -oP 'kAppVersion\s*=\s*L"\K[0-9]+\.[0-9]+\.[0-9]+(?=")' "$CONTRACT/main.cpp" | head -1 || true)
+if [ "$app" = "" ]; then
+    ok "the contract's kAppVersion grep rejects a partial version (2.9.0-rc1)"
+else
+    bad "the contract's kAppVersion grep matched '$app' from L\"2.9.0-rc1\" - it is not anchored"
+fi
+printf 'mnpdf v2.9.0-rc1\n' > "$CONTRACT/README.txt"
+readme=$(grep -oP 'mnpdf v\K[0-9]+\.[0-9]+\.[0-9]+(?=$|[ \t])' "$CONTRACT/README.txt" | head -1 || true)
+if [ "$readme" = "" ]; then
+    ok "the contract's README grep rejects a partial version (v2.9.0-rc1)"
+else
+    bad "the contract's README grep matched '$readme' from v2.9.0-rc1 - it is not anchored"
+fi
+# ...and the real files still satisfy the contract
+app=$(grep -oP 'kAppVersion\s*=\s*L"\K[0-9]+\.[0-9]+\.[0-9]+(?=")' "$REPO/src/main.cpp" | head -1 || true)
+readme=$(grep -oP 'mnpdf v\K[0-9]+\.[0-9]+\.[0-9]+(?=$|[ \t])' "$REPO/README.txt" | head -1 || true)
+[ -n "$app" ] && [ "$app" = "$readme" ]
+chk $? "the real src/main.cpp and README.txt agree on the version ($app)"
+
+# 2. The installer installs icons even with python3 present and no Pillow.
+#    The broken version tested for python3 and then wrote nothing.
+INS=$STATE/installer; mkdir -p "$INS/app"
+cp "$BIN" "$INS/app/mnpdf" 2>/dev/null || cp "$REPO/build-linux/mnpdf" "$INS/app/mnpdf"
+cp "$REPO/mnpdf.png" "$INS/app/mnpdf.png"
+cp "$REPO/scripts/install-menu-entry.sh" "$INS/app/install-menu-entry.sh"
+chmod +x "$INS/app/install-menu-entry.sh"
+# XDG_DATA_HOME alone redirects the installer (it reads
+# ${XDG_DATA_HOME:-$HOME/.local/share} for both the entry and the icons), so the
+# script runs UNMODIFIED from a directory that looks like an unpacked tarball.
+#
+# The no-Pillow case is REAL, not hoped for: a python3 shim first on PATH makes
+# `from PIL import Image` fail, exactly as on a stock desktop. Without the shim
+# this machine's own Pillow takes the good path and the check proves nothing -
+# that is how the broken installer's check once "passed".
+NOPIL=$STATE/noPIL; mkdir -p "$NOPIL/bin"
+printf 'raise ImportError("gate: simulating a python3 without Pillow")\n' > "$NOPIL/PIL.py"
+printf '#!/bin/sh\nexec env PYTHONPATH=%s /usr/bin/python3 "$@"\n' "$NOPIL" > "$NOPIL/bin/python3"
+chmod +x "$NOPIL/bin/python3"
+PATH="$NOPIL/bin:$PATH" sh -c 'from PIL import Image' >/dev/null 2>&1
+if [ $? -eq 0 ]; then
+    echo "gate: could not build a python3-without-Pillow shim" >&2; exit 1
+fi
+( cd "$INS/app" && XDG_DATA_HOME="$INS/share" PATH="$NOPIL/bin:$PATH" timeout 60 ./install-menu-entry.sh ) >"$INS/log.txt" 2>&1
+# The bug this locks: the resize step used to exit 0 when Pillow was missing
+# having written nothing, and the elif fallback (keyed on python3 being absent)
+# then never ran - no icon, no warning, exit 0.
+if [ -e "$INS/share/icons/hicolor/256x256/apps/mnpdf.png" ]; then
+    ok "install-menu-entry.sh installs the themed icon with python3 present but no Pillow"
+else
+    bad "install-menu-entry.sh installed no icon (python3 without Pillow)"
+    sed 's/^/       installer: /' "$INS/log.txt" >&2 || true
+fi
+
+# 3. The menu entry quotes the app path, so a directory with a space works
+ENTRY="$INS/share/applications/mnpdf.desktop"
+grep -q '^Exec="' "$ENTRY" 2>/dev/null
+chk $? "the installed menu entry quotes its Exec path"
+desktop-file-validate "$ENTRY" >/dev/null 2>&1
+chk $? "the installed menu entry passes desktop-file-validate"
+
+# 4. --remove takes back everything it wrote, and says so when there is nothing
+( cd "$INS/app" && XDG_DATA_HOME="$INS/share" timeout 60 ./install-menu-entry.sh --remove ) >"$INS/rm.txt" 2>&1
+if [ ! -e "$ENTRY" ] && [ ! -e "$INS/share/icons/hicolor/256x256/apps/mnpdf.png" ]; then
+    ok "install-menu-entry.sh --remove takes back the entry and the icons"
+else
+    bad "install-menu-entry.sh --remove left files behind"
+fi
+OUT=$( cd "$INS/app" && XDG_DATA_HOME="$INS/share" timeout 60 ./install-menu-entry.sh --remove 2>&1 )
+[ "$OUT" = "nothing to remove" ]
+chk $? "install-menu-entry.sh --remove reports an empty tree as empty"
+
+# 5. The packager refuses to ship a tarball without the installer or the icon.
+#    [ -e X ] && cp silently skips a missing source under `set -e`.
+for f in scripts/install-menu-entry.sh mnpdf.png; do
+    grep -q "$f is missing" "$REPO/scripts/make-release-tarball.sh"
+    chk $? "make-release-tarball.sh refuses a missing $f"
+done
+# and the Linux tarball no longer carries the Windows icon it never reads
+! grep -q 'cp mnpdf.ico' "$REPO/scripts/make-release-tarball.sh"
+chk $? "make-release-tarball.sh no longer stages the Windows mnpdf.ico"
+
 echo
 printf 'pass=%d fail=%d\n' "$PASS" "$FAIL"
 rm -rf "$STATE"
