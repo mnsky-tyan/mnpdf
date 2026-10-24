@@ -65,6 +65,9 @@ cp build-linux/mnpdf "$stage/mnpdf"
 # nothing, the pin cannot re-launch it)
 [ -e scripts/install-menu-entry.sh ] && cp scripts/install-menu-entry.sh "$stage/install-menu-entry.sh" && chmod +x "$stage/install-menu-entry.sh"
 [ -e mnpdf.ico ] && cp mnpdf.ico "$stage/mnpdf.ico"
+# the Linux window/launcher artwork: same source as mnpdf.ico, used directly
+# by the reader (gtk_window_set_icon_from_file) and by install-menu-entry.sh
+[ -e mnpdf.png ] && cp mnpdf.png "$stage/mnpdf.png"
 
 out=build-linux/mnpdf-linux-x64-$tag.tar.gz
 # The archive carries the tag directory, the way the published asset unpacks

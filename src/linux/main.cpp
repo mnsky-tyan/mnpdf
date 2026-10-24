@@ -2445,7 +2445,22 @@ int main(int argc, char** argv) {
     gtk_window_set_decorated(GTK_WINDOW(gWin), gTitlebar);
     restoreWindowGeometry();               // size, position and maximize from app.txt
     gtk_window_set_title(GTK_WINDOW(gWin), "mnpdf");
-    gtk_window_set_icon_name(GTK_WINDOW(gWin), "application-pdf");
+    // The window icon comes from the artwork file next to the binary (mnpdf.png,
+    // the same source as the Windows mnpdf.ico), because a theme name would
+    // fall back to a generic PDF glyph on a desktop that has no mnpdf theme
+    // entry installed - the tarball's install-menu-entry.sh installs this same
+    // PNG into hicolor for the launcher and the taskbar, and this call covers
+    // a reader run straight from the unpacked directory.
+    if (g_file_test("mnpdf.png", G_FILE_TEST_EXISTS)) {
+        GError* e = nullptr;
+        if (gtk_window_set_icon_from_file(GTK_WINDOW(gWin), "mnpdf.png", &e)) {
+            if (e) { g_error_free(e); e = nullptr; }
+        } else {
+            if (e) { g_error_free(e); e = nullptr; }
+        }
+    } else {
+        gtk_window_set_icon_name(GTK_WINDOW(gWin), "application-pdf");
+    }
     g_signal_connect(gWin, "destroy", G_CALLBACK(onWindowDestroy), nullptr);
     g_signal_connect(gWin, "delete-event", G_CALLBACK(onWindowDelete), nullptr);
     g_signal_connect(gWin, "configure-event", G_CALLBACK(onWindowConfigure), nullptr);

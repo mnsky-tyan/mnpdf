@@ -29,25 +29,27 @@ fi
 
 mkdir -p "$apps"
 
-# the icon: a PNG per size, converted from the Windows icon the source ships,
-# so the menu and the taskbar show the real logo rather than a generic sheet
-if [ -e "$here/mnpdf.ico" ] && command -v python3 >/dev/null; then
-    python3 - "$here/mnpdf.ico" <<'PY'
+# the icon: a PNG per size, resized from the shipped mnpdf.png (the same
+# source as the Windows mnpdf.ico), so the menu and the taskbar show the real
+# artwork rather than a generic sheet. With no Pillow the shipped PNG still
+# lands as the two sizes the theme requires most.
+base="${XDG_DATA_HOME:-$HOME/.local/share}"
+if [ -e "$here/mnpdf.png" ] && command -v python3 >/dev/null; then
+    python3 - "$here/mnpdf.png" "$base" <<'PY'
 import os, sys
 try:
     from PIL import Image
 except ImportError:
     sys.exit(0)
-ico = Image.open(sys.argv[1]).convert("RGBA")
-base = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+im = Image.open(sys.argv[1]).convert("RGBA")
 for s in (16, 32, 48, 64, 128, 256):
-    d = f"{base}/icons/hicolor/{s}x{s}/apps"
+    d = f"{sys.argv[2]}/icons/hicolor/{s}x{s}/apps"
     os.makedirs(d, exist_ok=True)
-    ico.resize((s, s), Image.LANCZOS).save(f"{d}/mnpdf.png")
+    im.resize((s, s), Image.LANCZOS).save(f"{d}/mnpdf.png")
 PY
 elif [ -e "$here/mnpdf.png" ]; then
     for s in 48 256; do
-        d="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/${s}x${s}/apps"
+        d="$base/icons/hicolor/${s}x${s}/apps"
         mkdir -p "$d" && cp "$here/mnpdf.png" "$d/mnpdf.png"
     done
 fi

@@ -76,6 +76,8 @@ README.md / README.txt   the user README; README.txt is the version contract
 README-linux.txt         the Linux reader's own readme, inside the Linux tarball
 PDFIUM-LICENSE.txt       the PDFium license, shipped in release ZIPs
 mnpdf.ico, mnpdf.rc, resource.h   the Windows icon resource
+mnpdf.png               the Linux window/launcher artwork (512px PNG, the
+                         same mn-brand source as mnpdf.ico)
 third_party/pdfium/        Windows PDFium (headers, import lib, DLL, license)
 third_party/pdfium-linux/  Linux PDFium (headers, libpdfium.so, license)
 ```
