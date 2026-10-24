@@ -143,14 +143,26 @@ std::string wideToUtf8(const std::wstring& s) {
 }
 
 // ---- geometry ----
+// Every measurement below is in DEVICE pixels: the frame is drawn into a buffer
+// sized clientW x clientH device pixels, and the widget that displays it is
+// clientW/ui_scale() x clientH/ui_scale() logical pixels. So one "design pixel"
+// of layout (a margin, a gap, the scroll step) costs ui_scale() device pixels,
+// and the page scale (gZoom) is a zoom factor over the page's own points, not a
+// logical-pixel unit. Keeping this conversion here - one boundary, every
+// geometry function - is what makes a fractional desktop scale (KDE at 1.6, where
+// GTK reports 1) render sharp instead of being upscaled by the compositor.
+static inline int px(int designPx) { return (int)(designPx * ui_scale() + 0.5); }
+
+int designPx(int d) { return px(d); }
+
 double clampZoom(double z) { return z < 0.25 ? 0.25 : (z > 8.0 ? 8.0 : z); }
-int docWpx() { return (int)(gMaxPageW * gZoom); }
+int docWpx() { return (int)(gMaxPageW * gZoom * ui_scale() + 0.5); }
 int rotWpt(int i) { return (gRot[i] & 1) ? (int)(gPageH[i] + 0.5) : (int)(gPageW[i] + 0.5); }
 int rotHpt(int i) { return (gRot[i] & 1) ? (int)(gPageW[i] + 0.5) : (int)(gPageH[i] + 0.5); }
-int pageWpx(int i) { return (int)(rotWpt(i) * gZoom); }
-int pageHpx(int i) { return (int)(rotHpt(i) * gZoom); }
-int yTopPx(int i) { return (int)(gPrefixPt[i] * gZoom) + i * GAP + MARGIN; }
-int docHpx() { return gPrefixPt ? (int)(gPrefixPt[gDocPages] * gZoom) + gDocPages * GAP + 2 * MARGIN : 0; }
+int pageWpx(int i) { return (int)(rotWpt(i) * gZoom * ui_scale() + 0.5); }
+int pageHpx(int i) { return (int)(rotHpt(i) * gZoom * ui_scale() + 0.5); }
+int yTopPx(int i) { return (int)(gPrefixPt[i] * gZoom * ui_scale() + 0.5) + px(i * GAP) + px(MARGIN); }
+int docHpx() { return gPrefixPt ? (int)(gPrefixPt[gDocPages] * gZoom * ui_scale() + 0.5) + px(gDocPages * GAP) + px(2 * MARGIN) : 0; }
 
 int tabStripH() {
     // The Windows app draws its own tab strip inside the client area and the
@@ -160,9 +172,9 @@ int tabStripH() {
     return 0;
 }
 int docViewH() { int h = gClientH - tabStripH(); return h > 0 ? h : 0; }
-int docLeft() { int slack = gClientW - (docWpx() + 2 * MARGIN); return slack > 0 ? slack / 2 : -gScrollX; }
+int docLeft() { int slack = gClientW - (docWpx() + px(2 * MARGIN)); return slack > 0 ? slack / 2 : -gScrollX; }
 int docTop() { int slack = docViewH() - docHpx(); return slack > 0 ? tabStripH() + slack / 2 : tabStripH() - gScrollY; }
-int pageLeftPx(int i) { return MARGIN + (docWpx() - pageWpx(i)) / 2; }
+int pageLeftPx(int i) { return px(MARGIN) + (docWpx() - pageWpx(i)) / 2; }
 int pageVx(int i) { return docLeft() + pageLeftPx(i); }
 int pageVy(int i) { return docTop() + yTopPx(i); }
 
@@ -218,23 +230,25 @@ void allocPageTables(int pages) {
     gRot = new int[gDocPages ? gDocPages : 1];
 }
 
+// page points -> device pixels, and back. gZoom is points-to-design-pixels;
+// ui_scale() is design pixels to device pixels, so the two compose.
 void pagePtToPx(int page, double x, double y, double* ox, double* oy) {
-    double W = gPageW[page], H = gPageH[page];
+    double W = gPageW[page], H = gPageH[page], z = gZoom * ui_scale();
     switch (gRot[page] & 3) {
-    case 0:  *ox = x * gZoom;       *oy = (H - y) * gZoom; break;
-    case 1:  *ox = y * gZoom;       *oy = x * gZoom;       break;
-    case 2:  *ox = (W - x) * gZoom; *oy = y * gZoom;       break;
-    case 3:  *ox = (H - y) * gZoom; *oy = (W - x) * gZoom; break;
+    case 0:  *ox = x * z;       *oy = (H - y) * z; break;
+    case 1:  *ox = y * z;       *oy = x * z;       break;
+    case 2:  *ox = (W - x) * z; *oy = y * z;       break;
+    case 3:  *ox = (H - y) * z; *oy = (W - x) * z; break;
     }
 }
 
 void pagePxToPt(int page, double sx, double sy, double* ox, double* oy) {
-    double W = gPageW[page], H = gPageH[page];
+    double W = gPageW[page], H = gPageH[page], z = gZoom * ui_scale();
     switch (gRot[page] & 3) {
-    case 0:  *ox = sx / gZoom;      *oy = H - sy / gZoom;  break;
-    case 1:  *ox = sy / gZoom;      *oy = sx / gZoom;      break;
-    case 2:  *ox = W - sx / gZoom;  *oy = sy / gZoom;      break;
-    case 3:  *ox = W - sy / gZoom;  *oy = H - sx / gZoom;  break;
+    case 0:  *ox = sx / z;      *oy = H - sy / z;  break;
+    case 1:  *ox = sy / z;      *oy = sx / z;      break;
+    case 2:  *ox = W - sx / z;  *oy = sy / z;      break;
+    case 3:  *ox = W - sy / z;  *oy = H - sx / z;  break;
     }
 }
 
@@ -326,12 +340,15 @@ void ensureActivePage() {
 }
 
 bool applyFitWidth() {
-    int cw = gClientW - 2 * MARGIN;
+    // both sides in device pixels: the client area already is, and the margin
+    // is a design measurement
+    int cw = gClientW - px(2 * MARGIN);
     if (cw <= 0 || gMaxPageW <= 0) return false;
-    double nz = clampZoom(cw / gMaxPageW);
+    // pageWpx = rotWpt * gZoom * ui_scale(), so fit-to-width solves for gZoom
+    double nz = clampZoom(cw / (gMaxPageW * ui_scale()));
     if (nz == gZoom) return false;
     gZoom = nz;
-    if (gRestoredPage) gScrollY = yTopPx(gPageIndex) - MARGIN;
+    if (gRestoredPage) gScrollY = yTopPx(gPageIndex) - px(MARGIN);
     return true;
 }
 

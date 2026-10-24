@@ -13,6 +13,10 @@
 
 #include <gtk/gtk.h>
 #include <gdk/gdkkeysyms.h>
+#if defined(GDK_WINDOWING_X11)
+#include <gdk/gdkx.h>          // physicalDpi(): the X screen's millimetre size
+#include <X11/Xlib.h>
+#endif
 #include <cairo.h>
 #include <atomic>
 #include <cstdio>
@@ -683,31 +687,112 @@ static bool hThumb(int* tx, int* tw) {
     return true;
 }
 
+// ---- device scale ----
+// ui_scale() is "device pixels per design pixel". GTK only ever reports an
+// INTEGER scale factor, so on a fractional desktop scale (KDE at 1.6, measured
+// on this machine: gtk_widget_get_scale_factor() returns 1 while the panel is
+// 2880x1800 at scale 1.6) a reader that trusts it paints a 1x buffer that the
+// compositor upscales - the "low resolution" report. The DPI the desktop
+// publishes carries the fraction (gdk_screen_get_resolution() = 153.6 here, i.e.
+// 1.6 x 96), so use it when it is a plausible desktop scale and fall back to the
+// integer factor otherwise.
+// The physical DPI of the screen, or 0 when the toolkit will not say. On X11
+// (XWayland included) the server's millimetre size is authoritative even when
+// the toolkit rounds the DPI away: measured on this desktop, GDK reports 96
+// while the panel's 2880x1800 over 477x297 mm is 153.9 dpi - the 1.6 desktop
+// scale. That is the only cross-backend source of a fractional scale GTK3
+// exposes, so it is what lets the reader render at native resolution on KDE at
+// a fractional scale instead of being upscaled by the compositor.
+static double physicalDpi(GtkWidget* w) {
+    if (!w) return 0;
+    GdkScreen* scr = gtk_widget_get_screen(w);
+    if (!scr) return 0;
+    GdkDisplay* dpy = gdk_screen_get_display(scr);
+    if (!dpy) return 0;
+    // X11 backend: DisplayWidthMM/DisplayHeightMM carry the panel's real size
+    if (GDK_IS_X11_DISPLAY(dpy)) {
+        Display* xd = GDK_DISPLAY_XDISPLAY(dpy);
+        int px = DisplayWidth(xd, DefaultScreen(xd));
+        int mm = DisplayWidthMM(xd, DefaultScreen(xd));
+        if (mm > 0 && px > 0) {
+            double dpi = px * 25.4 / mm;
+            if (dpi >= 48 && dpi <= 480) return dpi;
+        }
+    }
+    double dpi = gdk_screen_get_resolution(scr);
+    return dpi > 0 ? dpi : 0;
+}
+
+static double detectUiScale(GtkWidget* w) {
+    // An explicit override wins: a fractional desktop scale is not always
+    // discoverable, so MNPDF_SCALE=1.6 is the documented escape.
+    if (const char* env = getenv("MNPDF_SCALE")) {
+        double v = atof(env);
+        if (v >= 1.0 && v <= 4.0) return v;
+    }
+    double best = 0;
+    GdkDisplay* dpy = gdk_display_get_default();
+    // the integer scale factor the toolkit reports: right for a 1x or 2x
+    // desktop, and 1 on a fractional one (GTK3 cannot express 1.6)
+    if (dpy && w) {
+        GdkWindow* gw = gtk_widget_get_window(w);
+        GdkMonitor* mon = gw ? gdk_display_get_monitor_at_window(dpy, gw) : nullptr;
+        if (mon) best = gdk_monitor_get_scale_factor(mon);
+    }
+    if (best <= 0) best = gtk_widget_get_scale_factor(w);
+    if (best <= 0) best = 1.0;
+    double dpi = physicalDpi(w);
+    if (dpi > 0) {
+        double frac = dpi / 96.0;
+        // keep it sane: a bogus 72-dpi X default or a wild value must not resize
+        // the whole UI. 1.0..3.0 covers every real desktop scale.
+        if (frac >= 1.0 && frac <= 3.0 && frac > best) best = frac;
+    }
+    return best;
+}
+
+// ---- input coordinates ----
+// Every handler below compares against geometry in DEVICE pixels, while GTK
+// delivers pointer coordinates in logical widget pixels. Converting once, at the
+// point the event is handled, keeps the hit-test code in one coordinate space.
+static inline int devX(double x) { return (int)(x * ui_scale() + 0.5); }
+static inline int devY(double y) { return (int)(y * ui_scale() + 0.5); }
+
 // ---- drawing area ----
 static void onDraw(GtkWidget* w, cairo_t* cr, gpointer) {
     ui_paint(cr);
     (void)w;
-    // scrollbars painted over the frame
+    // Scrollbars painted over the frame. The back buffer is device pixels, but
+    // this context draws in the widget's logical coordinates, so scale by the
+    // same factor the buffer uses - otherwise the bars come out 1.6x too thick
+    // and offset at a fractional desktop scale.
+    double s = ui_scale() > 0 ? ui_scale() : 1.0;
+    const int sb = (int)(kSbThick * s + 0.5);
+    const int cw = (int)(gClientW / s + 0.5), ch = (int)(gClientH / s + 0.5);
     cairo_set_source_rgb(cr, 0.14, 0.14, 0.15);
-    cairo_rectangle(cr, gClientW - kSbThick, 0, kSbThick, gClientH);
-    cairo_rectangle(cr, 0, gClientH - kSbThick, gClientW, kSbThick);
+    cairo_rectangle(cr, cw - kSbThick, 0, kSbThick, ch);
+    cairo_rectangle(cr, 0, ch - kSbThick, cw, kSbThick);
     cairo_fill(cr);
     int ty, th, tx, tw;
     if (vThumb(&ty, &th)) {
         cairo_set_source_rgb(cr, 0.42, 0.42, 0.45);
-        cairo_rectangle(cr, gClientW - kSbThick + 2, ty, kSbThick - 4, th);
+        cairo_rectangle(cr, cw - kSbThick + 2, ty / s, kSbThick - 4, th / s);
         cairo_fill(cr);
     }
     if (hThumb(&tx, &tw)) {
         cairo_set_source_rgb(cr, 0.42, 0.42, 0.45);
-        cairo_rectangle(cr, tx, gClientH - kSbThick + 2, tw, kSbThick - 4);
+        cairo_rectangle(cr, tx / s, ch - kSbThick + 2, tw / s, kSbThick - 4);
         cairo_fill(cr);
     }
+    (void)sb;
 }
 
 static void onAreaSize(GtkWidget* w, GtkAllocation* a, gpointer) {
-    gClientW = a->width;
-    gClientH = a->height;
+    // the allocation is logical; the frame is device pixels, so the buffer and
+    // every geometry function work in the device space
+    double s = ui_scale() > 0 ? ui_scale() : 1.0;
+    gClientW = (int)(a->width * s + 0.5);
+    gClientH = (int)(a->height * s + 0.5);
     if (gFitWidth) applyFitWidth();
     clampScroll();
     ensureActivePage();
@@ -902,7 +987,7 @@ static void onMenuActivate(GtkMenuItem* mi, gpointer data) {
         writeAppPref();
         refreshMenuLabels();
     } break;
-    case 113: toggleTitlebar(); break;
+    case 113: toggleTitlebar(); refreshMenuLabels(); break;
     case 135: {   // highlight the current selection with the default colour
         applyHighlightFromSelection(gHlDefault);
         break;
@@ -1154,8 +1239,12 @@ static GtkWidget* buildContextMenu(int x, int y) {
     return menu;
 }
 
+// the popup currently on screen, if any: a scroll or a re-render must not
+// dismiss it (the "menu collapses itself" report), and a suite asserts that.
+static GtkWidget* gOpenMenu = nullptr;
+
 static void onContextMenu(GtkWidget* w, GdkEventButton* ev) {
-    int x = (int)ev->x, y = (int)ev->y;
+    int x = devX(ev->x), y = devY(ev->y);
     int pg;
     int ci = charIndexAtDoc(x, y, &pg);
     gMenuHlIdx = hlAt(pg, ci);
@@ -1189,7 +1278,9 @@ static void onContextMenu(GtkWidget* w, GdkEventButton* ev) {
     // without this, flat after it). selection-done is the canonical teardown for
     // a never-attached popup - it fires on the item's activation AND on Escape,
     // a click outside, or a popdown, always after the item handler ran.
+    gOpenMenu = menu;
     g_signal_connect(menu, "selection-done", G_CALLBACK(+[](GtkMenuShell* shell, gpointer) {
+        if (gOpenMenu == GTK_WIDGET(shell)) gOpenMenu = nullptr;
         gMenuRotPage = -1;
         gtk_widget_destroy(GTK_WIDGET(shell));
         g_object_unref(shell);
@@ -1284,28 +1375,29 @@ static void onButtonPress(GtkWidget* w, GdkEventButton* ev, gpointer) {
     gtk_widget_grab_focus(w);
     if (ev->button == GDK_BUTTON_SECONDARY) { onContextMenu(w, ev); return; }
     if (ev->button != GDK_BUTTON_PRIMARY) return;
+    const int ex = devX(ev->x), ey = devY(ev->y);
 
     // scrollbars first
     int vx, vy, vw, vh, hx, hy, hw, hh;
     sbRects(&vx, &vy, &vw, &vh, &hx, &hy, &hw, &hh);
     int ty, th, tx, tw;
-    if (ev->x >= vx && vThumb(&ty, &th)) {
-        if (ev->y >= ty && ev->y < ty + th) { gSbDragging = true; gSbWhich = 1; gSbGrab = (int)ev->y - ty; }
+    if (ex >= vx && vThumb(&ty, &th)) {
+        if (ey >= ty && ey < ty + th) { gSbDragging = true; gSbWhich = 1; gSbGrab = (int)ey - ty; }
         else {   // page up/down in the track
             int total = docHpx(), view = docViewH();
             if (total > view) {
-                int step = (ev->y < ty ? -1 : 1) * view * 9 / 10;
+                int step = (ey < ty ? -1 : 1) * view * 9 / 10;
                 scrollByDy(step); renderPage();
             }
         }
         return;
     }
-    if (ev->y >= hy && hThumb(&tx, &tw)) {
-        if (ev->x >= tx && ev->x < tx + tw) { gSbDragging = true; gSbWhich = 2; gSbGrab = (int)ev->x - tx; }
+    if (ey >= hy && hThumb(&tx, &tw)) {
+        if (ex >= tx && ex < tx + tw) { gSbDragging = true; gSbWhich = 2; gSbGrab = (int)ex - tx; }
         else {
             int total = docWpx() + 2 * MARGIN, view = gClientW;
             if (total > view) {
-                gScrollX += (ev->x < tx ? -1 : 1) * view * 9 / 10;
+                gScrollX += (ex < tx ? -1 : 1) * view * 9 / 10;
                 clampScroll(); renderPage();
             }
         }
@@ -1315,8 +1407,8 @@ static void onButtonPress(GtkWidget* w, GdkEventButton* ev, gpointer) {
     if (!gSigPlacing.empty()) {
         for (int i = 0; i < gDocPages; i++) {
             int px = pageVx(i), py = pageVy(i), pw = pageWpx(i), ph = pageHpx(i);
-            if (ev->x >= px && ev->x < px + pw && ev->y >= py && ev->y < py + ph) {
-                commitSigPlacement(i, ev->x - px, ev->y - py);
+            if (ex >= px && ex < px + pw && ey >= py && ey < py + ph) {
+                commitSigPlacement(i, ex - px, ey - py);
                 // a signature landed, so "Clear signatures" is usable now
                 refreshMenuLabels();
                 return;
@@ -1326,7 +1418,7 @@ static void onButtonPress(GtkWidget* w, GdkEventButton* ev, gpointer) {
     }
     if (ev->type == GDK_2BUTTON_PRESS) {
         int pg;
-        int idx = charIndexClamped((int)ev->x, (int)ev->y, &pg);
+        int idx = charIndexClamped((int)ex, (int)ey, &pg);
         if (idx < 0 || pg < 0) return;
         gSelAnchorPage = gSelHeadPage = pg;
         gSelAnchor = gSelHead = idx;
@@ -1337,7 +1429,7 @@ static void onButtonPress(GtkWidget* w, GdkEventButton* ev, gpointer) {
     }
     if (ev->type == GDK_3BUTTON_PRESS) {
         int pg;
-        int idx = charIndexClamped((int)ev->x, (int)ev->y, &pg);
+        int idx = charIndexClamped((int)ex, (int)ey, &pg);
         if (idx < 0 || pg < 0) return;
         selectLine(pg, idx);
         gDragging = true;
@@ -1345,7 +1437,7 @@ static void onButtonPress(GtkWidget* w, GdkEventButton* ev, gpointer) {
         return;
     }
     int pg;
-    int idx = charIndexClamped((int)ev->x, (int)ev->y, &pg);
+    int idx = charIndexClamped((int)ex, (int)ey, &pg);
     gSelAnchorPage = gSelHeadPage = pg;
     gSelAnchor = gSelHead = idx;
     gDragging = true;
@@ -1367,7 +1459,7 @@ static void onMotion(GtkWidget* w, GdkEventMotion* ev, gpointer) {
         if (gSbWhich == 1 && vThumb(&ty, &th)) {
             int h = gClientH - kSbThick;
             int span = h - th;
-            double frac = span > 0 ? ((double)ev->y - gSbGrab) / span : 0;
+            double frac = span > 0 ? ((double)devY(ev->y) - gSbGrab) / span : 0;
             if (frac < 0) frac = 0;
             if (frac > 1) frac = 1;
             int total = docHpx(), view = docViewH();
@@ -1377,7 +1469,7 @@ static void onMotion(GtkWidget* w, GdkEventMotion* ev, gpointer) {
         } else if (gSbWhich == 2 && hThumb(&tx, &tw)) {
             int ww = gClientW - kSbThick;
             int span = ww - tw;
-            double frac = span > 0 ? ((double)ev->x - gSbGrab) / span : 0;
+            double frac = span > 0 ? ((double)devX(ev->x) - gSbGrab) / span : 0;
             if (frac < 0) frac = 0;
             if (frac > 1) frac = 1;
             int total = docWpx() + 2 * MARGIN, view = gClientW;
@@ -1388,10 +1480,10 @@ static void onMotion(GtkWidget* w, GdkEventMotion* ev, gpointer) {
     }
     // cursor shape over text
     int pg;
-    int idx = charIndexClamped((int)ev->x, (int)ev->y, &pg);
+    int idx = charIndexClamped((int)devX(ev->x), (int)devY(ev->y), &pg);
     gdk_window_set_cursor(gtk_widget_get_window(w), idx >= 0 ? gIbeam : gArrow);
     if (gDragging) {
-        int i2 = charIndexClamped((int)ev->x, (int)ev->y, &pg);
+        int i2 = charIndexClamped((int)devX(ev->x), (int)devY(ev->y), &pg);
         if (i2 >= 0 && (pg != gSelHeadPage || i2 != gSelHead)) {
             gSelHeadPage = pg; gSelHead = i2;
             renderPage();
@@ -1400,6 +1492,10 @@ static void onMotion(GtkWidget* w, GdkEventMotion* ev, gpointer) {
 }
 
 static void onScroll(GtkWidget*, GdkEventScroll* ev, gpointer) {
+    // A popup owns the pointer; if a scroll still reaches the page (a touchpad
+    // can deliver one while a menu is up), ignore it rather than repainting
+    // underneath the menu and risking a popdown.
+    if (gOpenMenu) return;
     bool ctrl = (ev->state & GDK_CONTROL_MASK) != 0;
     // GTK's scroll deltas read as content motion: a positive delta_y scrolls
     // down, just as a discrete GDK_SCROLL_DOWN does (measured here: smooth
@@ -1412,22 +1508,36 @@ static void onScroll(GtkWidget*, GdkEventScroll* ev, gpointer) {
     double dx = 0;
     if (ev->direction == GDK_SCROLL_SMOOTH) { dx = ev->delta_x; dy = ev->delta_y; }
     if (dy == 0 && dx == 0) return;
-    // smooth deltas arrive in small steps, so accumulate until a step is worth
-    // acting on; a discrete UP/DOWN event is already a whole step
-    static double sSmoothAccX = 0, sSmoothAccY = 0;
+    // A touchpad sends GDK_SCROLL_SMOOTH in many tiny deltas (one per frame); a
+    // wheel sends one delta of +/-1 per notch. The old code accumulated smooth
+    // deltas until |sum| >= 1 and then moved a fixed 120 px step, so a touchpad
+    // advanced in 120 px jumps and felt unresponsive and coarse - the "not
+    // responding to touchpad" report. Scale the actual delta instead: one wheel
+    // notch is one step, and a smooth delta moves proportionally so the page
+    // follows the fingers.
+    const double stepPx = 3.0 * 40.0 * ui_scale();   // one wheel notch, device px
     if (ev->direction == GDK_SCROLL_SMOOTH) {
-        sSmoothAccX += dx; sSmoothAccY += dy;
-        if (fabs(sSmoothAccX) < 1.0 && fabs(sSmoothAccY) < 1.0) return;
-        dx = fabs(sSmoothAccX) >= 1.0 ? (sSmoothAccX > 0 ? 1 : -1) : 0;
-        dy = fabs(sSmoothAccY) >= 1.0 ? (sSmoothAccY > 0 ? 1 : -1) : 0;
-        if (dx) sSmoothAccX = 0;
-        if (dy) sSmoothAccY = 0;
+        if (ctrl) {
+            // Zoom is discrete: accumulate small smooth deltas until a
+            // meaningful amount, then zoom once, so a pinch does not jitter.
+            static double sZoomAcc = 0;
+            sZoomAcc += dy;
+            if (fabs(sZoomAcc) < 1.0) return;
+            double step = sZoomAcc > 0 ? 1 : -1;
+            sZoomAcc = 0;
+            zoomAt(step < 0 ? 1.1 : 1 / 1.1, devX(ev->x), devY(ev->y));
+            return;
+        }
+        if (dy) { scrollByDy((int)(dy * stepPx + (dy > 0 ? 0.5 : -0.5))); markSave(); }
+        if (dx) { gScrollX += (int)(dx * stepPx + (dx > 0 ? 0.5 : -0.5)); clampScroll(); }
+        renderPage();
+        return;
     }
     if (ctrl) {
-        if (dy) zoomAt(dy < 0 ? 1.1 : 1 / 1.1, (int)ev->x, (int)ev->y);
+        if (dy) zoomAt(dy < 0 ? 1.1 : 1 / 1.1, devX(ev->x), devY(ev->y));
     } else {
-        if (dy) { scrollByDy((int)(dy * 3 * 40)); markSave(); }
-        if (dx) { gScrollX += (int)(dx * 3 * 40); clampScroll(); }
+        if (dy) { scrollByDy((int)(dy * stepPx)); markSave(); }
+        if (dx) { gScrollX += (int)(dx * stepPx); clampScroll(); }
         renderPage();
     }
 }
@@ -1798,7 +1908,7 @@ static void openPageAt(int idx) {
     if (!gDoc || idx < 0 || idx >= gDocPages) return;
     gRestoredPage = false;
     loadPage(idx);
-    gScrollY = yTopPx(idx) - MARGIN;
+    gScrollY = yTopPx(idx) - designPx(MARGIN);
     clampScroll();
     renderPage();
     ui_invalidate();
@@ -2493,14 +2603,18 @@ int main(int argc, char** argv) {
     gIbeam = gdk_cursor_new_for_display(gdk_display_get_default(), GDK_XTERM);
     gArrow = gdk_cursor_new_for_display(gdk_display_get_default(), GDK_LEFT_PTR);
 
+    // The device scale has to be known BEFORE the first layout pass: the drawing
+    // area's size-allocate multiplies the logical allocation by it to size the
+    // back buffer, so a scale learned after show_all leaves the first frame (and
+    // any frame painted before the next resize) at 1x - the "low resolution"
+    // report. detectUiScale() only needs the screen, which exists by now.
+    gScale = detectUiScale(gWin);
+
     gtk_widget_show_all(gWin);
     // the overlay children must be re-hidden AFTER show_all: show_all walks every
     // widget including the overlay's, which would leave the find bar and the
     // open-on-first-use drawers visible before they are asked for.
     if (gSearchBar && !gSearchOpen) gtk_widget_hide(gSearchBar);
-
-    int scale = gtk_widget_get_scale_factor(gWin);
-    gScale = scale > 0 ? scale : 1.0;
 
     // open the file named on the command line, else the remembered last document.
     // A plain SECOND launch is a deliberate new window (src/main.cpp:6241):

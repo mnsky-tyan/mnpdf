@@ -464,6 +464,30 @@ about the update check sets it so its runs stay off the network. It skips only
 the launch check - a suite that clicks "Check for updates" gets the real
 answer, because a click is the reader asking.
 
+## Device scale and input
+
+The frame is a device-pixel buffer: the drawing area's allocation is logical, so
+`onAreaSize` multiplies it by `ui_scale()` and every geometry function in
+`doc.cpp` works in device pixels (`px()`/`designPx()` for the layout constants,
+`pagePtToPx`/`pagePxToPt` for page coordinates). GTK3 only reports an integer
+scale factor, so a fractional desktop scale is invisible to it: on this machine
+KDE runs the panel at 1.6 and `gtk_widget_get_scale_factor()` returns 1 while the
+frame is 2880x1800 over 477x297 mm = 153.9 dpi. `detectUiScale()` therefore
+prefers the screen's physical DPI (the X11 millimetre size, which XWayland
+reports correctly) and falls back to the toolkit's integer factor;
+`MNPDF_SCALE=<factor>` overrides it when a setup publishes no usable DPI. The
+compositor then receives a native-resolution frame instead of stretching a 1x
+one - the "low resolution" report. `ui_paint` sets the surface's device scale so
+the device-pixel buffer maps onto the widget's logical coordinates.
+
+Pointer coordinates arrive in logical pixels and are converted once, at each
+handler (`devX`/`devY`), so the hit-test code stays in one space.
+
+Touchpad scrolling takes GDK's smooth deltas directly (one wheel notch is still
+one step) instead of accumulating them to a fixed 120 px jump, which is what made
+a two-finger scroll feel unresponsive and coarse. A scroll that arrives while a
+context popup is open is ignored rather than repainting under the menu.
+
 ## Desktop integration
 
 An unpacked tarball is runnable but invisible: nothing in an application menu

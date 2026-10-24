@@ -266,6 +266,56 @@ else
     bad "the ring-follow shot is missing"
 fi
 
+echo "== the frame renders at the device scale, not at 1x =="
+# At a fractional desktop scale GTK3 reports 1, so the old build painted a 1x
+# buffer that the compositor stretched - the "low resolution" report. The reader
+# derives the scale from the screen's physical DPI, with MNPDF_SCALE as the
+# documented override. Same screen, same window, one variable: the scale. A
+# reader that honours it renders a buffer 1.6x larger; the old code ignored it
+# and produced the same buffer size either way (measured: both 798 px, which is
+# why this check compares ONE dpi with and without the override - comparing two
+# screen DPIs proves nothing, the window itself grows with the screen).
+S=$STATE/scale; mkdir -p "$S"
+run_scale_probe() {
+    rm -rf "$S/$1"; mkdir -p "$S/$1/cfg"
+    xvfb-run -a --server-args="-screen 0 800x600x24 -dpi 96" \
+      env GDK_BACKEND=x11 MNPDF_NO_UPDATE=1 XDG_CONFIG_HOME="$S/$1/cfg" \
+      ${2:+MNPDF_SCALE=$2} MNPDF_SHOT="$S/$1/shot.png" MNPDF_SHOT_EXIT=1 \
+      timeout 40 "$BIN" "$PDF" >"$S/$1/log.txt" 2>&1
+}
+run_scale_probe base ""
+run_scale_probe hi "1.6"
+# The PAGE, not the buffer: a bigger buffer alone proves nothing (the window
+# grows with the screen). The page is a fixed physical size, so at 1.6x it must
+# paint 1.6x wider in the frame. Measure the white page's width on one scanline.
+page_width() {
+    python3 - "$1" <<'PY' 2>/dev/null
+import sys
+from PIL import Image
+im = Image.open(sys.argv[1]).convert("RGB")
+w, h = im.size
+row = h // 2
+px = im.load()
+best = cur = 0
+for x in range(w):
+    r, g, b = px[x, row]
+    if r > 240 and g > 240 and b > 240:
+        cur += 1
+        best = max(best, cur)
+    else:
+        cur = 0
+print(best)
+PY
+}
+W1=$(page_width "$S/base/shot.png")
+W2=$(page_width "$S/hi/shot.png")
+if [ -n "$W1" ] && [ -n "$W2" ] && [ "$W1" -gt 0 ]; then
+    [ "$W2" -gt "$((W1 * 3 / 2))" ] && [ "$W2" -lt "$((W1 * 17 / 10))" ]
+    chk $? "MNPDF_SCALE=1.6 paints the page 1.6x wider (default ${W1}px, scaled ${W2}px)"
+else
+    bad "the scale probe produced no measurable page (default '${W1:-none}', scaled '${W2:-none}')"
+fi
+
 echo "== the titlebar toggle, and it survives a relaunch =="
 D=$STATE/titlebar; mkdir -p "$D"
 rm -rf "$D/cfg"; mkdir -p "$D/cfg"
@@ -278,6 +328,20 @@ xvfb-run -a --server-args="-screen 0 1280x900x24" \
   env GDK_BACKEND=x11 MNPDF_NO_UPDATE=1 XDG_CONFIG_HOME="$D/cfg" MNPDF_SHOT="$D/again.png" MNPDF_SHOT_EXIT=1 \
   timeout 30 "$BIN" "$PDF" >"$D/log2.txt" 2>&1
 grep -q "^titlebar=0$" "$D/cfg/mnpdf/app.txt"; chk $? "the captionless state survives a relaunch"
+# The menu is built once, so the entry's wording is state the reader has to
+# refresh: before this check the label kept saying "Hide titlebar" after the
+# window was already captionless, which is what a reader reads as "the toggle
+# did nothing". Drive the toggle and dump the menu in the same run.
+rm -rf "$D/lbl"; mkdir -p "$D/lbl/cfg/mnpdf"
+printf 'titlebar=1\ntabstrip=1\n' > "$D/lbl/cfg/mnpdf/app.txt"
+xvfb-run -a --server-args="-screen 0 1280x900x24" \
+  env GDK_BACKEND=x11 MNPDF_NO_UPDATE=1 XDG_CONFIG_HOME="$D/lbl/cfg" \
+  MNPDF_MENU_DUMP=1 MNPDF_CMD=113 MNPDF_SHOT_EXIT=1 \
+  timeout 40 "$BIN" "$PDF" >"$D/lbl/log.txt" 2>&1
+grep -q "^titlebar=0$" "$D/lbl/cfg/mnpdf/app.txt"
+chk $? "the titlebar toggle flips the stored state"
+grep -q "Show titlebar: 113" "$D/lbl/log.txt" && ! grep -q "Hide titlebar: 113" "$D/lbl/log.txt"
+chk $? "and the menu entry says Show titlebar afterwards, not Hide titlebar"
 
 echo "== the Windows app.txt field order is kept =="
 D=$STATE/order; mkdir -p "$D"
