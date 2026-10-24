@@ -108,10 +108,12 @@ jobs:
 
       # The gate drives the real binary on a virtual display and asserts on the
       # pixels it paints and the state files it writes - the Linux counterpart
-      # of the PowerShell suites above.
+      # of the PowerShell suites above. xwininfo (the window counter) lives in
+      # x11-utils on Ubuntu, not x11-apps - the gate refuses to run without it,
+      # so the dependency is asserted rather than debugged from zero counts.
       - name: Run the Linux gate
         run: |
-          sudo apt-get install -y --no-install-recommends xvfb x11-apps python3-pil
+          sudo apt-get install -y --no-install-recommends xvfb x11-utils python3-pil
           ./scripts/linux-gate.sh
 
       # The repo's own packager, so the workflow and a local release produce the

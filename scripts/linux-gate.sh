@@ -46,6 +46,7 @@ else
 fi
 
 if ! command -v xvfb-run >/dev/null; then echo "gate: xvfb-run missing (apt install xvfb)" >&2; exit 1; fi
+if ! command -v xwininfo >/dev/null; then echo "gate: xwininfo missing (apt install x11-utils)" >&2; exit 1; fi
 
 echo "== launch, render, and write a pixel shot =="
 D=$STATE/launch; mkdir -p "$D"
