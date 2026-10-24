@@ -123,6 +123,12 @@ static void writeSidecarFor(Doc* d);
 void writeSidecarForBundle(Doc* d) { writeSidecarFor(d); }
 
 static void writeSidecarFor(Doc* d) {
+    // NOT gated on the primary role, and deliberately: Windows gates only
+    // the two SHARED files on it - last.txt (src/main.cpp:3276) and app.txt
+    // (:3345) - while a document's own sidecar is written by whichever
+    // window owns that document (:3243-3245). A second window that opened
+    // its own document must therefore persist that document's marks, or
+    // quitting it would silently drop them.
     if (!d || d->path.empty() || !d->doc) return;
     FILE* fp = fopen(sidecarPathFor(d->path).c_str(), "wb");
     if (!fp) return;
@@ -159,9 +165,11 @@ void writeAllSidecars() {
     if (gViewTab && !gViewTab->path.empty()) writeLastDocument(gViewTab->path);
 }
 
-// last.txt is the document a plain launch reopens
+// last.txt is the document a plain launch reopens. It is shared, so only the
+// primary instance writes it: a second window on another document must not
+// change what the next plain launch brings back (src/main.cpp:3276).
 void writeLastDocument(const std::wstring& path) {
-    if (path.empty()) return;
+    if (!gPrimaryInstance || path.empty()) return;
     FILE* fp = fopen((appDir() + "/last.txt").c_str(), "wb");
     if (!fp) return;
     std::string u8 = wideToUtf8(path);
@@ -305,11 +313,20 @@ void loadAppPref() {
         char* line = lineBuf.data();
         int iv;
         if (sscanf(line, "tabstrip=%d", &iv) == 1) gTabStrip = iv != 0;
+        else if (sscanf(line, "titlebar=%d", &iv) == 1) gTitlebar = iv != 0;
         else if (sscanf(line, "autosave=%d", &iv) == 1) gAutosave = iv != 0;
         else if (sscanf(line, "night=%d", &iv) == 1) gNight = iv != 0;
         else if (sscanf(line, "hlcolor=%d", &iv) == 1) gHlDefault = (iv >= 0 && iv < kPalCount) ? iv : 0;
         else if (sscanf(line, "pincolor=%d", &iv) == 1) gPinDefault = (iv >= 0 && iv < kPalCount) ? iv : 0;
         else if (sscanf(line, "palnext=%d", &iv) == 1) gPalNext = (iv >= 0 && iv < kPalCustom) ? iv : 0;
+        // the update check's own state, in the Linux pair. updcheck=/updtag=
+        // are NOT read here: they are the Windows reader's stamp and mean
+        // something else there - the newest non-prerelease overall
+        // (src/main.cpp:2435), not the newest release carrying a Linux archive
+        // - so adopting them would make one shared app.txt tell each reader
+        // the other's answer. Each reader keeps its own pair instead.
+        else if (sscanf(line, "lnxupdcheck=%lld", &gLastUpdateCheck) == 1) { }
+        else if (strncmp(line, "lnxupdtag=", 10) == 0) gLastUpdateTag = line + 10;
         // geometry is bounded the same way the Windows reader bounds it: a value
         // a window cannot have leaves the field at its default
         else if (sscanf(line, "winx=%d", &iv) == 1) { if (iv >= -100000 && iv <= 100000) gWinX = iv; }
@@ -332,18 +349,31 @@ void loadAppPref() {
 extern void ui_windowRect(int* x, int* y, int* w, int* h, int* maxed);
 
 // The keys this writer owns. Everything else in app.txt belongs to another
-// reader of the same shared directory (Windows writes titlebar=, updcheck= and
-// updtag=), so those lines are carried forward unchanged and in their original
-// order instead of being dropped by the rewrite.
+// reader of the same shared directory, so those lines are carried forward
+// unchanged and in their original order instead of being dropped by the
+// rewrite. titlebar= is owned here now that the port implements it. The
+// update check's keys are split by platform instead: updcheck=/updtag= stay
+// foreign, because they are the Windows reader's own stamp and answer a
+// different question there (the newest non-prerelease overall) than this
+// reader's check does (the newest release carrying a Linux archive), and one
+// key that means different things per platform is exactly what a shared
+// app.txt must not carry. This reader's stamp lives in lnxupdcheck=/lnxupdtag=
+// and is owned here; every Windows key is carried forward verbatim.
 static bool linuxAppKey(const char* line) {
-    static const char* kOwned[] = { "tabstrip=", "autosave=", "hlcolor=", "pincolor=", "night=",
-                                    "winx=", "winy=", "winw=", "winh=", "winmax=", "palnext=" };
+    static const char* kOwned[] = { "tabstrip=", "titlebar=", "autosave=", "hlcolor=", "pincolor=", "night=",
+                                    "winx=", "winy=", "winw=", "winh=", "winmax=", "palnext=",
+                                    "lnxupdcheck=", "lnxupdtag=" };
     for (const char* k : kOwned)
         if (strncmp(line, k, strlen(k)) == 0) return true;
     return strncmp(line, "pal", 3) == 0 && line[3] >= '0' && line[3] <= '9' && line[4] == '=';
 }
 
 void writeAppPref() {
+    // One shared app.txt: preferences and the saved window rect. A secondary
+    // window must not overwrite the primary's geometry or preferences with its
+    // own, so it writes nothing - the same rule the Windows build applies
+    // (src/main.cpp:3344).
+    if (!gPrimaryInstance) return;
     std::string path = appDir() + "/app.txt";
     std::vector<std::string> foreign;
     FILE* in = fopen(path.c_str(), "rb");
@@ -355,8 +385,10 @@ void writeAppPref() {
     }
     FILE* fp = fopen(path.c_str(), "wb");
     if (!fp) return;
-    fprintf(fp, "tabstrip=%d\nautosave=%d\nhlcolor=%d\npincolor=%d\nnight=%d\n",
-            gTabStrip ? 1 : 0, gAutosave ? 1 : 0, gHlDefault, gPinDefault, gNight ? 1 : 0);
+    // field order matches the Windows writer (src/main.cpp:3350):
+    // tabstrip, titlebar, autosave, hlcolor, pincolor, night
+    fprintf(fp, "tabstrip=%d\ntitlebar=%d\nautosave=%d\nhlcolor=%d\npincolor=%d\nnight=%d\n",
+            gTabStrip ? 1 : 0, gTitlebar ? 1 : 0, gAutosave ? 1 : 0, gHlDefault, gPinDefault, gNight ? 1 : 0);
     int x = 0, y = 0, w = 0, h = 0, mx = 0;
     ui_windowRect(&x, &y, &w, &h, &mx);
     if (w > 0 && h > 0) fprintf(fp, "winx=%d\nwiny=%d\nwinw=%d\nwinh=%d\nwinmax=%d\n", x, y, w, h, mx);
@@ -365,5 +397,13 @@ void writeAppPref() {
             fprintf(fp, "pal%d=%02x%02x%02x\n", c, GetRValue(gPalCustom[c]), GetGValue(gPalCustom[c]), GetBValue(gPalCustom[c]));
     fprintf(fp, "palnext=%d\n", gPalNext);
     for (const std::string& line : foreign) fprintf(fp, "%s\n", line.c_str());
+    // the update check's own state, in the Linux pair. updcheck=/updtag= were
+    // carried above as foreign lines: they are the Windows reader's stamp and
+    // answer a different question there (the newest non-prerelease overall,
+    // src/main.cpp:2435) than this check does (the newest release carrying a
+    // Linux archive), so a shared app.txt keeps a pair per reader instead of
+    // one key that means different things per platform.
+    if (gLastUpdateCheck > 0)
+        fprintf(fp, "lnxupdcheck=%lld\nlnxupdtag=%s\n", gLastUpdateCheck, gLastUpdateTag.c_str());
     fclose(fp);
 }

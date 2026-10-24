@@ -41,15 +41,13 @@ static std::wstring annotContents(FPDF_ANNOTATION a) {
     size_t n16 = need / 2;
     std::vector<unsigned short> buf(n16 + 1, 0);
     if (FPDFAnnot_GetStringValue(a, "Contents", (FPDF_WCHAR*)buf.data(), need) <= 0) return L"";
-    std::wstring txt = u16ToWide(buf.data(), n16);
-    while (!txt.empty() && txt.back() == L'\0') txt.pop_back();
-    return txt;
+    return pdfBytesToWide(buf.data(), need);
 }
 
 static std::wstring annotSource(FPDF_ANNOTATION a) {
     unsigned short src[64] = {0};
     FPDFAnnot_GetStringValue(a, "Source", (FPDF_WCHAR*)src, sizeof(src));
-    return u16ToWide(src, 64);
+    return pdfBytesToWide(src, sizeof(src));
 }
 
 void writeSidecarNow();   // from sidecar.cpp
@@ -70,6 +68,9 @@ bool openPath(const std::wstring& path) {
     flushPageCache();
     if (gDoc) FPDF_CloseDocument(gDoc);
     gDoc = nd;
+    // Windows records the outgoing document here too (src/main.cpp:3650), so
+    // "Reopen last document" can step back to it.
+    if (!gPath.empty() && gPath != path) gPrevPath = gPath;
     gPath = path;
     clearDocState();
     gPageCount = FPDF_GetPageCount(gDoc);
@@ -157,6 +158,9 @@ bool openPath(const std::wstring& path) {
     }
     clampScroll();
     renderPage();
+    // an open drawer follows the new document, the same place the Windows build
+    // refreshes it (src/main.cpp:3772)
+    refreshDrawers();
     writeSidecarNow();
     return true;
 }

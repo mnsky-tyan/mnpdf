@@ -65,6 +65,9 @@ struct Tomb { int kind, page, start, count; double x, y; };
 // ---- per-document state: the bundle ----
 struct Doc {
     std::wstring path;
+    // the path this tab showed before the current one: "Reopen last document"
+    // goes back to it. Mirrors Windows' gViewTab->prevPath (src/main.cpp:244).
+    std::wstring prevPath;
     FPDF_DOCUMENT doc = nullptr;
     FPDF_PAGE page = nullptr;
     FPDF_TEXTPAGE textPage = nullptr;
@@ -120,6 +123,9 @@ extern int gDocCount;
 extern int gActiveDoc;
 #define gViewTab (gDocs[gActiveDoc])
 #define gPath     gViewTab->path
+// the document this tab showed before the current one, for "Reopen last
+// document" (Windows: gViewTab->prevPath, src/main.cpp:244)
+#define gPrevPath gViewTab->prevPath
 #define gDoc      gViewTab->doc
 #define gPage     gViewTab->page
 #define gTextPage gViewTab->textPage
@@ -168,6 +174,7 @@ extern int gClientW, gClientH;
 extern bool gNight;
 extern bool gTabStrip;
 extern bool gAutosave;
+extern bool gTitlebar;
 extern bool gSearchOpen;
 extern std::wstring gQuery;
 
@@ -240,6 +247,28 @@ void undoOp();
 void redoOp();
 void markDirty();
 void markSave();
+bool sidecarPending();     // a sidecar write is armed for the 800 ms tick
+void sidecarClearPending(); // disarm it (the autosave toggle's off half)
+
+// the shared-preference role: a window that does not own it writes neither
+// app.txt nor last.txt, so a second reader cannot overwrite the first one's
+// preferences. The Windows build claims a named mutex for the same purpose
+// (src/main.cpp:6138).
+extern bool gPrimaryInstance;
+bool claimPrimaryInstance();
+void releasePrimaryInstance();
+
+// the update check's own state: the unix time of the last attempt and the
+// newest tag it found. It is kept in the Linux pair in app.txt
+// (lnxupdcheck=/lnxupdtag=): updcheck=/updtag= are the Windows reader's own
+// stamp and carry a different meaning there (the newest non-prerelease
+// overall, src/main.cpp:2435) than this check's answer (the newest release
+// carrying a Linux archive). They live here because BOTH modules touch the
+// pair: update.cpp reads and writes it (noteUpdateCheck stamps the attempt, the
+// cached answer short-circuits the next one), while sidecar.cpp parses and
+// persists the app.txt keys; the check's API is in update.h.
+extern long long gLastUpdateCheck;
+extern std::string gLastUpdateTag;
 
 // layout helpers
 void allocPageTables(int pages);
@@ -294,4 +323,8 @@ std::string wideToUtf8(const std::wstring& s);
 // std::wstring (code points) <-> PDFium's UTF-16 (unsigned short), NUL-terminated
 std::vector<unsigned short> wideToU16(const std::wstring& s);
 std::wstring u16ToWide(const unsigned short* p, size_t n);
+// PDFium's string getters (FPDFBookmark_GetTitle, FPDFAnnot_GetStringValue)
+// count BYTES including the terminating NUL, while the rest of the code works in
+// UTF-16 units: this is the one place that conversion is made.
+std::wstring pdfBytesToWide(const unsigned short* p, unsigned long bytes);
 

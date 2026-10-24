@@ -10,10 +10,16 @@
 // Usage: mnpdf-core-test <path-to-arc.pdf> <scratch-dir>
 #include "doc.h"
 #include "ui.h"
+#include "update.h"
+
+// the update check's version rules and release lookup (update.cpp) come from
+// update.h: the suite links the real update.cpp and asserts what the probe
+// loop does with each of the three answers.
 
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <functional>
 #include <string>
 #include <vector>
 #include <sys/stat.h>
@@ -36,6 +42,7 @@ bool ui_prompt_range(std::string& r) { r = "2-3"; return true; }
 bool ui_color_box(int& idx) { idx = kPalPreset; return false; }
 void ui_copy_text(const std::string& t) { gCopyCount++; gLastCopy = t; }
 void refreshDrawers() {}
+int gThumbSel = -1;
 extern int ui_matchActive();   // from search.cpp: which match is active
 void ui_windowRect(int* x, int* y, int* w, int* h, int* maxed) { *x = 0; *y = 0; *w = 800; *h = 600; *maxed = 0; }
 
@@ -448,6 +455,10 @@ int main(int argc, char** argv) {
         CHECK(gDocPages == n0 - 1, "deletePage drops exactly one page");
         movePage(0, 2);
         CHECK(gDocPages == n0 - 1, "movePage keeps the count");
+        // the drawer's selection follows the page that moved: the ring names the
+        // page the reader picked, and a second move acts on that one rather than
+        // on the page that slid into the index it left behind
+        CHECK(gThumbSel == 2, "movePage points the drawer's selection at the destination");
 
         std::string out = scratch + "/split.pdf";
         gStubSavePath = out;
@@ -520,6 +531,8 @@ int main(int argc, char** argv) {
                   "updcheck=1700000000\nupdtag=v2.6.0\n", pf);
             fclose(pf);
         }
+        gLastUpdateCheck = 0;
+        gLastUpdateTag.clear();
         loadAppPref();
         writeAppPref();
         std::string after;
@@ -532,8 +545,10 @@ int main(int argc, char** argv) {
         }
         // the merged file must read like a Windows-written app.txt: the Linux
         // block in the Windows canonical key order, the keys Linux does not own
-        // carried after it in their original relative order
-        const char* canonical[] = { "tabstrip=", "autosave=", "hlcolor=", "pincolor=", "night=",
+        // carried after it in their original relative order. titlebar= is owned
+        // now that the port implements it, and it sits where Windows writes it:
+        // directly after tabstrip= (src/main.cpp:3350).
+        const char* canonical[] = { "tabstrip=", "titlebar=", "autosave=", "hlcolor=", "pincolor=", "night=",
                                     "winx=", "winy=", "winw=", "winh=", "winmax=",
                                     "pal0=", "pal1=", "pal2=", "palnext=" };
         size_t last = std::string::npos, at;
@@ -545,13 +560,45 @@ int main(int argc, char** argv) {
             last = at;
         }
         CHECK(ordered, "the Linux block is written in the Windows canonical key order");
-        size_t pTitle = after.find("titlebar=1"), pCheck = after.find("updcheck=1700000000"),
+        size_t pTitle = after.find("titlebar="), pCheck = after.find("updcheck=1700000000"),
                pTag = after.find("updtag=v2.6.0");
         CHECK(pTitle != std::string::npos && pCheck != std::string::npos && pTag != std::string::npos &&
-              last != std::string::npos && pTitle > last && pTitle < pCheck && pCheck < pTag,
-              "the foreign keys are carried after the Linux block, in their original order");
+              last != std::string::npos && pTitle <= last && pTitle < pCheck && pCheck < pTag,
+              "titlebar= is owned and sits in the Linux block; the foreign keys follow it in order");
         CHECK(after.find("night=") != std::string::npos && after.find("night=") == after.rfind("night="),
               "the Linux-owned block is written once, not appended to a copy");
+        // the Windows stamp is foreign to this reader's cooldown: updtag= means
+        // the newest non-prerelease overall on Windows (src/main.cpp:2435), not
+        // the newest release carrying a Linux archive, so adopting it would make
+        // a shared app.txt tell each reader the other's answer
+        CHECK(gLastUpdateCheck == 0 && gLastUpdateTag.empty(),
+              "the Windows update stamp does not seed this reader's cooldown");
+        // this reader's own pair is the Linux one: written once, carried beside
+        // the Windows pair untouched, and read back on the next load
+        gLastUpdateCheck = 1700000001;
+        gLastUpdateTag = "v2.7.0";
+        writeAppPref();
+        after.clear();
+        rf = fopen(prefsPath.c_str(), "rb");
+        if (rf) {
+            char buf2[512];
+            size_t got2;
+            while ((got2 = fread(buf2, 1, sizeof buf2, rf)) > 0) after.append(buf2, got2);
+            fclose(rf);
+        }
+        CHECK(after.find("lnxupdcheck=1700000001") != std::string::npos &&
+              after.find("lnxupdtag=v2.7.0") != std::string::npos &&
+              after.find("lnxupdcheck=") == after.rfind("lnxupdcheck="),
+              "the Linux update pair is written once, beside the Windows pair");
+        CHECK(after.find("updcheck=1700000000") != std::string::npos &&
+              after.find("updtag=v2.6.0") != std::string::npos &&
+              after.find("lnxupdcheck=1700000001") > after.find("updtag=v2.6.0"),
+              "the Windows pair is carried forward untouched, before the Linux pair");
+        gLastUpdateCheck = 0;
+        gLastUpdateTag.clear();
+        loadAppPref();
+        CHECK(gLastUpdateCheck == 1700000001 && gLastUpdateTag == "v2.7.0",
+              "the Linux update pair round-trips");
     }
 
     printf("== format interop: marks baked by the Windows app lift on Linux ==\n");
@@ -619,6 +666,104 @@ int main(int argc, char** argv) {
         // the real sample the Windows suite ships must pass
         CHECK(looksLikeJpeg(utf8ToWide(dirOf + "sig-sample.jpg")),
               "the sample signature JPEG is accepted");
+    }
+
+    printf("\n== the update check's version comparison ==\n");
+    {
+        // the same rules the Windows build uses (src/main.cpp:2334): a major
+        // difference decides first, then the minor, then the patch, and the
+        // numbers are compared as numbers, so 2.10 is newer than 2.7
+        int a = 0, b = 0, c = 0;
+        CHECK(parseVersion("v2.7.0", a, b, c) && a == 2 && b == 7 && c == 0,
+              "a version string parses into its three numbers");
+        CHECK(!parseVersion("nonsense", a, b, c), "a version that is not a version is refused");
+        CHECK(!parseVersion("2.7", a, b, c), "a partial version is refused");
+        // the build's own version comes from the Windows kAppVersion constant
+        // (generated by CMake), so the two readers cannot disagree
+        int ma = 0, mi = 0, pa = 0;
+        CHECK(parseVersion(gAppVersion, ma, mi, pa) && ma > 0,
+              "the build carries a real version number");
+        CHECK(!versionIsNewer(gAppVersion), "this build is not newer than itself");
+        CHECK(versionIsNewer("v99.0.0"), "a much newer version is recognised");
+        CHECK(!versionIsNewer("v0.0.1"), "an older version is recognised as older");
+        CHECK(!versionIsNewer("not-a-version"), "a broken tag is never an update");
+    }
+
+    printf("\n== the update check's release lookup ==\n");
+    {
+        // The feed's entry ids end with the tag:
+        //   <id>tag:github.com,2008:Repository/1373058058/v2.7.0</id>
+        // The first id is the feed itself, whose last segment is "releases"
+        // and not a tag, so it must be skipped rather than read as one.
+        const char* feed =
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+            "<feed xmlns=\"http://www.w3.org/2005/Atom\">\n"
+            "  <id>tag:github.com,2008:https://github.com/mnsky-tyan/mnpdf/releases</id>\n"
+            "  <entry>\n"
+            "    <id>tag:github.com,2008:Repository/1373058058/v2.7.0</id>\n"
+            "    <updated>2026-10-21T13:20:40Z</updated>\n"
+            "  </entry>\n"
+            "  <entry>\n"
+            "    <id>tag:github.com,2008:Repository/1373058058/v2.6.0</id>\n"
+            "  </entry>\n"
+            "</feed>\n";
+        std::vector<std::string> tags = releaseTagsFromFeed(feed);
+        CHECK(tags.size() == 2, "the feed yields one tag per release entry");
+        CHECK(tags.size() > 0 && tags[0] == "v2.7.0",
+              "the newest release comes first, the way the feed lists them");
+        CHECK(tags.size() > 1 && tags[1] == "v2.6.0", "the next release follows it");
+        // the feed's own id is not a release
+        for (const std::string& t : tags)
+            CHECK(t != "releases", "the feed's own id is not read as a release tag");
+        // a feed with nothing usable yields nothing rather than a wrong tag
+        CHECK(releaseTagsFromFeed("<feed><id>tag:github.com,2008:x/nonsense</id></feed>").empty(),
+              "an id that is not a version yields no tag");
+        CHECK(releaseTagsFromFeed("").empty(), "an empty feed yields no tag");
+    }
+
+    printf("\n== the update check never names an older release when a probe fails ==\n");
+    {
+        // The feed lists the newest release first, and the documented release
+        // rule is that every release carries both assets. So when the newest
+        // release's archive probe does not answer (a CDN 5xx, a 429, a timeout)
+        // the answer is UNKNOWN, not "no": falling through to the next tag
+        // would report an older release as the newest, tell a reader on that
+        // older build it is up to date, and cache the wrong tag for an hour.
+        std::vector<std::string> tags = { "v2.8.0", "v2.7.0" };
+        bool unknown = false;
+        std::string got = pickLinuxRelease(tags, [](const std::string& tag) {
+            return tag == "v2.8.0" ? AssetAnswer::Unreachable : AssetAnswer::Yes;
+        }, &unknown);
+        CHECK(got.empty() && unknown,
+              "an unreachable newest probe names no release and reports the uncertainty");
+
+        // a real "no" on the newest release is different: the search moves on,
+        // because that release genuinely carries no Linux archive
+        unknown = true;
+        got = pickLinuxRelease(tags, [](const std::string& tag) {
+            return tag == "v2.8.0" ? AssetAnswer::No : AssetAnswer::Yes;
+        }, &unknown);
+        CHECK(got == "v2.7.0" && !unknown,
+              "a release that really carries no archive is skipped, and the next one is named");
+
+        // every tag answering "no" is a real answer: no Linux build was found
+        unknown = true;
+        got = pickLinuxRelease(tags, [](const std::string&) { return AssetAnswer::No; }, &unknown);
+        CHECK(got.empty() && !unknown, "when every release answers no, no Linux build exists");
+
+        // an unreachable probe deeper in the list is uncertainty too: the
+        // release above it answered "no", so the newest one is still unknown
+        unknown = false;
+        got = pickLinuxRelease(tags, [](const std::string& tag) {
+            return tag == "v2.8.0" ? AssetAnswer::No : AssetAnswer::Unreachable;
+        }, &unknown);
+        CHECK(got.empty() && unknown,
+              "an unreachable probe after a no is uncertainty, not a missing release");
+
+        // the newest release answering yes is the answer, whatever follows
+        unknown = true;
+        got = pickLinuxRelease(tags, [](const std::string&) { return AssetAnswer::Yes; }, &unknown);
+        CHECK(got == "v2.8.0" && !unknown, "the newest release carrying the archive is named");
     }
 
     printf("\npass=%d fail=%d\n", gPass, gFail);

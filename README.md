@@ -128,7 +128,7 @@ Everything the app remembers is under `%APPDATA%\mnpdf`:
 
 | File | Contents |
 |---|---|
-| `app.txt` | titlebar, tab strip visibility, autosave, default highlight and pin colours, custom palette, night mode, window geometry (`winx`, `winy`, `winw`, `winh`, `winmax`), last update check (`updcheck`) and the newest tag it found (`updtag`) - the tag the update button offers and the one an install fetches |
+| `app.txt` | titlebar, tab strip visibility, autosave, default highlight and pin colours, custom palette, night mode, window geometry (`winx`, `winy`, `winw`, `winh`, `winmax`), last update check (`updcheck`) and the newest tag it found (`updtag`) - the tag the update button offers and the one an install fetches. The Linux build keeps its own update-check stamp in `lnxupdcheck`/`lnxupdtag`, because its check answers a different question (the newest release carrying a Linux archive), and carries the Windows pair forward untouched |
 | `doc-<hash>.txt` | per-document sidecar: zoom, fit, current page, highlights, page rotations, pins, signature stamps, deleted marks |
 | `last.txt` | the document that was open when you quit |
 

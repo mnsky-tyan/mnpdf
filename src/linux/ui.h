@@ -5,8 +5,10 @@
 // or a widget. Not every entry is a core call, and each is named below: the
 // core reaches ui_message, ui_save_file, ui_pick_jpeg, ui_copy_text and
 // ui_windowRect; ui_scale, ui_invalidate, ui_set_title, ui_open_file,
-// ui_prompt, ui_prompt_range and ui_color_box serve the GTK layer itself;
-// refreshDrawers is the declared hook for the drawers that are not ported yet.
+// ui_prompt, ui_prompt_range, ui_color_box and refreshDrawers serve the GTK
+// layer itself. The update check is not a seam: its blocking half lives in
+// update.cpp beside the version rules, and it is called from the GTK layer on a
+// worker thread.
 #pragma once
 
 #include <string>
@@ -20,9 +22,15 @@ extern bool gWinMax;
 // request a redraw of the current view
 void ui_invalidate();
 
-// the drawers (thumbnails/outline) follow any change to the page list; they are
-// not ported yet, so this is the declared hook for them - a no-op until they land
+// the drawers (thumbnails/outline) follow any change to the page list: call
+// this after anything that changes the pages - open, tab switch, delete, move,
+// rotate, undo/redo, a merge or a split
 void refreshDrawers();
+// the thumbnails drawer's selection (the ring, and the page its own keys act on).
+// A move points it at the page that moved, so the drawer never names a page the
+// reader did not pick. The Windows build keeps gThumbSel beside the drawer it
+// belongs to (src/main.cpp:4476) and sets it in movePage (src/main.cpp:4619).
+extern int gThumbSel;
 void ui_set_title(const std::string& t); // window/tab title
 
 // modal-ish message box (the quit prompt asks Yes/No/Cancel as Windows does;

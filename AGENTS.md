@@ -8,7 +8,8 @@ Two platform builds live in this repository:
 - **Windows** (`src/main.cpp`, `build.bat`) - the original Win32 + GDI build,
   shipped as `mnpdf-win-x64-<tag>.zip`.
 - **Linux** (`src/linux/`, `build-linux.sh`) - the same document engine on GTK3 +
-  cairo, built into `build-linux/mnpdf`. There is no Linux release packaging yet.
+  cairo, built into `build-linux/mnpdf`;
+  `scripts/make-release-tarball.sh` packages the release asset.
   See `docs/linux.md`.
 
 Both write the same sidecar and preference formats, so a document marked up on
@@ -29,6 +30,11 @@ src/linux/               the Linux port: one directory per concern
   sidecar.cpp            per-document sidecar, app.txt prefs, last.txt
   opendoc.cpp            open, save/bake, signature stamps, the JPEG guard
   surgery.cpp            delete/move page, merge, split (FPDF_ImportPages)
+  update.cpp             the update check: the web host, the version rules
+  update.h               the check's API: the version rules, the feed parser,
+                         the blocking half main.cpp runs on a worker thread
+  instance.cpp           the shared-preference role: the lock file a second
+                         window does not write past
   main.cpp               the GTK3 platform layer and the ui_* seam
   ui.h                   the platform seam: what the core may ask the UI for
   probe.cpp              toolchain probe: PDFium renders before the app is built
@@ -43,6 +49,7 @@ tests/lib.ps1            shared Windows suite harness (window lookup, launch)
 tests/watchdog.ps1        Windows suite watchdog
 scripts/linux-gate.sh    the Linux gate: builds, runs the headless engine suite,
                          then drives the real binary on Xvfb
+scripts/make-release-tarball.sh  the Linux release asset: mnpdf-linux-x64-<tag>.tar.gz
 scripts/gate-common.ps1  shared Windows gate recipe (one pass/fail rule)
 scripts/gate-test.sh     the Windows gate's WSL entry point
 scripts/test-ci.ps1      the Windows/CI entry point (same nine suites)
@@ -58,10 +65,11 @@ docs/linux.md            the Linux port: decisions, format contract, tests,
 docs/reviews/            codebase review reports (dated per pass)
   2026-10-19-codebase-review.md   the first review of the Linux port (30 findings)
   2026-10-21-pipeline-findings.md every pipeline finding, its fix commit and why
-  2026-10-21-pipeline-findings.json  the same, machine-readable
+  2026-10-21-pipeline-findings.json  the rounds up to 11 only, machine-readable
 test-*.ps1               the Windows feature suites (drive the real binary)
 select-msg-test.ps1      a Windows suite driving the selection path
 README.md / README.txt   the user README; README.txt is the version contract
+README-linux.txt         the Linux reader's own readme, inside the Linux tarball
 PDFIUM-LICENSE.txt       the PDFium license, shipped in release ZIPs
 mnpdf.ico, mnpdf.rc, resource.h   the Windows icon resource
 third_party/pdfium/        Windows PDFium (headers, import lib, DLL, license)
@@ -70,7 +78,9 @@ third_party/pdfium-linux/  Linux PDFium (headers, libpdfium.so, license)
 
 ## Building
 
-Linux needs cmake, g++, GTK3 dev headers and the vendored PDFium:
+Linux needs cmake, g++, the GTK3 dev headers, libcurl
+(`libcurl4-openssl-dev`; the reader links `libcurl.so.4` at runtime for the
+update check) and the vendored PDFium:
 
 ```
 ./build-linux.sh        # -> build-linux/mnpdf (+ libpdfium.so beside it)
@@ -91,6 +101,7 @@ Windows `%APPDATA%\mnpdf`, with byte-identical file formats:
 | `app.txt` | tab strip, autosave, default highlight and pin colours, night mode, custom palette, window geometry |
 | `doc-<hash>.txt` | per-document sidecar: zoom, fit, page, highlights, rotations, pins, signature stamps, deleted marks |
 | `last.txt` | the document a plain launch reopens |
+| `instance.lock` | the lock file that names the window allowed to write `app.txt` and `last.txt` |
 
 The sidecar name is the same FNV-1a hash of the document path the Windows app
 uses, so a shared config directory lines both readers up on the same document.

@@ -17,7 +17,7 @@ static int SvcWriteBlock(FPDF_FILEWRITE* p, const void* data, unsigned long len)
     return 1;
 }
 
-void refreshDrawers();   // stubbed in main.cpp for now (no drawers in v1)
+void refreshDrawers();   // the drawers follow the page list (main.cpp)
 
 static void adoptDoc(FPDF_DOCUMENT nd, int oldCount) {
     flushPageCache();
@@ -115,6 +115,15 @@ void movePage(int from, int to) {
     order.erase(order.begin() + from);
     order.insert(order.begin() + to, v);
     replaceDocByOrder(order);
+    // The drawer's selection follows the page that moved. It cannot stay on the
+    // index the page moved AWAY from: that index now holds a different page, so
+    // the ring would name a page the reader did not pick and the next drawer
+    // command would act on that one. The Windows build sets gThumbSel = to here
+    // for the same reason (src/main.cpp:4615-4620, "a second Ctrl+Up would move
+    // that one instead"). This is the one shared boundary every move passes
+    // through - the drawer's Ctrl+Up/Ctrl+Down in onThumbKey and the context
+    // menu's Move page up/down (cases 311/312) - so all of them follow at once.
+    gThumbSel = to;
 }
 
 void mergeFiles(const std::vector<std::wstring>& files) {

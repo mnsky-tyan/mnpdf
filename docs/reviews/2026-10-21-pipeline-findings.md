@@ -7,9 +7,10 @@ their fixes are in `21326d5`.
 
 Companion files in this directory:
 
-- `2026-10-21-pipeline-findings.json` - the same findings, machine-readable,
-  one entry per finding id with its description, severity, file and the run that
-  reported it.
+- `2026-10-21-pipeline-findings.json` - the findings of the rounds up to
+  Round 11, machine-readable, one entry per finding id with its description,
+  severity, file and the run that reported it. Rounds 12 and later are recorded
+  in this file only.
 
 The gate daemon's own log for that session (the record of why each run ended: a
 global kernel OOM, a router rotation to a provider that refuses this region, and
@@ -19,7 +20,14 @@ with the per-run raw output (`run-<id>-review-full.log`).
 
 ## Summary
 
-- 28 fixed, 2 deliberately deferred and documented, 0 still open.
+- 48 fixed, 1 deliberately deferred and documented, 0 still open.
+
+- That count covers the findings below up to Round 11. Rounds 12-19 are the
+  re-reviews that ran after the hold, appended in landing order; across them
+  this record carries 84 findings in total - 82 fixed, the 1 deferred above and
+  1 declined (a duplicate case label) - with 0 open at HEAD. `dc4bd85` closed
+  the two items Rounds 16 and 17 had left open, Round 18 fixes the three
+  findings it raised, and Round 19 the three findings it raised.
 
 - The "-UNIMPLEMENTED" ids in the raw logs are the same defects re-reported after a
   daemon restart killed a fixer mid-round; they are folded into their base id here.
@@ -453,3 +461,495 @@ the Windows-inherited tombstone-on-undo quirk is recorded in docs/linux.md.
 *File: `docs/linux.md` line 63*  
 
 *Severity: info - action requested: auto-fix*
+
+### MNPDF-UPDTAG-TWO-MEANINGS (warning) - FIXED
+
+**Fixed in `0371ccb`**
+
+the shared `updcheck=`/`updtag=` pair carried two different meanings, one per
+platform, in one file.
+
+> The pipeline said:
+>
+> The update-check state written to app.txt collides across platforms: the
+> Windows reader treats `updtag=` as the tag `/releases/latest` names - the
+> newest non-prerelease overall (src/main.cpp:2435) - while the Linux reader
+> stamped the newest release carrying a Linux archive into the same key. A
+> shared app.txt (the whole point of the sidecar contract) therefore makes
+> each reader's cached cooldown answer offer the other platform's release:
+> a Linux-stamped v2.7.0 (Linux-only prerelease) would make a Windows reader
+> at 2.6.0 offer a release with no Windows archive, and a Windows-stamped
+> v2.6.0 would silence a Linux check that should offer v2.7.0.
+
+*File: `src/linux/sidecar.cpp`*
+
+*Severity: warning - action requested: ask-user*
+
+The fix splits the pairs by platform rather than unifying the meaning: the
+Linux reader now keeps its own cooldown in `lnxupdcheck=`/`lnxupdtag=` and
+carries `updcheck=`/`updtag=` forward as foreign lines, verbatim, never read
+on Linux. Each reader's cached answer comes only from its own stamp. The
+Windows writer truncates the Linux pair, which costs the Linux reader one
+fresh check after a Windows run - honest and bounded, unlike one key that
+changes meaning per platform. Gate coverage: "a Windows stamp is not this
+reader's cooldown" proves a fresh `updcheck=` does not stop the Linux check,
+that the Linux check stamps its own pair, and that the Windows pair survives
+a Linux run untouched.
+
+### MNPDF-EMPTY-FEED-BLAMES-NETWORK (info) - FIXED
+
+**Fixed in `0371ccb`**
+
+a fetched-but-empty release feed reported a network failure.
+
+> The pipeline said:
+>
+> `fetchReleaseTags` sets `why` only when the request itself failed, so a 200
+> feed whose entries yield no usable tag returns with `why` empty and
+> `checkForUpdate` composes "The update check could not reach GitHub - ." -
+> a malformed sentence that blames the network for a host that answered.
+
+*File: `src/linux/update.cpp`*
+
+*Severity: info - action requested: auto-fix*
+
+Fixed by giving the answered-but-nothing-readable outcome its own sentence:
+`checkForUpdate` now emits "The release feed listed no release this build
+could read." when the feed was fetched but yielded nothing usable, and the
+network-blame sentence only when `why` actually names a network failure.
+
+### MNPDF-LAUNCH-CHECK-MISSING (warning) - FIXED
+
+**Fixed in `25643e1`**
+
+the port ran its update check only from the "Check for updates" command.
+
+> The pipeline said:
+>
+> The update check is only reachable from this one handler (case 170, the
+> context-menu "Check for updates"), so the port never checks on launch. The
+> Windows build does: src/main.cpp:6286 runs startUpdateCheck(false) in WinMain
+> before the message loop - "notify only when a newer release exists",
+> rate-limited to one request per kUpdateCheckIntervalMin. Consequence: a Linux
+> reader is never told a new release exists unless they right-click and pick
+> the command, so the two readers do not feel the same.
+
+*File: `src/linux/main.cpp`*
+
+*Severity: warning - action requested: ask-user*
+
+The port now runs the same silent check before its main loop, with the two
+Windows silences: a check with nothing to say, or one that failed, says
+nothing, and a launch inside the cooldown says nothing even when the cached
+answer names a newer one (the cached answer is only surfaced by a click).
+MNPDF_NO_UPDATE skips only the launch check, so gate sections that are not
+about the update check stay off the network. The gate proves both halves by
+counting the toplevels the reader maps (xwininfo; a modal is a toplevel of
+its own, measured: 2 without a dialog, 3 with), and both checks were proven
+to fail by breaking each rule in turn.
+
+### MNPDF-CASCADE-STATE / MNPDF-RING-FOLLOW / MNPDF-ROT-CAPTURE / MNPDF-LOCK-DOCS / MNPDF-RECIPE-PUBLISH (round 10) - FIXED
+
+**Fixed in `732402e`**
+
+Five findings of the round-10 re-review were real against the head; all are
+closed by the same commit, and every other finding in that round's ledger
+was re-reported against a stale snapshot (verified one by one against the
+merged head: the colour entry, the cooldown cache answer, the stamp-on-cache,
+the worker-thread write, the prose asset scan, the tarball tag contract, the
+web-host trace check, the seam budget wait, the rotate-page semantics, the
+night label, the drawer keyboard path, the CMake fallback comment, and the
+F-series fixes).
+
+- **review-23** the Advanced cascade draws the Windows advancedMenu state
+  (src/main.cpp:5450-5464): drawer ticks while open, Night mode tick, and the
+  document tools grey out (Split also needs a second page, Clear signatures a
+  signature). The context cascade reads it at build time; the menu bar, built
+  once, is refreshed by refreshMenuLabels from every state change.
+- **review-21** a page move re-points the drawer's ring at the page that moved
+  (Windows movePage, src/main.cpp:4615-4620). Gate-proven: the selection band
+  sits at y=29 with the ring parked and y=175 after the move it selected, and
+  the check fails on the broken behaviour.
+- **review-22** the rotate capture is spent by the rotate that consumed it:
+  Windows's only rotate commands are the context popup's own
+  (src/main.cpp:5559), while the port also has them in the menu bar, where a
+  surviving capture would rotate a page the reader is no longer looking at.
+- **review-20** the single-writer guarantee is stated per platform
+  (docs/linux.md, README-linux.txt): the flock cannot see the Windows named
+  mutex and the mutex cannot see the flock.
+- **review-4** the release recipe carries the publishing step: one GitHub
+  release holds BOTH assets (`gh release create`), and a Linux-only release
+  stays a prerelease until the Windows zip ships, so /releases/latest keeps
+  naming a release a Windows reader can actually fetch.
+
+Declined, with reasons recorded for the next round:
+
+- **F19** (remove MNPDF_MENU_DUMP): declined - the dump is the mechanism the
+  gate's 40-id parity check reads, and it quits through the app's own quit
+  path, so the exit(0) concern it raised is already gone.
+- **F20** (keep row pictures through a refresh): declined - it is the same
+  documented one-raster divergence as F16 (docs/linux.md, "The one place the
+  port is cheaper than the Windows build").
+
+### Round 12 (the fa7900a re-review): five findings, all real - FIXED
+
+**Fixed in the round-13 batch (the merge of 60aa0e2 plus `Start a second window empty and gate every sidecar write on the primary role`)**
+
+The round-12 re-review of the pipeline head (fa7900a, which merges 668db01)
+was the first to run the binary end to end rather than read code: it measured
+the second-launch sidecar rewrite (zoom 1.767974 -> 1.366162 by a plain
+second launch with no user input), the autosave-off sidecar write, the
+0.0.0 CMake fallback, the stale resource numbers and the Windows readme
+inside the Linux tarball. All five were real; all five are closed.
+
+- **linux-second-launch-not-empty (error)** a plain second launch reopened
+  the document the primary already had (Windows starts it empty,
+  src/main.cpp:6241) and, worse, its clean exit rewrote that document's
+  sidecar (writeSidecarFor carried no primary-role gate; Windows gates the
+  sidecar write at src/main.cpp:3276). Fixed both halves: the launch branch
+  consults the role, and writeSidecarFor carries the same gate. Gate-proven:
+  the plain second window is empty (no document title), a second window with
+  an explicit file argument still opens (two readers side by side is the
+  point), and its exit leaves the primary's sidecar untouched in mtime AND
+  content - the check fails on the broken code (verified).
+- **linux-autosave-toggle-pending-flush (warning)** the toggle (case 109) only
+  flipped the flag, where Windows also cancels the pending write on off and
+  re-arms the flush on on (src/main.cpp:5702-5711). Fixed both halves.
+  Gate-proven with timeout-killed runs (no quit path may write, so only the
+  800 ms tick can have): a change then toggle-off writes nothing, toggle-off,
+  change, toggle-on flushes it. Both halves fail on the flip-only code
+  (verified).
+- **cmake-version-fallback-0-0-0 (warning)** a version-regex miss silently
+  stamped the build 0.0.0 (which makes every release look newer forever and
+  names the tarball v0.0.0) instead of refusing to configure. The else branch
+  is now message(FATAL_ERROR), matching the comment's own promise.
+- **docs/linux.md resource numbers (warning, pipeline-owned delivery)** the
+  suite the doc describes runs 171 checks now, and linking libcurl moved its
+  peak RSS from 15.1 MB to ~21 MB (re-measured by the reviewer,
+  /usr/bin/time -v). Updated; the 98.6 MB GUI figure still measured true.
+- **the Linux tarball's Windows readme (warning, ask-user, pipeline-owned
+  delivery)** the tarball shipped README.txt, whose first lines tell the
+  reader to run mnpdf.exe. Decision made: the Linux asset ships
+  README-linux.txt alone from the next release; the Windows ZIP keeps
+  README.txt as its version contract, and the Linux asset's version is its
+  tag-named directory. The published v2.7.0 asset (which already carries
+  both files) is left as published; docs/linux.md records the change.
+
+Also recorded: a supposed sibling divergence this batch first "fixed" and
+then un-did on second look - menu Quit, Escape and the last tab's close were
+re-routed to gtk_window_close on the theory they bypassed the unsaved-changes
+prompt, but requestQuit already funnels through onWindowDelete (the port's
+own comment says so), so the rerouting was redundant and was reverted. The
+quit-prompt gate section stays: it locks the prompt behaviour (TOPS 3 with
+unsaved changes, TOPS 0 clean) against future refactors.
+
+Gate: 40 -> 53 checks, all passing; core 171/171.
+
+### Round 13 (the dc99dec re-review) - five real, one reverted
+
+**Fixed in the round-14 batch**
+
+- **R-ctxmenu-pg-wrong-coord-space (warning, the one real code bug)**
+  buildContextMenu called pageAtDocY(y) with the raw widget-space event y, but
+  pageAtDocY takes a DOCUMENT-space y (every other caller subtracts docTop()
+  first: charIndexAtDoc doc.cpp:629, pinAt doc.cpp:557). The subtraction was
+  lost when the builder was split out of onContextMenu (4ee5573), so a
+  right-click on a scrolled page set "Add pin here" to the page under the
+  DOCUMENT's top - silently the wrong page, written to the sidecar on the next
+  tick. Rotate and highlight were right because they come from charIndexAtDoc;
+  only the pin branch disagreed. Fixed: pageAtDocY(y - docTop()).
+- **R-sidecar-gate-not-windows-parity (info, ask-user) - MY GATE WAS WRONG,
+  REVERTED.** Windows gates only the two SHARED files on the primary role
+  (last.txt src/main.cpp:3276, app.txt :3345); a document's own sidecar is
+  written by whichever window owns that document (:3243-3245, no gate). The
+  gate I added in the previous batch would have DROPPED a second window's real
+  marks at quit - a data loss the reviewer measured the risk of. Reverted, and
+  the gate section now asserts the Windows behaviour instead: a second window
+  rotating its own document keeps that rotation ("a second window keeps its own
+  document's marks"), while the shared app.txt section still proves the shared
+  files stay untouched. README.txt's "write none of them" is the documented
+  promise, but the Windows implementation does not do that for the sidecar, and
+  matching the implementation is what keeps a reader's marks.
+- **R-gate-live-network / R-gate-update-check-not-hermetic (warning, info)**
+  the gate's update-check sections now say "untested" when GitHub cannot be
+  reached instead of failing the gate (a network outage is not a code defect),
+  guard curl with command -v, and set MNPDF_NO_UPDATE on the click-only runs so
+  the launch check cannot race the click counts.
+- **S-dup-refreshDrawers-after-rotate (info)** the four handler-level
+  refreshDrawers() calls after rotate/undo/redo were redundant - rotatePage and
+  rotApply already refresh (doc.cpp:550, :394) - so they were dropped; each cost
+  a full layoutThumbs plus a buildBmList walk.
+- **R-docs-drawer-claim-still-wrong / R-gate-check-count-stale (info)** the
+  docs/linux.md citation now points at the real clear (src/linux/main.cpp:1583-1585,
+  and the Windows call sites :4813-4817, :4968), and the counts in this record
+  are corrected.
+
+### Round 14 (the d4184e9 re-review) - seven findings, all real
+
+- **R-gate-secondwin-xvfb-run-swallowed-into-comment (error) - a defect this
+  batch's own predecessor introduced.** Replacing the reverted sidecar section
+  glued `xvfb-run -a --server-args=...` onto the end of the preceding comment
+  line. Bash splices the backslash-newline BEFORE comment processing, so the
+  whole call was a comment and the second-window run executed without
+  xvfb-run, on whatever DISPLAY the gate inherited - passing here only because
+  the agent shell inherits DISPLAY=:99, and failing on a headless runner.
+  Fixed by restoring the newline, and proven both ways: with the newline the
+  section passes 3/3 under `env -u DISPLAY -u WAYLAND_DISPLAY`; with the glued
+  line restored it reports FAIL on "its window is the empty reader" and "a
+  second window keeps its own document's marks". `bash -n` cannot see this
+  class, so the rule is that no comment line ends in a backslash
+  (`grep -n '^#.*\\$' scripts/linux-gate.sh` returns nothing).
+- **R-gate-outage-untested-incomplete-launch-timeout-below-budget (warning)**
+  the two launch runs killed the reader at 12 s while the check's own budget is
+  20 s (src/linux/update.cpp:74), so on a slow link the run died before it
+  could print the outcome and the gate reported "the launch check asks on its
+  own" as a FAIL - the exact conflation of network state with code failure the
+  previous round removed. Both runs now outlive the budget (30 s run, 26 s
+  before the TOPS read), and docs/linux.md says what the runs actually do.
+- **R-menu-wording-parity-partial-six-labels-still-diverge (warning, ask-user)**
+  the wording criterion reaches capitalization and accelerator hints, and the
+  Windows menu is the reference. Every entry now carries the Windows words and
+  hint: New Tab\tCtrl+T, Close Tab\tCtrl+W, Save\tCtrl+S,
+  Save As...\tCtrl+Shift+S, Print...\tCtrl+P, Fit Width\tCtrl+0, Zoom In\t+,
+  Zoom Out\t-, Undo\tCtrl+Z, Redo\tCtrl+Y, Find...\tCtrl+F, Open...\tCtrl+O,
+  Copy\tCtrl+C (src/main.cpp:5530, :5542-5557). GTK renders the tab as
+  whitespace, so the wording is identical while the alignment is the
+  toolkit's; docs/linux.md records that.
+- **R-update-stdout-trace-ships-in-production (info, ask-user)** kept as is -
+  the outcome trace is the same family as the existing request trace, and one
+  line per check is deliberate. docs/linux.md now records it as a production
+  behaviour difference from Windows (which prints nothing), not only as a test
+  seam.
+- **R-docs-drawer-citation-wrong-third-correction (info)** the same citation
+  had drifted for the third time, because it named line numbers in a file this
+  branch rewrites every round. It is now name-based - "the `gThumbPix.clear()`
+  that opens `layoutThumbs` in src/linux/main.cpp" - with the Windows call
+  sites still cited by line.
+- **R-surgery-citation-points-at-paint-loop (info)** the comment naming the
+  two movePage call sites cited a paint loop and a colour case; it now names
+  the real ones (drawer Ctrl+Up/Ctrl+Down main.cpp:1831-1832, cases 311/312
+  main.cpp:827-828), and the Windows range is corrected to :4615-4620.
+- **R-rotate-target-printed-but-never-asserted (info)** the dump printed
+  `rotate-page` and the gate never read it, so the third target of the
+  scrolled-click check was a claim with no assertion. The gate now requires
+  pin-page = rotate-page = hit-page with view-page one past them, and fails on
+  the old code (measured at the reviewed head: pin 1, rotate 1, hit 1, view 2).
+
+The gate's label-coupled assertions moved with the labels and now read command
+ids instead of wording wherever the fact is about a command rather than a word:
+the greying checks use a `greyed <id> <file>` helper, so a future wording change
+cannot silently turn them vacuous. A new check asserts all thirteen hinted
+wordings against the live menu dump. Measured on this head: gate 62 checks,
+all passing (the run's own `pass=62 fail=0`); core 171/171.
+
+### Round 15 (the 1e12e4b re-review) - five findings, all real
+
+**Fixed in `efb690a`**
+
+- **gate-launch-silence-assertion-is-outcome-blind (warning)** the gate's
+  silent-launch check asserted exactly two `Mnpdf` toplevels unconditionally,
+  but the behaviour it tests is conditional: a launch whose check found a newer
+  release must open the update dialog, which makes a third. Today the check
+  answers "current" and the assertion passes; the first release newer than
+  `kAppVersion` that carries a Linux archive makes the CORRECT behaviour fail
+  it - precisely when the release pipeline runs the gate. The assertion now
+  reads the outcome the run itself printed.
+- **plain-second-launch-offers-no-open-dialog (info, ask-user)** Windows ends a
+  launch that opened nothing with the Open dialog (src/main.cpp:6251), which
+  covers the bare second launch, a first launch with no remembered document,
+  and a last document that no longer exists (:6248 checks it first). The port
+  showed an empty reader in all three cases. The launch path now offers the
+  chooser, and a cancelled chooser leaves the empty reader.
+- **update-check-api-declared-in-doch-against-updatehs-own-contract (info)**
+  `update.h` states that the check's API lives there and that `doc.h` keeps only
+  the cooldown's state, while `AssetAnswer` and `pickLinuxRelease` were declared
+  in `doc.h` and dragged a `std::function` probe type into the document-model
+  header. Both declarations moved to `update.h`; no caller changed.
+- **linux-only-menu-entries-are-never-greyed (info)** `commandUsable` had no
+  cases for the port's own ids 108, 310, 311, 312, so "Delete this page", "Move
+  page up" and "Move page down" were offered live with no document and on a
+  one-page document, and "Open in new tab..." stayed live at the tab cap. All
+  four now grey from the same predicate the shared ids use.
+- **context-menu-tail-order-differs-from-windows-and-from-its-own-comment
+  (info)** the menu-dump contract claims "the same entries, in the same order",
+  but the tail printed tab strip and titlebar before Minimize and Maximize where
+  Windows prints 110, 111, 113, 302 (src/main.cpp:5564-5570). Reordered to the
+  Windows order.
+
+### Round 16 (the efb690a re-review) - three findings, two fixed here
+
+**Fixed in `ece27bf`**
+
+- **R15-launch-chooser-window-close-leaves-zombie (warning)** the new launch
+  chooser ran before `gAppLoop` existed and carried neither
+  `DESTROY_WITH_PARENT` nor the `Dialog` guard, so closing the reader window
+  under it left a process with no window that never exited - and startup then
+  continued into `renderPage` on destroyed widgets. Tracing the invariant found
+  four modal-creation sites missing the flag (`runChooser`, `ui_pick_jpeg`,
+  `ui_prompt`, `openNoteEditor` - the last three at runtime as well as at
+  launch), so all four got it, and one shared `if (!gShuttingDown)` now guards
+  the widget-touching startup and the main loop. Proven both ways with an
+  external window destroy: before, the process was alive 8 s after its window
+  died; after, exit 0 in 1 s with no criticals.
+- **R15-gate-update-dialog-branch-cannot-fail (info)** the outcome-aware launch
+  check accepted `TOPS` 2 or 3 in the branch labelled "a launch whose check
+  found a newer release offers it" - and 2 is exactly the no-dialog case, so
+  the branch could not fail on the behaviour it claimed. It now demands 3 when
+  the answer predates the count. That discriminator was wrong in a way Round 17
+  fixes; see below.
+
+**Left open here, still open at HEAD:** `R15-docs-launch-chooser-gate-claim-unbacked`
+- docs/linux.md claims "A launch-time chooser is one more toplevel, which the
+  gate's window counts account for", and no count-based check runs a launch that
+  opens nothing: every count passes a document argument, so it never reaches the
+  chooser. The chooser itself IS observed, by title, in the plain-second-launch
+  section; only the sentence about window counts is unbacked.
+- **CLOSED in `dc4bd85`** (see Round 18): the sentence now says the gate observes
+  the chooser by title, which is what the plain-second-launch section does, and
+  no count-based check is claimed for it.
+
+### Round 17 (the ece27bf re-review) - four findings, two fixed, one open, one declined
+
+**Fixed in this batch**
+
+- **findings-doc-missing-rounds-15-16 (info)** this record stopped at Round 14
+  while HEAD carried two further fix batches (`efb690a`, `ece27bf`), so their
+  findings, fixes and the declined item were unrecorded, and the tail's counts
+  were stale for them. Rounds 15-17 are appended above and the tail is
+  re-measured below.
+- **gate-newer-dialog-assertion-masked-by-any-late-log-write (info)** the
+  Round 16 discriminator was the log file's LAST write time, not the outcome
+  line's own moment, so any later write to `log.txt` (a GTK critical at quit, a
+  future trace line) moved the mtime past the count and dropped the run into the
+  lenient branch that accepts `TOPS=2` - a regression where the newer-release
+  dialog never maps would then pass silently. The counting subshell now looks
+  for the outcome line BEFORE it counts and prints a marker into the same file
+  the count goes to, and the strict branch keys on that marker instead of on
+  either mtime. Proven both ways against the finding's exact sequence (newer
+  answer already in the log, dialog never mapped so `TOPS=2`, then a late write
+  to `log.txt`): the old mtime branch passes it and the new marker branch fails
+  it. Also checked against the seven other log/count combinations, and against
+  a real run of the section on Xvfb, which reports 5/5.
+
+**Left open, reported not fixed**
+
+- **linux-surgery-citation-drifted-fourth-time (info)** the Round 14 citation
+  correction was correct at `1e12e4b` and had drifted again by HEAD, because two
+  later commits added lines above it: the drawer's Ctrl+Up/Ctrl+Down moved from
+  main.cpp:1831-1832 to :1838-1839 and cases 311/312 from :827-828 to :831-832.
+  Not selected for this batch; the remedy the record already prescribes for this
+  recurring class is a name-based citation ("in `onThumbKey`", "cases 311/312"),
+  and the comment still carries the line numbers.
+- **CLOSED in `dc4bd85`** (see Round 18): the Windows line numbers are gone from
+  both sites and replaced with the name-based citation, and `src/linux/doc.h`
+  got the same treatment.
+
+**Declined**
+
+- **commandusable-108-300-duplicate-predicate (info)** `commandUsable(108)` and
+  `commandUsable(300)` both return `gDocCount < kMaxTabs`. The reviewer's own
+  note is that one merged case label would drop a line and the duplication is
+  one expression, not a drifted rule; the separate labels keep each id's
+  rationale named beside it, so the code is left as it is.
+
+### Round 18 (the dc4bd85 re-review) - three findings, all real
+
+**Fixed in `dc4bd85`**
+
+- **R15-docs-launch-chooser-gate-claim-unbacked (info)** the item Round 16 left
+  open: docs/linux.md claimed "A launch-time chooser is one more toplevel, which
+  the gate's window counts account for", and no count-based check runs a launch
+  that opens nothing, because every count passes a document argument and never
+  reaches the chooser. The chooser IS observed, by title, in the
+  plain-second-launch section; the window-count sentence was the part nothing
+  backed. Rewritten to describe what the gate actually does.
+- **linux-surgery-citation-drifted-fourth-time (info)** the item Round 17 left
+  open: `movePage`'s comment carried Windows line numbers that had drifted for
+  the fourth time (`efb690a` added 3 lines and `ece27bf` 4 more above them).
+  Replaced with the name-based citation this record prescribes for the class -
+  "in `onThumbKey`" and "cases 311/312" - and `src/linux/doc.h` got the same
+  treatment.
+
+**Fixed in this batch**
+
+- **R18-merge-single-file-chooser (warning, ask-user)** "Merge PDFs..." reused
+  the single-selection, unfiltered "Open PDF" chooser and called `mergeFiles`
+  with a one-element vector, where Windows opens a multi-select dialog titled
+  "Add files to the end of this document" (`mergeDialog` in src/main.cpp,
+  `OFN_ALLOWMULTISELECT`) and hands every picked file to `mergeFiles` in one
+  call. Appending three documents therefore took three menu invocations and
+  three full document rewrites on Linux where Windows takes one. Decision made:
+  implement the Windows behaviour, do not document the difference.
+  `runChooser` grew a `multi` flag (`gtk_file_chooser_set_select_multiple` plus
+  `gtk_file_chooser_get_filenames`) and returns the picked list, so case 205
+  opens the titled multi-select chooser and passes every picked file to
+  `mergeFiles` in one invocation. `ui_open_file` and `ui_save_file` keep their
+  single-string contract through the same construction site, which is why no
+  second dialog builder was added.
+- **R18-ledger-statuses-stale-at-head (warning)** this record said two findings
+  were open at HEAD when `dc4bd85` had fixed exactly both (see above), so the
+  "still open at HEAD" claims were false at HEAD. Round 18 is appended here, the
+  summary is re-counted, both stale claims are annotated with the commit that
+  closed them, and the companion JSON's coverage claim - AGENTS.md called it
+  "the same, machine-readable" while it stops at Round 11 - is corrected in both
+  places that made it rather than left standing over a partial artifact.
+- **R18-gate-scrolled-shape-can-pass-vacuously (info)** the three-target parity
+  check, the guard for the round-14 pin-page coordinate bug, could pass without
+  the state it was written for: if the menu dump ever ran before the first size
+  allocation, `gClientH` is 0, the scroll is a no-op, every target reads page 1
+  and `PINP + 1 == VIEWP` holds trivially. It held only because a measured run
+  happened to show `hit-page 1`, which is empirical rather than guaranteed. The
+  dump now prints the scroll DELTA beside "scrolled click", and the assertion
+  requires that delta to be non-zero and `view-page` to be at least 2, so a
+  vacuous pass is impossible: a zero delta or a top-of-document view fails the
+  check instead of passing it.
+
+Measured on this head: the gate carries 79 check sites (59 `chk` invocations
+plus 9 `ok` and 11 `bad`, counted by matching each helper's invocation and
+skipping its definition), and the engine suite carries 171 checks. A run's pass
+total is lower than the site count because some sites are the two branches of
+one condition. The `pass=62 fail=0` quoted at the end of Round 14 belongs to the
+head before Rounds 15-16 added checks; the run totals on this head are the
+executor's to measure.
+
+### Round 19 (the ab6ca54 re-review) - three findings, all real
+
+**Fixed in `e63f8af`**
+
+- **instance-lock-demotes-on-any-flock-failure (info)** `claimPrimaryInstance`
+  demoted the window on EVERY `flock` failure, not only the already-held one:
+  it returned `false` whenever `flock(fd, LOCK_EX | LOCK_NB) != 0`, where the
+  Windows check it ports demotes only on `ERROR_ALREADY_EXISTS`
+  (src/main.cpp:6138) and treats a failure to create the mutex at all as
+  "leaves the box primary" (the old behaviour). A transient `flock` error
+  (`EINTR`, `ENOLCK`) therefore turned a window that SHOULD be primary into a
+  silent one - it would read preferences but write no `app.txt` and no
+  `last.txt` for the whole session, with nothing naming why. The port now
+  answers `errno != EWOULDBLOCK`, so only an actually-held lock demotes, and
+  the comment says so; the `EWOULDBLOCK` case keeps the already-held
+  behaviour, which the shared-directory guard in docs/linux.md still
+  describes exactly.
+- **R19-asset-probe-redirect-list-inconsistent (info)** two status lists in
+  `src/linux/update.cpp` disagreed about what a redirect is:
+  `probeLinuxAsset()` (the asset probe) read `200 || 301 || 302 || 307` as
+  `AssetAnswer::Yes` while `latestReleaseTag()` (the tag lookup) accepted
+  `301, 302, 303, 307` AND `308`. An asset probe answered `303` or `308`
+  therefore fell through to `Unreachable` - reported as "the update check
+  could not reach GitHub" for a release that does carry the archive - and
+  because `pickLinuxRelease()` stops its search at the first `Unreachable`,
+  the newest release's missing answer poisoned the whole check. GitHub's asset
+  URLs answer `302` today (measured, docs/linux.md), so this was latent rather
+  than observed. Fixed with the one shared predicate the finding prescribed:
+  `isRedirectStatus()` (301, 302, 303, 307, 308) now answers for both call
+  sites.
+- **R19-merge-split-no-doc-guard-parity (info)** Round 18 rewrote case 205's
+  body (src/linux/main.cpp:867) as the titled multi-select chooser but left
+  both dialog-opening document commands unguarded, where Windows guards them
+  at the case itself: `case 205: if (gDoc) mergeDialog();` and
+  `case 206: if (gDoc && gDocPages > 1) openRangePrompt();`
+  (src/main.cpp:5638-5639). A document-less drive (e.g. `MNPDF_CMD=205`)
+  opened the picker and `mergeFiles()` then silently dropped the picks, and
+  case 206 prompted for a range and a save path before `splitExport()`
+  silently returned on `!gDoc`. Both menus already greyed the ids without a
+  document, so the UI could not reach the divergence; the fix is the
+  case-level parity Windows carries.
