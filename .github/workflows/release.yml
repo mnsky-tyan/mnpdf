@@ -123,8 +123,8 @@ jobs:
           ./scripts/linux-gate.sh
 
       # The repo's own packager, so the workflow and a local release produce the
-      # same archive: the binary, libpdfium.so, README-linux.txt and the
-      # licences, named the way the update check looks for.
+      # same archive: the script owns the staged file list and the tag-named
+      # layout the update check looks for.
       - name: Package the Linux tarball
         env:
           TAG: ${{ needs.contract.outputs.tag }}

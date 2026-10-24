@@ -579,11 +579,14 @@ gh release create vX.Y.Z --prerelease --title "mnpdf vX.Y.Z" \
 The Linux asset is a plain tarball, and `scripts/make-release-tarball.sh`
 produces exactly the layout that is published: a `mnpdf-linux-x64-<tag>/`
 directory holding the binary, the vendored `libpdfium.so` (found through an
-`$ORIGIN` rpath), `PDFIUM-LICENSE.txt` and `README-linux.txt`. (The published
-v2.7.0 asset also carries the Windows `README.txt`, whose first lines tell
-the reader to run `mnpdf.exe`; from the next release the Linux asset ships
-`README-linux.txt` alone, and the Windows ZIP keeps `README.txt` as its
-version contract.)
+`$ORIGIN` rpath), the menu-entry installer and the `mnpdf.png` artwork it
+resizes, `PDFIUM-LICENSE.txt` and `README-linux.txt`. Every staged file is
+required, so the packager refuses rather than shipping an archive without it,
+and the Windows `mnpdf.ico` is not staged - it is a Windows resource, not the
+Linux artwork. (The published v2.7.0 asset also carries the Windows
+`README.txt`, whose first lines tell the reader to run `mnpdf.exe`; from the
+next release the Linux asset ships `README-linux.txt` alone, and the Windows
+ZIP keeps `README.txt` as its version contract.)
 It needs no install step and no root; the system dependencies are GTK3, which
 every desktop already has, and libcurl (`libcurl4-openssl-dev` to build,
 `libcurl.so.4` at runtime) for the update check. `ldd` on the unpacked binary

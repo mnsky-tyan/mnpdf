@@ -18,6 +18,8 @@
 #include <X11/Xlib.h>
 #endif
 #include <cairo.h>
+#include <limits.h>          // PATH_MAX, for the /proc/self/exe icon lookup
+#include <unistd.h>          // readlink(), same lookup
 #include <atomic>
 #include <cstdio>
 #include <cmath>
