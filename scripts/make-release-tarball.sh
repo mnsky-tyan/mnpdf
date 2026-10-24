@@ -53,12 +53,14 @@ else
     cp "$so" "$stage/libpdfium.so"
 fi
 cp build-linux/mnpdf "$stage/mnpdf"
-[ -e third_party/pdfium-linux/LICENSE ] && cp third_party/pdfium-linux/LICENSE "$stage/PDFIUM-LICENSE.txt"
+[ -e third_party/pdfium-linux/LICENSE ] || { echo "tarball: third_party/pdfium-linux/LICENSE is missing" >&2; exit 1; }
+cp third_party/pdfium-linux/LICENSE "$stage/PDFIUM-LICENSE.txt"
 # README-linux.txt is the Linux reader's readme; README.txt is the Windows
 # document ("Run mnpdf.exe") and does not ship in the Linux asset. The Linux
 # asset's version is its tag-named directory; the Windows ZIP keeps README.txt
 # as its version contract.
-[ -e README-linux.txt ] && cp README-linux.txt "$stage/README-linux.txt"
+[ -e README-linux.txt ] || { echo "tarball: README-linux.txt is missing" >&2; exit 1; }
+cp README-linux.txt "$stage/README-linux.txt"
 # The menu-entry installer: without it the unpacked reader cannot be found by
 # name in a desktop's application menu, and pinning its window leaves a dead
 # taskbar icon (measured: KDE search finds nothing, the pin cannot re-launch it).

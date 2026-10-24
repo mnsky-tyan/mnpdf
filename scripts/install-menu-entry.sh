@@ -15,11 +15,37 @@ app="$here/mnpdf"
 apps="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 entry="$apps/mnpdf.desktop"
 
+# Entries this installer wrote, in any of its versions. The marker is the
+# current form; v2.8.1 and v2.9.0 shipped the same entry without it, so an
+# upgrade from either must still be recognised instead of being refused.
+entry_ours() {
+    [ -e "$1" ] || return 1
+    grep -qx 'X-mnpdf-installer=yes' "$1" && return 0
+    grep -qx 'Name=mnpdf' "$1" || return 1
+    grep -qx 'Icon=mnpdf' "$1" || return 1
+    grep -qx 'StartupWMClass=Mnpdf' "$1" || return 1
+    case "$(sed -n 's/^Exec=//p' "$1" | head -1)" in
+        */mnpdf\ %f|mnpdf\ %f) return 0 ;;
+    esac
+    return 1
+}
+
 if [ "${1:-}" = "--remove" ]; then
     base="${XDG_DATA_HOME:-$HOME/.local/share}"
-    if [ ! -e "$entry" ] && [ ! -e "$base/icons/hicolor/256x256/apps/mnpdf.png" ]; then
-        echo "nothing to remove"
-        exit 0
+    if [ -e "$entry" ] && ! entry_ours "$entry"; then
+        echo "warning: $entry was not written by this installer" >&2
+        echo "         leaving it alone (remove it by hand to install mnpdf's entry)" >&2
+        exit 1
+    fi
+    if [ ! -e "$entry" ]; then
+        any=0
+        for s in 16 32 48 64 128 256; do
+            [ -e "$base/icons/hicolor/${s}x${s}/apps/mnpdf.png" ] && any=1
+        done
+        if [ "$any" = "0" ]; then
+            echo "nothing to remove"
+            exit 0
+        fi
     fi
     rm -f "$entry"
     for s in 16 32 48 64 128 256; do
@@ -36,6 +62,12 @@ if [ "${1:-}" = "--remove" ]; then
 fi
 
 [ -x "$app" ] || { echo "no mnpdf binary next to this script ($app)" >&2; exit 1; }
+
+if [ -e "$entry" ] && ! entry_ours "$entry"; then
+    echo "warning: $entry already exists and was not written by this installer" >&2
+    echo "         leaving it alone (remove it by hand to install mnpdf's entry)" >&2
+    exit 1
+fi
 
 mkdir -p "$apps"
 
@@ -75,12 +107,6 @@ elif [ -e "$here/mnpdf.png" ]; then
         d="$base/icons/hicolor/${s}x${s}/apps"
         mkdir -p "$d" && cp "$here/mnpdf.png" "$d/mnpdf.png"
     done
-fi
-
-if [ -e "$entry" ] && ! grep -q '^X-mnpdf-installer=yes' "$entry"; then
-    echo "warning: $entry already exists and was not written by this installer" >&2
-    echo "         leaving it alone (remove it by hand to install mnpdf's entry)" >&2
-    exit 1
 fi
 
 cat > "$entry" <<EOF

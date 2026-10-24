@@ -540,9 +540,10 @@ attached to the same release.
 Cutting one: push a matching tag and let the release workflow build and
 publish both platforms from it (`.github/workflows/release.yml`). The tag,
 `kAppVersion` in `src/main.cpp` and the version line in `README.txt` must agree
-- the workflow's contract job enforces exactly that before either build runs
-(both greps are anchored to the end of the version, so a `2.9.0-rc1` line
-cannot satisfy a `v2.9.0` tag), because the updater downloads
+- the workflow's contract job runs `scripts/check-release-contract.sh`, the same
+script the Linux gate runs, before either build: both version greps are
+anchored to the end of the version, so a `2.9.0-rc1` line cannot satisfy a
+`v2.9.0` tag. That matters because the updater downloads
 `mnpdf-win-x64-<tag>.zip` by name and a release whose version nobody built is
 worse than no release. Replace `X.Y.Z` below; the placeholders are literal.
 
@@ -568,11 +569,11 @@ powershell -File scripts/make-release-zip.ps1   # -> build\mnpdf-win-x64-<tag>.z
 ./build-linux.sh
 ./scripts/make-release-tarball.sh               # -> build-linux/mnpdf-linux-x64-<tag>.tar.gz
 # hand-publish only when the workflow cannot run; a Linux-only hand release:
-gh release create v2.8.1 --prerelease --title "mnpdf v2.8.1" \
-    build-linux/mnpdf-linux-x64-v2.8.1.tar.gz
+gh release create vX.Y.Z --prerelease --title "mnpdf vX.Y.Z" \
+    build-linux/mnpdf-linux-x64-vX.Y.Z.tar.gz
 # then when the Windows zip ships, upload it and clear the flag:
-#   gh release upload v2.8.1 build/mnpdf-win-x64-v2.8.1.zip
-#   gh release edit v2.8.1 --prerelease=false
+#   gh release upload vX.Y.Z build/mnpdf-win-x64-vX.Y.Z.zip
+#   gh release edit vX.Y.Z --prerelease=false
 ```
 
 The Linux asset is a plain tarball, and `scripts/make-release-tarball.sh`

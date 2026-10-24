@@ -49,6 +49,8 @@ tests/lib.ps1            shared Windows suite harness (window lookup, launch)
 tests/watchdog.ps1        Windows suite watchdog
 scripts/linux-gate.sh    the Linux gate: builds, runs the headless engine suite,
                          then drives the real binary on Xvfb
+scripts/check-release-contract.sh  the tag/kAppVersion/README version contract,
+                         run by release.yml and the Linux gate
 scripts/make-release-tarball.sh  the Linux release asset: mnpdf-linux-x64-<tag>.tar.gz
 scripts/install-menu-entry.sh    ships in the tarball: writes the desktop entry
                          and icon so the unpacked reader is findable by name

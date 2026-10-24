@@ -24,7 +24,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: release-${{ github.ref_name }}
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -38,41 +38,21 @@ jobs:
       tag: ${{ steps.check.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
       - name: The tag, kAppVersion and README.txt must agree
         id: check
         shell: bash
+        env:
+          DISPATCH_TAG: ${{ github.event.inputs.tag }}
         run: |
           set -euo pipefail
-          tag="${GITHUB_REF_NAME}"
+          tag="${DISPATCH_TAG:-$GITHUB_REF_NAME}"
           # A manual run names the tag directly, so a re-run for a tag that
-          # already has a release targets that tag and not the default branch
-          if [ "${GITHUB_EVENT_NAME:-}" = "workflow_dispatch" ]; then
-            tag="${{ inputs.tag }}"
-          fi
-          # Both greps require the version to END at the same place the tag
-          # ends, so a partial match cannot pass the contract: kAppVersion =
-          # L"2.9.0-rc1" must not satisfy a v2.9.0 tag, and README.txt saying
-          # "mnpdf v2.9.0-rc1" must not either. (The real README header reads
-          # "mnpdf v2.9.0 - Windows x64 portable release", so the README leg
-          # allows end-of-line or whitespace after the version.) scripts/make-release-zip.ps1 anchors
-          # its own kAppVersion regex the same way (a closing quote) but leaves
-          # its README check file-wide, so this job is STRICTER than the local
-          # script on that leg, not a copy of it. head -1 is kept for
-          # determinism; the assignment's exit status is discarded so the -z
-          # guard below - with its ::error:: annotation - is what reports a
-          # missing version, instead of the shell dying with a bare exit 1.
-          app=$(grep -oP 'kAppVersion\s*=\s*L"\K[0-9]+\.[0-9]+\.[0-9]+(?=")' src/main.cpp | head -1 || true)
-          readme=$(grep -oP 'mnpdf v\K[0-9]+\.[0-9]+\.[0-9]+(?=$|[ \t])' README.txt | head -1 || true)
-          echo "tag=$tag app=$app readme=$readme"
-          if [ -z "$app" ] || [ -z "$readme" ]; then
-            echo "::error::could not read the version from src/main.cpp or README.txt"; exit 1
-          fi
-          if [ "v$app" != "$tag" ]; then
-            echo "::error::the tag ($tag) does not match kAppVersion ($app) in src/main.cpp"; exit 1
-          fi
-          if [ "$readme" != "$app" ]; then
-            echo "::error::README.txt says $readme but the app says $app"; exit 1
-          fi
+          # already has a release targets that tag and not the default branch.
+          # Both anchored greps live in the one script the Linux gate also
+          # runs, so the two consumers cannot disagree about the contract.
+          ./scripts/check-release-contract.sh . "$tag"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
   windows:
@@ -81,6 +61,8 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
 
       # build.bat is the same recipe the user runs, and it fails loudly on a
       # missing toolchain, a failed compile or a pdfium.dll that never landed.
@@ -113,6 +95,8 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
 
       # GTK3 is the only GUI dependency the port adds; libcurl is what the
       # update check links. PDFium is vendored under third_party/pdfium-linux
@@ -135,14 +119,16 @@ jobs:
       # so the dependency is asserted rather than debugged from zero counts.
       - name: Run the Linux gate
         run: |
-          sudo apt-get install -y --no-install-recommends xvfb x11-utils python3-pil
+          sudo apt-get install -y --no-install-recommends xvfb x11-utils python3-pil desktop-file-utils
           ./scripts/linux-gate.sh
 
       # The repo's own packager, so the workflow and a local release produce the
       # same archive: the binary, libpdfium.so, README-linux.txt and the
       # licences, named the way the update check looks for.
       - name: Package the Linux tarball
-        run: ./scripts/make-release-tarball.sh "${GITHUB_REF_NAME}"
+        env:
+          TAG: ${{ needs.contract.outputs.tag }}
+        run: ./scripts/make-release-tarball.sh "$TAG"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -156,6 +142,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
 
       - uses: actions/download-artifact@v4
         with:

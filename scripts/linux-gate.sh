@@ -47,6 +47,8 @@ fi
 
 if ! command -v xvfb-run >/dev/null; then echo "gate: xvfb-run missing (apt install xvfb)" >&2; exit 1; fi
 if ! command -v xwininfo >/dev/null; then echo "gate: xwininfo missing (apt install x11-utils)" >&2; exit 1; fi
+if ! command -v xprop >/dev/null; then echo "gate: xprop missing (apt install x11-utils)" >&2; exit 1; fi
+if ! command -v curl >/dev/null; then echo "gate: curl missing (apt install curl)" >&2; exit 1; fi
 
 echo "== launch, render, and write a pixel shot =="
 D=$STATE/launch; mkdir -p "$D"
@@ -703,15 +705,11 @@ fi
 # and that release really carries the archive: the download URL answers 302
 # when the file is there and 404 when it is not
 if [ -n "$FOUND" ] && [ "$UNREACHED" = "0" ]; then
-    if command -v curl >/dev/null; then
-        CODE=$(curl -s -o /dev/null -w '%{http_code}' -I \
-            "https://github.com/mnsky-tyan/mnpdf/releases/download/$FOUND/mnpdf-linux-x64-$FOUND.tar.gz")
-    else
-        CODE="no curl"
-    fi
+    CODE=$(curl -s -o /dev/null -w '%{http_code}' -I \
+        "https://github.com/mnsky-tyan/mnpdf/releases/download/$FOUND/mnpdf-linux-x64-$FOUND.tar.gz")
     if [ "$CODE" = "302" ] || [ "$CODE" = "200" ]; then
         ok "the release it found really carries the Linux archive"
-    elif [ "$CODE" = "000" ] || [ "$CODE" = "no curl" ]; then
+    elif [ "$CODE" = "000" ]; then
         ok "could not ask the download URL from here (HTTP $CODE) - untested"
     else
         bad "the release it found ($FOUND) does not carry the archive (HTTP $CODE)"
@@ -930,33 +928,30 @@ echo "== the release plumbing this branch is trusted for =="
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 
-# 1. The contract job's greps are anchored: a partial version must not pass.
-#    kAppVersion = L"2.9.0-rc1" against tag v2.9.0 must FAIL the contract.
-CONTRACT=$STATE/contract; mkdir -p "$CONTRACT"
-sed 's/L"2\.9\.0"/L"2.9.0-rc1"/' "$REPO/src/main.cpp" > "$CONTRACT/main.cpp"
-app=$(grep -oP 'kAppVersion\s*=\s*L"\K[0-9]+\.[0-9]+\.[0-9]+(?=")' "$CONTRACT/main.cpp" | head -1 || true)
-if [ "$app" = "" ]; then
-    ok "the contract's kAppVersion grep rejects a partial version (2.9.0-rc1)"
-else
-    bad "the contract's kAppVersion grep matched '$app' from L\"2.9.0-rc1\" - it is not anchored"
-fi
-printf 'mnpdf v2.9.0-rc1\n' > "$CONTRACT/README.txt"
-readme=$(grep -oP 'mnpdf v\K[0-9]+\.[0-9]+\.[0-9]+(?=$|[ \t])' "$CONTRACT/README.txt" | head -1 || true)
-if [ "$readme" = "" ]; then
-    ok "the contract's README grep rejects a partial version (v2.9.0-rc1)"
-else
-    bad "the contract's README grep matched '$readme' from v2.9.0-rc1 - it is not anchored"
-fi
-# ...and the real files still satisfy the contract
-app=$(grep -oP 'kAppVersion\s*=\s*L"\K[0-9]+\.[0-9]+\.[0-9]+(?=")' "$REPO/src/main.cpp" | head -1 || true)
-readme=$(grep -oP 'mnpdf v\K[0-9]+\.[0-9]+\.[0-9]+(?=$|[ \t])' "$REPO/README.txt" | head -1 || true)
-[ -n "$app" ] && [ "$app" = "$readme" ]
-chk $? "the real src/main.cpp and README.txt agree on the version ($app)"
+# 1. The contract script release.yml runs rejects a partial version. It lives
+#    in one place, so this executes the same rule the workflow does against
+#    synthetic fixtures - no dependency on the tree's current version.
+CONTRACT=$STATE/contract; mkdir -p "$CONTRACT/src"
+printf 'static const wchar_t* const kAppVersion = L"9.9.9-rc1";\n' > "$CONTRACT/src/main.cpp"
+printf 'mnpdf v9.9.9-rc1\n' > "$CONTRACT/README.txt"
+"$REPO/scripts/check-release-contract.sh" "$CONTRACT" v9.9.9 >/dev/null 2>&1
+[ $? -ne 0 ]
+chk $? "the contract rejects kAppVersion and README v9.9.9-rc1 against tag v9.9.9"
+printf 'static const wchar_t* const kAppVersion = L"9.9.9";\n' > "$CONTRACT/src/main.cpp"
+"$REPO/scripts/check-release-contract.sh" "$CONTRACT" v9.9.9 >/dev/null 2>&1
+[ $? -ne 0 ]
+chk $? "the contract rejects README v9.9.9-rc1 against kAppVersion 9.9.9"
+printf 'mnpdf v9.9.9 - Windows x64 portable release\n' > "$CONTRACT/README.txt"
+"$REPO/scripts/check-release-contract.sh" "$CONTRACT" v9.9.9 >/dev/null
+chk $? "the contract accepts an agreeing tag, kAppVersion and README"
+"$REPO/scripts/check-release-contract.sh" "$REPO" >/dev/null
+chk $? "the real src/main.cpp and README.txt satisfy the release contract"
 
 # 2. The installer installs icons even with python3 present and no Pillow.
 #    The broken version tested for python3 and then wrote nothing.
 INS=$STATE/installer; mkdir -p "$INS/app"
 cp "$BIN" "$INS/app/mnpdf" 2>/dev/null || cp "$REPO/build-linux/mnpdf" "$INS/app/mnpdf"
+cp "$REPO/build-linux/libpdfium.so" "$INS/app/libpdfium.so" 2>/dev/null || true
 cp "$REPO/mnpdf.png" "$INS/app/mnpdf.png"
 cp "$REPO/scripts/install-menu-entry.sh" "$INS/app/install-menu-entry.sh"
 chmod +x "$INS/app/install-menu-entry.sh"
@@ -972,7 +967,7 @@ NOPIL=$STATE/noPIL; mkdir -p "$NOPIL/bin"
 printf 'raise ImportError("gate: simulating a python3 without Pillow")\n' > "$NOPIL/PIL.py"
 printf '#!/bin/sh\nexec env PYTHONPATH=%s /usr/bin/python3 "$@"\n' "$NOPIL" > "$NOPIL/bin/python3"
 chmod +x "$NOPIL/bin/python3"
-PATH="$NOPIL/bin:$PATH" sh -c 'from PIL import Image' >/dev/null 2>&1
+PATH="$NOPIL/bin:$PATH" python3 -c 'from PIL import Image' >/dev/null 2>&1
 if [ $? -eq 0 ]; then
     echo "gate: could not build a python3-without-Pillow shim" >&2; exit 1
 fi
@@ -986,6 +981,62 @@ else
     bad "install-menu-entry.sh installed no icon (python3 without Pillow)"
     sed 's/^/       installer: /' "$INS/log.txt" >&2 || true
 fi
+# ...and the ordinary install takes the good path (Pillow here, or the fallback
+# on a machine without it), so --remove is exercised on a full icon set.
+( cd "$INS/app" && XDG_DATA_HOME="$INS/share" timeout 60 ./install-menu-entry.sh ) >"$INS/normal.txt" 2>&1
+chk $? "install-menu-entry.sh installs a normal tree"
+
+# ...and an entry written by v2.8.1/v2.9.0 (same file, no marker) is upgraded,
+# not refused: README-linux.txt tells those users to re-run the installer.
+LEG=$STATE/legacy; mkdir -p "$LEG/share/applications"
+cat > "$LEG/share/applications/mnpdf.desktop" <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=mnpdf
+GenericName=PDF Reader
+Comment=A small, fast, native PDF reader with a highlighter
+Exec=/old/unpack/mnpdf %f
+Icon=mnpdf
+Terminal=false
+Categories=Office;Viewer;
+MimeType=application/pdf;
+StartupWMClass=Mnpdf
+EOF
+( cd "$INS/app" && XDG_DATA_HOME="$LEG/share" timeout 60 ./install-menu-entry.sh ) >"$LEG/log.txt" 2>&1
+if [ $? -eq 0 ] && grep -qx 'X-mnpdf-installer=yes' "$LEG/share/applications/mnpdf.desktop" \
+   && grep -q '^Exec="' "$LEG/share/applications/mnpdf.desktop"; then
+    ok "install-menu-entry.sh upgrades the markerless v2.9.0 entry instead of refusing it"
+else
+    bad "install-menu-entry.sh refused (or did not rewrite) the v2.9.0 entry"
+    sed 's/^/       installer: /' "$LEG/log.txt" >&2 || true
+fi
+
+# ...and an entry this installer never wrote is refused untouched: no icon is
+# written first, the entry's bytes stay the same, and --remove leaves it too.
+FOR=$STATE/foreign; mkdir -p "$FOR/share/applications"
+cat > "$FOR/share/applications/mnpdf.desktop" <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=Some Other PDF Tool
+Exec=/usr/bin/other-pdf %f
+Icon=other-pdf
+EOF
+cp "$FOR/share/applications/mnpdf.desktop" "$FOR/before.desktop"
+( cd "$INS/app" && XDG_DATA_HOME="$FOR/share" timeout 60 ./install-menu-entry.sh ) >"$FOR/log.txt" 2>&1
+rc=$?
+if [ "$rc" -ne 0 ] && cmp -s "$FOR/before.desktop" "$FOR/share/applications/mnpdf.desktop" \
+   && [ ! -e "$FOR/share/icons/hicolor/256x256/apps/mnpdf.png" ]; then
+    ok "install-menu-entry.sh refuses a foreign entry, leaves it and writes no icons"
+else
+    bad "install-menu-entry.sh clobbered (or half-installed over) a foreign entry"
+    sed 's/^/       installer: /' "$FOR/log.txt" >&2 || true
+fi
+( cd "$INS/app" && XDG_DATA_HOME="$FOR/share" timeout 60 ./install-menu-entry.sh --remove ) >"$FOR/rm.txt" 2>&1
+if [ $? -ne 0 ] && [ -e "$FOR/share/applications/mnpdf.desktop" ]; then
+    ok "install-menu-entry.sh --remove refuses an entry it did not write"
+else
+    bad "install-menu-entry.sh --remove deleted a foreign entry"
+fi
 
 # 3. The menu entry quotes the app path, so a directory with a space works
 ENTRY="$INS/share/applications/mnpdf.desktop"
@@ -994,26 +1045,104 @@ chk $? "the installed menu entry quotes its Exec path"
 desktop-file-validate "$ENTRY" >/dev/null 2>&1
 chk $? "the installed menu entry passes desktop-file-validate"
 
-# 4. --remove takes back everything it wrote, and says so when there is nothing
+# 4. The window icon is the artwork beside the BINARY, not a file in the CWD:
+#    a menu launch starts in $HOME, where there is no mnpdf.png. Launch the
+#    unpacked layout from an empty CWD and assert the window's WM_HINTS icon
+#    pixmap is the 512x512 brand PNG. (GTK on X11 never sets _NET_WM_ICON, so
+#    WM_HINTS is the observable; the broken CWD-relative path fell back to an
+#    icon NAME, which sets no pixmap at all - and a theme pixmap would not be
+#    512x512.)
+ICON=$STATE/icon; mkdir -p "$ICON/cfg/mnpdf" "$ICON/cwd"
+printf 'tabstrip=1\ntitlebar=1\nautosave=1\nhlcolor=0\npincolor=5\nnight=0\n' > "$ICON/cfg/mnpdf/app.txt"
+PDFABS=$(cd "$(dirname "$PDF")" && pwd)/$(basename "$PDF")
+python3 - "$ICON" <<'PY'
+import sys
+open(sys.argv[1] + "/dims.py", "w").write('''
+import ctypes, sys
+x11 = ctypes.cdll.LoadLibrary("libX11.so.6")
+x11.XOpenDisplay.restype = ctypes.c_void_p
+x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+d = x11.XOpenDisplay(None)
+if not d:
+    sys.exit(2)
+pid = int(sys.argv[1], 16)
+rw = ctypes.c_ulong(); x = ctypes.c_int(); y = ctypes.c_int()
+w = ctypes.c_ulong(); h = ctypes.c_ulong(); bw = ctypes.c_ulong(); dep = ctypes.c_uint()
+x11.XGetGeometry.restype = ctypes.c_int
+x11.XGetGeometry.argtypes = [ctypes.c_void_p, ctypes.c_ulong,
+    ctypes.POINTER(ctypes.c_ulong), ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int),
+    ctypes.POINTER(ctypes.c_ulong), ctypes.POINTER(ctypes.c_ulong),
+    ctypes.POINTER(ctypes.c_ulong), ctypes.POINTER(ctypes.c_uint)]
+Ignore = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)
+handler = Ignore(lambda dp, ev: 0)
+x11.XSetErrorHandler(handler)
+rc = x11.XGetGeometry(d, pid, ctypes.byref(rw), ctypes.byref(x), ctypes.byref(y),
+                      ctypes.byref(w), ctypes.byref(h), ctypes.byref(bw), ctypes.byref(dep))
+if rc != 0:
+    print("dims=%dx%d" % (w.value, h.value))
+''')
+PY
+( cd "$ICON/cwd" && xvfb-run -a --server-args="-screen 0 1280x900x24" \
+  env GDK_BACKEND=x11 MNPDF_NO_UPDATE=1 XDG_CONFIG_HOME="$ICON/cfg" \
+  sh -c 'timeout 12 "$0" "$1" >"$2/log.txt" 2>&1 & sleep 6;
+         id=$(xwininfo -root -children 2>/dev/null | grep "\"Mnpdf\"" | head -1 | sed "s/^ *//;s/ .*//");
+         hint=$(xprop -id "$id" WM_HINTS 2>/dev/null | sed -n "s/.*bitmap id # to use for icon: *//p");
+         [ -n "$hint" ] && python3 "$2/dims.py" "$hint"' \
+  "$INS/app/mnpdf" "$PDFABS" "$ICON" ) >"$ICON/xprop.txt" 2>&1
+grep -q '^dims=512x512$' "$ICON/xprop.txt"
+chk $? "the window icon is the 512x512 mnpdf.png beside the binary, not the CWD"
+
+# 5. --remove takes back everything it wrote, including the empty app dirs,
+#    and says so when there is nothing left.
 ( cd "$INS/app" && XDG_DATA_HOME="$INS/share" timeout 60 ./install-menu-entry.sh --remove ) >"$INS/rm.txt" 2>&1
-if [ ! -e "$ENTRY" ] && [ ! -e "$INS/share/icons/hicolor/256x256/apps/mnpdf.png" ]; then
-    ok "install-menu-entry.sh --remove takes back the entry and the icons"
+if [ ! -e "$ENTRY" ] \
+   && [ ! -e "$INS/share/icons/hicolor/256x256/apps/mnpdf.png" ] \
+   && [ ! -d "$INS/share/icons/hicolor/256x256/apps" ] \
+   && [ ! -d "$INS/share/icons/hicolor/48x48/apps" ] \
+   && [ ! -d "$INS/share/icons/hicolor/48x48" ]; then
+    ok "install-menu-entry.sh --remove takes back the entry, the icons and their empty dirs"
 else
-    bad "install-menu-entry.sh --remove left files behind"
+    bad "install-menu-entry.sh --remove left files or empty dirs behind"
 fi
 OUT=$( cd "$INS/app" && XDG_DATA_HOME="$INS/share" timeout 60 ./install-menu-entry.sh --remove 2>&1 )
 [ "$OUT" = "nothing to remove" ]
 chk $? "install-menu-entry.sh --remove reports an empty tree as empty"
 
-# 5. The packager refuses to ship a tarball without the installer or the icon.
-#    [ -e X ] && cp silently skips a missing source under `set -e`.
-for f in scripts/install-menu-entry.sh mnpdf.png; do
-    grep -q "$f is missing" "$REPO/scripts/make-release-tarball.sh"
-    chk $? "make-release-tarball.sh refuses a missing $f"
+# 6. The packager's behaviour, not its source: a full tree produces an archive
+#    with the PNG and without the Windows .ico, and removing any required
+#    staged file makes it refuse instead of silently skipping it.
+PKG=$STATE/packager
+mkdir -p "$PKG/scripts" "$PKG/build-linux" "$PKG/third_party/pdfium-linux"
+cp "$REPO/scripts/make-release-tarball.sh" "$PKG/scripts/"
+cp "$REPO/scripts/install-menu-entry.sh" "$PKG/scripts/"
+cp "$REPO/mnpdf.png" "$PKG/mnpdf.png"
+printf 'const char* gAppVersion = "9.9.9";\n' > "$PKG/build-linux/mnpdf-version.cpp"
+printf '#!/bin/sh\nexit 0\n' > "$PKG/build-linux/mnpdf"; chmod +x "$PKG/build-linux/mnpdf"
+printf 'pdfium\n' > "$PKG/build-linux/libpdfium.so"
+printf 'license\n' > "$PKG/third_party/pdfium-linux/LICENSE"
+printf 'readme\n' > "$PKG/README-linux.txt"
+( cd "$PKG" && ./scripts/make-release-tarball.sh ) >"$PKG/build.txt" 2>&1
+tar tzf "$PKG/build-linux/mnpdf-linux-x64-v9.9.9.tar.gz" >"$PKG/list.txt" 2>/dev/null
+if [ $? -eq 0 ] && grep -q '/mnpdf.png$' "$PKG/list.txt" \
+   && grep -q '/install-menu-entry.sh$' "$PKG/list.txt" \
+   && grep -q '/README-linux.txt$' "$PKG/list.txt" \
+   && grep -q '/PDFIUM-LICENSE.txt$' "$PKG/list.txt" \
+   && ! grep -q 'mnpdf.ico' "$PKG/list.txt"; then
+    ok "make-release-tarball.sh ships the PNG, installer and documents, not the Windows mnpdf.ico"
+else
+    bad "make-release-tarball.sh produced the wrong archive contents"
+    sed 's/^/       packager: /' "$PKG/build.txt" >&2 || true
+fi
+for f in mnpdf.png scripts/install-menu-entry.sh README-linux.txt third_party/pdfium-linux/LICENSE; do
+    cp "$PKG/$f" "$PKG/$f.keep"
+    rm "$PKG/$f"
+    if ( cd "$PKG" && ./scripts/make-release-tarball.sh ) >"$PKG/missing.txt" 2>&1; then
+        bad "make-release-tarball.sh shipped without $f"
+    else
+        ok "make-release-tarball.sh refuses a missing $f"
+    fi
+    mv "$PKG/$f.keep" "$PKG/$f"
 done
-# and the Linux tarball no longer carries the Windows icon it never reads
-! grep -q 'cp mnpdf.ico' "$REPO/scripts/make-release-tarball.sh"
-chk $? "make-release-tarball.sh no longer stages the Windows mnpdf.ico"
 
 echo
 printf 'pass=%d fail=%d\n' "$PASS" "$FAIL"

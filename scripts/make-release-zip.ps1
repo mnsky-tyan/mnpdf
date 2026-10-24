@@ -51,7 +51,7 @@ $appVersion = $m1.Groups[1].Value
 $readme = Join-Path $repo 'README.txt'
 if (-not (Test-Path -LiteralPath $readme)) { Fail "README.txt not found at $readme" }
 $readmeText = Get-Content -LiteralPath $readme -Raw
-$m2 = [regex]::Match($readmeText, 'mnpdf v(\d+\.\d+\.\d+)')
+$m2 = [regex]::Match($readmeText, 'mnpdf v(\d+\.\d+\.\d+)(?=$|[ \t])')
 if (-not $m2.Success) { Fail 'README.txt carries no "mnpdf vX.Y.Z" line' }
 $readmeVersion = $m2.Groups[1].Value
 
