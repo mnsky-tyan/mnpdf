@@ -114,7 +114,28 @@ Windows `%APPDATA%\mnpdf`, with byte-identical file formats:
 The sidecar name is the same FNV-1a hash of the document path the Windows app
 uses, so a shared config directory lines both readers up on the same document.
 
-## Tests
+## The release gate is the pipeline gate
+
+Every commit that reaches `main` on this repo goes through `no-mistakes`,
+**including a version bump**. A bump is not bookkeeping: it is the commit that
+delivers the release, and the release workflow's own contract job is a grep, not
+a reviewer.
+
+Six commits once went straight to `main` with only local suites and the release
+workflow's build jobs behind them (the icon switch, the menu-entry installer, the
+release workflow and its two CI fixes, and the v2.9.0 bump). A fresh review of
+exactly those commits found eight defects in the release plumbing - an
+unanchored version grep that let `2.9.0-rc1` satisfy a `v2.9.0` tag, an installer
+that wrote no icons when Pillow was missing yet still reported success, a
+window icon resolved against the current directory (so a menu launch lost the
+brand artwork), an unquoted `Exec=`, a `--remove` that left files behind and
+lied about it, a gate that counted a missing `curl` as a pass, and a recipe in
+the docs pinned to a tag that already existed.
+
+**simplified:** Everything shipped to users now gets reviewed by the pipeline
+first, even the commit that only changes the version number. That rule exists
+because skipping it once let eight bugs into the code that builds the releases -
+found later by review, fixed in v2.9.1.
 
 ```
 bash scripts/linux-gate.sh     # the real binary on Xvfb: pixels + state files
