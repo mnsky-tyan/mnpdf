@@ -116,10 +116,17 @@ uses, so a shared config directory lines both readers up on the same document.
 
 ## The release gate is the pipeline gate
 
-Every commit that reaches `main` on this repo goes through `no-mistakes`,
-**including a version bump**. A bump is not bookkeeping: it is the commit that
-delivers the release, and the release workflow's own contract job is a grep, not
-a reviewer.
+Anything that can change what ships goes through `no-mistakes` before it reaches
+`main` - code, scripts, packaging, workflows, docs that describe a shipped
+behaviour, and **the version bump itself**. A bump is not bookkeeping: it is the
+commit that delivers the release, and the release workflow's contract job is a
+grep, not a reviewer.
+
+The one exception is a commit that cannot affect a build at all - a rule or
+history note in this file, nothing else in the tree. It still states that it is
+docs-only in its message. (The commit that introduced this paragraph was exactly
+such a commit, and pushed directly; if a docs change touches anything a reader or
+a release depends on, it is not the exception.)
 
 Six commits once went straight to `main` with only local suites and the release
 workflow's build jobs behind them (the icon switch, the menu-entry installer, the
