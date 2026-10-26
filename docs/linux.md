@@ -519,7 +519,9 @@ entry went blank once the window closed - a pinned window resolves through a
 desktop file, and there was none). `scripts/install-menu-entry.sh`, which ships
 in the archive, fixes that in one command: it writes
 `~/.local/share/applications/mnpdf.desktop` pointing at the copy it sits beside,
-converts the Windows icon (`mnpdf.ico`, PIL if present) into themed PNGs, and
+resizes the shipped `mnpdf.png` (the same artwork as the Windows `mnpdf.ico`,
+which stays a Windows-only resource) into the themed PNG sizes (Pillow when
+present, otherwise the PNG itself as 48/256), and
 refreshes the desktop's caches. The entry carries
 `StartupWMClass=Mnpdf` - the class the port's windows report (measured with
 `xwininfo`: `("mnpdf" "Mnpdf")`) - so the taskbar groups the running window with
@@ -537,18 +539,23 @@ attached to the same release.
 
 Cutting one: push a matching tag and let the release workflow build and
 publish both platforms from it (`.github/workflows/release.yml`). The tag,
-`kAppVersion` in `src/main.cpp` and the first line of `README.txt` must agree -
-the workflow's contract job enforces exactly that before either build runs,
-because the updater downloads `mnpdf-win-x64-<tag>.zip` by name and a release
-whose version nobody built is worse than no release.
+`kAppVersion` in `src/main.cpp` and the version line in `README.txt` must agree
+- the workflow's contract job runs `scripts/check-release-contract.sh`, the same
+script the Linux gate runs, before either build: both version greps are
+anchored to the end of the version, so a `2.9.0-rc1` line cannot satisfy a
+`v2.9.0` tag. That matters because the updater downloads
+`mnpdf-win-x64-<tag>.zip` by name and a release whose version nobody built is
+worse than no release. Replace `X.Y.Z` below; the placeholders are literal.
 
 ```sh
 # bump both version lines (kAppVersion in src/main.cpp, README.txt), commit
-git commit -am "release: v2.8.1" && git push origin main
-git tag v2.8.1 && git push origin v2.8.1
+git commit -am "release: vX.Y.Z" && git push origin main
+git tag vX.Y.Z && git push origin vX.Y.Z
 # the workflow builds Windows (build.bat + the nine suites) and Linux
 # (build-linux.sh + the gate) on their own runners, asserts both assets
-# exist, and creates the release with both of them - nothing to run by hand
+# exist and are intact, and creates the release with both of them - nothing to
+# run by hand. If a run fails, the workflow can also be started by hand for the
+# same tag (workflow_dispatch, tag input), so the tag never has to be deleted.
 ```
 
 Building the assets by hand still works the same way, and a Linux-only
@@ -562,21 +569,24 @@ powershell -File scripts/make-release-zip.ps1   # -> build\mnpdf-win-x64-<tag>.z
 ./build-linux.sh
 ./scripts/make-release-tarball.sh               # -> build-linux/mnpdf-linux-x64-<tag>.tar.gz
 # hand-publish only when the workflow cannot run; a Linux-only hand release:
-gh release create v2.8.1 --prerelease --title "mnpdf v2.8.1" \
-    build-linux/mnpdf-linux-x64-v2.8.1.tar.gz
+gh release create vX.Y.Z --prerelease --title "mnpdf vX.Y.Z" \
+    build-linux/mnpdf-linux-x64-vX.Y.Z.tar.gz
 # then when the Windows zip ships, upload it and clear the flag:
-#   gh release upload v2.8.1 build/mnpdf-win-x64-v2.8.1.zip
-#   gh release edit v2.8.1 --prerelease=false
+#   gh release upload vX.Y.Z build/mnpdf-win-x64-vX.Y.Z.zip
+#   gh release edit vX.Y.Z --prerelease=false
 ```
 
 The Linux asset is a plain tarball, and `scripts/make-release-tarball.sh`
 produces exactly the layout that is published: a `mnpdf-linux-x64-<tag>/`
 directory holding the binary, the vendored `libpdfium.so` (found through an
-`$ORIGIN` rpath), `PDFIUM-LICENSE.txt` and `README-linux.txt`. (The published
-v2.7.0 asset also carries the Windows `README.txt`, whose first lines tell
-the reader to run `mnpdf.exe`; from the next release the Linux asset ships
-`README-linux.txt` alone, and the Windows ZIP keeps `README.txt` as its
-version contract.)
+`$ORIGIN` rpath), the menu-entry installer and the `mnpdf.png` artwork it
+resizes, `PDFIUM-LICENSE.txt` and `README-linux.txt`. Every staged file is
+required, so the packager refuses rather than shipping an archive without it,
+and the Windows `mnpdf.ico` is not staged - it is a Windows resource, not the
+Linux artwork. (The published v2.7.0 asset also carries the Windows
+`README.txt`, whose first lines tell the reader to run `mnpdf.exe`; from the
+next release the Linux asset ships `README-linux.txt` alone, and the Windows
+ZIP keeps `README.txt` as its version contract.)
 It needs no install step and no root; the system dependencies are GTK3, which
 every desktop already has, and libcurl (`libcurl4-openssl-dev` to build,
 `libcurl.so.4` at runtime) for the update check. `ldd` on the unpacked binary

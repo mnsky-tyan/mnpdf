@@ -18,6 +18,8 @@
 #include <X11/Xlib.h>
 #endif
 #include <cairo.h>
+#include <limits.h>          // PATH_MAX, for the /proc/self/exe icon lookup
+#include <unistd.h>          // readlink(), same lookup
 #include <atomic>
 #include <cstdio>
 #include <cmath>
@@ -2589,21 +2591,35 @@ int main(int argc, char** argv) {
     gtk_window_set_decorated(GTK_WINDOW(gWin), gTitlebar);
     restoreWindowGeometry();               // size, position and maximize from app.txt
     gtk_window_set_title(GTK_WINDOW(gWin), "mnpdf");
-    // The window icon comes from the artwork file next to the binary (mnpdf.png,
-    // the same source as the Windows mnpdf.ico), because a theme name would
-    // fall back to a generic PDF glyph on a desktop that has no mnpdf theme
-    // entry installed - the tarball's install-menu-entry.sh installs this same
-    // PNG into hicolor for the launcher and the taskbar, and this call covers
-    // a reader run straight from the unpacked directory.
-    if (g_file_test("mnpdf.png", G_FILE_TEST_EXISTS)) {
-        GError* e = nullptr;
-        if (gtk_window_set_icon_from_file(GTK_WINDOW(gWin), "mnpdf.png", &e)) {
-            if (e) { g_error_free(e); e = nullptr; }
-        } else {
-            if (e) { g_error_free(e); e = nullptr; }
-        }
+    // The window icon is the artwork file next to the BINARY (mnpdf.png, the
+    // same source as the Windows mnpdf.ico), because a bare theme name falls
+    // back to a generic PDF glyph on a desktop with no mnpdf theme entry.
+    //
+    // It is resolved from /proc/self/exe, not the current directory: launched
+    // from the menu entry the installer writes, the CWD is $HOME, so a
+    // "mnpdf.png" file test there failed and the real artwork was skipped even
+    // though the installer had just put a themed icon named mnpdf in hicolor.
+    // The fallback is that theme name - which the installer populates - and
+    // only then the generic sheet, so a menu launch shows the brand artwork.
+    std::string exe;
+    char lnk[PATH_MAX + 1] = {0};
+    ssize_t n = readlink("/proc/self/exe", lnk, PATH_MAX);
+    if (n > 0) exe = std::string(lnk, (size_t)n);
+    size_t slash = exe.find_last_of('/');
+    std::string png = (slash == std::string::npos ? std::string("mnpdf.png")
+                                                  : exe.substr(0, slash + 1) + "mnpdf.png");
+    GError* e = nullptr;
+    if (!png.empty() && g_file_test(png.c_str(), G_FILE_TEST_EXISTS)
+        && gtk_window_set_icon_from_file(GTK_WINDOW(gWin), png.c_str(), &e)) {
+        if (e) { g_error_free(e); e = nullptr; }
     } else {
-        gtk_window_set_icon_name(GTK_WINDOW(gWin), "application-pdf");
+        if (e) { g_error_free(e); e = nullptr; }
+        // The installer's own icon, then the theme's generic PDF sheet
+        GtkIconTheme* theme = gtk_icon_theme_get_default();
+        if (gtk_icon_theme_has_icon(theme, "mnpdf"))
+            gtk_window_set_icon_name(GTK_WINDOW(gWin), "mnpdf");
+        else
+            gtk_window_set_icon_name(GTK_WINDOW(gWin), "application-pdf");
     }
     g_signal_connect(gWin, "destroy", G_CALLBACK(onWindowDestroy), nullptr);
     g_signal_connect(gWin, "delete-event", G_CALLBACK(onWindowDelete), nullptr);

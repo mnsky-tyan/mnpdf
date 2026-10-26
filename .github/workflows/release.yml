@@ -12,12 +12,19 @@ name: release
 on:
   push:
     tags: ['v*']
+  # A failed release run must be restartable for the SAME tag: v2.8.0 needed
+  # three pushes to go green, and the only recovery was deleting the tag.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to (re)publish, e.g. v2.9.0'
+        required: true
 
 permissions:
   contents: write
 
 concurrency:
-  group: release-${{ github.ref_name }}
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -31,26 +38,21 @@ jobs:
       tag: ${{ steps.check.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
       - name: The tag, kAppVersion and README.txt must agree
         id: check
         shell: bash
+        env:
+          DISPATCH_TAG: ${{ github.event.inputs.tag }}
         run: |
           set -euo pipefail
-          tag="${GITHUB_REF_NAME}"
-          # the same two expressions scripts/make-release-zip.ps1 uses, so the
-          # workflow and the local script cannot disagree about the contract
-          app=$(grep -oP 'kAppVersion\s*=\s*L"\K[0-9]+\.[0-9]+\.[0-9]+' src/main.cpp | head -1)
-          readme=$(grep -oP 'mnpdf v\K[0-9]+\.[0-9]+\.[0-9]+' README.txt | head -1)
-          echo "tag=$tag app=$app readme=$readme"
-          if [ -z "$app" ] || [ -z "$readme" ]; then
-            echo "::error::could not read the version from src/main.cpp or README.txt"; exit 1
-          fi
-          if [ "v$app" != "$tag" ]; then
-            echo "::error::the tag ($tag) does not match kAppVersion ($app) in src/main.cpp"; exit 1
-          fi
-          if [ "$readme" != "$app" ]; then
-            echo "::error::README.txt says $readme but the app says $app"; exit 1
-          fi
+          tag="${DISPATCH_TAG:-$GITHUB_REF_NAME}"
+          # A manual run names the tag directly, so a re-run for a tag that
+          # already has a release targets that tag and not the default branch.
+          # Both anchored greps live in the one script the Linux gate also
+          # runs, so the two consumers cannot disagree about the contract.
+          ./scripts/check-release-contract.sh . "$tag"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
   windows:
@@ -59,6 +61,8 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
 
       # build.bat is the same recipe the user runs, and it fails loudly on a
       # missing toolchain, a failed compile or a pdfium.dll that never landed.
@@ -91,6 +95,8 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
 
       # GTK3 is the only GUI dependency the port adds; libcurl is what the
       # update check links. PDFium is vendored under third_party/pdfium-linux
@@ -113,14 +119,16 @@ jobs:
       # so the dependency is asserted rather than debugged from zero counts.
       - name: Run the Linux gate
         run: |
-          sudo apt-get install -y --no-install-recommends xvfb x11-utils python3-pil
+          sudo apt-get install -y --no-install-recommends xvfb x11-utils python3-pil desktop-file-utils
           ./scripts/linux-gate.sh
 
       # The repo's own packager, so the workflow and a local release produce the
-      # same archive: the binary, libpdfium.so, README-linux.txt and the
-      # licences, named the way the update check looks for.
+      # same archive: the script owns the staged file list and the tag-named
+      # layout the update check looks for.
       - name: Package the Linux tarball
-        run: ./scripts/make-release-tarball.sh "${GITHUB_REF_NAME}"
+        env:
+          TAG: ${{ needs.contract.outputs.tag }}
+        run: ./scripts/make-release-tarball.sh "$TAG"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -134,6 +142,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
 
       - uses: actions/download-artifact@v4
         with:
@@ -159,6 +169,11 @@ jobs:
             [ -s "$f" ] || { echo "::error::missing release asset: $f"; exit 1; }
             echo "asset: $f ($(stat -c%s "$f") bytes)"
           done
+          # Non-empty is not intact: a truncated archive would publish and then
+          # fail on the user's machine. Listing it costs nothing next to
+          # building it.
+          unzip -tq "$win" || { echo "::error::the Windows zip is corrupt: $win"; exit 1; }
+          tar tzf "$lin" >/dev/null || { echo "::error::the Linux tarball is corrupt: $lin"; exit 1; }
 
       - name: Create the release
         shell: bash
@@ -167,7 +182,10 @@ jobs:
         run: |
           set -euo pipefail
           tag="${{ needs.contract.outputs.tag }}"
-          gh release create "$tag" \
+          # --verify-tag: without it gh silently creates a tag from the default
+          # branch's HEAD when the named tag does not exist, which would publish
+          # the wrong commit. This workflow is only ever entered with a real tag.
+          gh release create --verify-tag "$tag" \
             --title "mnpdf ${tag}" \
             --generate-notes \
             dist/mnpdf-win-x64-${tag}.zip \

@@ -15,38 +15,93 @@ app="$here/mnpdf"
 apps="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 entry="$apps/mnpdf.desktop"
 
+# Entries this installer wrote, in any of its versions. The marker is the
+# current form; v2.8.1 and v2.9.0 shipped the same entry without it, so an
+# upgrade from either must still be recognised instead of being refused.
+entry_ours() {
+    [ -e "$1" ] || return 1
+    grep -qx 'X-mnpdf-installer=yes' "$1" && return 0
+    grep -qx 'Name=mnpdf' "$1" || return 1
+    grep -qx 'Icon=mnpdf' "$1" || return 1
+    grep -qx 'StartupWMClass=Mnpdf' "$1" || return 1
+    case "$(sed -n 's/^Exec=//p' "$1" | head -1)" in
+        */mnpdf\ %f|mnpdf\ %f) return 0 ;;
+    esac
+    return 1
+}
+
 if [ "${1:-}" = "--remove" ]; then
+    base="${XDG_DATA_HOME:-$HOME/.local/share}"
+    if [ -e "$entry" ] && ! entry_ours "$entry"; then
+        echo "warning: $entry was not written by this installer" >&2
+        echo "         leaving it alone (remove it by hand to install mnpdf's entry)" >&2
+        exit 1
+    fi
+    if [ ! -e "$entry" ]; then
+        any=0
+        for s in 16 32 48 64 128 256; do
+            [ -e "$base/icons/hicolor/${s}x${s}/apps/mnpdf.png" ] && any=1
+        done
+        if [ "$any" = "0" ]; then
+            echo "nothing to remove"
+            exit 0
+        fi
+    fi
     rm -f "$entry"
     for s in 16 32 48 64 128 256; do
-        rm -f "${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/${s}x${s}/apps/mnpdf.png"
+        rm -f "$base/icons/hicolor/${s}x${s}/apps/mnpdf.png"
+        rmdir "$base/icons/hicolor/${s}x${s}/apps" 2>/dev/null || true
+        rmdir "$base/icons/hicolor/${s}x${s}" 2>/dev/null || true
     done
+    # KDE rebuilds its own menu cache; every other desktop uses this one
+    command -v update-desktop-database >/dev/null && \
+        update-desktop-database "$apps" >/dev/null 2>&1 || true
     command -v kbuildsycoca6 >/dev/null && kbuildsycoca6 --noincremental >/dev/null 2>&1 || true
-    echo "removed $entry"
+    echo "removed $entry and the icons"
     exit 0
 fi
 
 [ -x "$app" ] || { echo "no mnpdf binary next to this script ($app)" >&2; exit 1; }
 
+if [ -e "$entry" ] && ! entry_ours "$entry"; then
+    echo "warning: $entry already exists and was not written by this installer" >&2
+    echo "         leaving it alone (remove it by hand to install mnpdf's entry)" >&2
+    exit 1
+fi
+
 mkdir -p "$apps"
 
-# the icon: a PNG per size, resized from the shipped mnpdf.png (the same
+# The icon: a PNG per size, resized from the shipped mnpdf.png (the same
 # source as the Windows mnpdf.ico), so the menu and the taskbar show the real
-# artwork rather than a generic sheet. With no Pillow the shipped PNG still
-# lands as the two sizes the theme requires most.
+# artwork rather than a generic sheet.
+#
+# The Pillow path is the good one. The fallback matters: python3 being present
+# is NOT the same as Pillow being present, and a first version of this block
+# tested for python3 only - its resize step then exited 0 having written
+# nothing, the elif below never ran, and the menu got no icon at all while the
+# script still reported success. So the resize now signals "no Pillow" by
+# exiting 1, and the fallback is chosen on that, not on python3's existence.
 base="${XDG_DATA_HOME:-$HOME/.local/share}"
 if [ -e "$here/mnpdf.png" ] && command -v python3 >/dev/null; then
-    python3 - "$here/mnpdf.png" "$base" <<'PY'
+    if python3 - "$here/mnpdf.png" "$base" <<'PY'
 import os, sys
 try:
     from PIL import Image
 except ImportError:
-    sys.exit(0)
+    sys.exit(1)          # no Pillow: say so, so the caller falls back
 im = Image.open(sys.argv[1]).convert("RGBA")
 for s in (16, 32, 48, 64, 128, 256):
     d = f"{sys.argv[2]}/icons/hicolor/{s}x{s}/apps"
     os.makedirs(d, exist_ok=True)
     im.resize((s, s), Image.LANCZOS).save(f"{d}/mnpdf.png")
 PY
+    then :; else
+        echo "  (no Pillow - installing the shipped PNG as the icon; themes will scale it)"
+        for s in 48 256; do
+            d="$base/icons/hicolor/${s}x${s}/apps"
+            mkdir -p "$d" && cp "$here/mnpdf.png" "$d/mnpdf.png"
+        done
+    fi
 elif [ -e "$here/mnpdf.png" ]; then
     for s in 48 256; do
         d="$base/icons/hicolor/${s}x${s}/apps"
@@ -60,12 +115,13 @@ Type=Application
 Name=mnpdf
 GenericName=PDF Reader
 Comment=A small, fast, native PDF reader with a highlighter
-Exec=$app %f
+Exec="$app" %f
 Icon=mnpdf
 Terminal=false
 Categories=Office;Viewer;
 MimeType=application/pdf;
 StartupWMClass=Mnpdf
+X-mnpdf-installer=yes
 EOF
 
 # refresh the desktop's caches so the entry shows up in search immediately
