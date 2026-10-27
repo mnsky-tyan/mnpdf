@@ -199,7 +199,11 @@ Measured on this machine (`/usr/bin/time`, and RSS sampled from `/proc`):
   desktop costs four times the bytes - the same discipline as the Windows build,
   and the print path allocates exactly one page raster at a time, sized from the
   page's own box at 300 dpi and shrunk to the same 16-megapixel budget the
-  Windows print path applies.
+  Windows print path applies. The page-tile cache that keeps a scroll off the
+  raster path is the one bounded addition: at most four page-sized bitmaps and
+  48 MB in total, an oversize page rendered straight into the frame instead
+  (the mechanism is described with the scrolling notes under Device scale and
+  input).
 - The thumbnails drawer holds one page raster at a time, rendered at the device
   density, where the Windows drawer holds one bitmap per row
   (src/main.cpp:4803). The cost is invisible but real: scrolling down and back
@@ -546,8 +550,18 @@ square-fitted, and alpha-clipped to the shared corner radius r = 43/277 of the
 edge - `scripts/gen-icon.py` regenerates both from the mn-brand 2048 render;
 the full board used to be scaled down instead, which left the background
 colour running into every tile corner) into the themed PNG sizes (Pillow when
-present, otherwise the PNG itself as 48/256), and
-refreshes the desktop's caches. The entry carries
+present, otherwise the PNG itself as 48/256) under a theme name that carries
+the PNG's content hash - `mnpdf-<first 8 hex of its sha256>`, the name the
+entry's `Icon=` points at, with every earlier name's files removed by the next
+install - and refreshes the desktop's caches. The hash is the fix, not
+decoration: a desktop caches an icon's pixmaps under its name and never
+re-reads a same-name pixel change (measured on KDE - after the rounded PNG
+replaced the square one under the plain `mnpdf` name, the running panel kept
+the old bitmap), so a pixel change only shows up without a logout under a
+fresh name. The name matters more than it used to: the default desktop launch
+is a native Wayland client, where the window has no icon a taskbar can read
+(`_NET_WM_ICON` is an X11 property), so the launcher and the taskbar take the
+icon from the theme name the entry points at. The entry carries
 `StartupWMClass=Mnpdf` - the class the port's windows report (measured with
 `xwininfo`: `("mnpdf" "Mnpdf")`) - so the taskbar groups the running window with
 the pinned launcher instead of leaving it dead.

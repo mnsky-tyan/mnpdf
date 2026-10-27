@@ -2656,9 +2656,13 @@ int main(int argc, char** argv) {
     // It is resolved from /proc/self/exe, not the current directory: launched
     // from the menu entry the installer writes, the CWD is $HOME, so a
     // "mnpdf.png" file test there failed and the real artwork was skipped even
-    // though the installer had just put a themed icon named mnpdf in hicolor.
-    // The fallback is that theme name - which the installer populates - and
-    // only then the generic sheet, so a menu launch shows the brand artwork.
+    // though the installer had just put the artwork into hicolor. The fallback
+    // below is the literal theme name "mnpdf" - the name installs used to
+    // populate before the content-hashed ones (a same-name pixel change is
+    // never re-read by a running desktop, so the installer now writes only
+    // "mnpdf-<8 hex>" and retires the rest) - which means after a current
+    // install this branch lands on the generic sheet, and the artwork beside
+    // the binary above is what carries the brand.
     std::string exe;
     char lnk[PATH_MAX + 1] = {0};
     ssize_t n = readlink("/proc/self/exe", lnk, PATH_MAX);
@@ -2672,7 +2676,8 @@ int main(int argc, char** argv) {
         if (e) { g_error_free(e); e = nullptr; }
     } else {
         if (e) { g_error_free(e); e = nullptr; }
-        // The installer's own icon, then the theme's generic PDF sheet
+        // The literal theme name - the pre-hash installs populated it, a
+        // current install retires it - then the theme's generic PDF sheet
         GtkIconTheme* theme = gtk_icon_theme_get_default();
         if (gtk_icon_theme_has_icon(theme, "mnpdf"))
             gtk_window_set_icon_name(GTK_WINDOW(gWin), "mnpdf");
