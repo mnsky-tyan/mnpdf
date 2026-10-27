@@ -532,7 +532,11 @@ desktop file, and there was none). `scripts/install-menu-entry.sh`, which ships
 in the archive, fixes that in one command: it writes
 `~/.local/share/applications/mnpdf.desktop` pointing at the copy it sits beside,
 resizes the shipped `mnpdf.png` (the same artwork as the Windows `mnpdf.ico`,
-which stays a Windows-only resource) into the themed PNG sizes (Pillow when
+which stays a Windows-only resource: the brand card cropped out of the board,
+square-fitted, and alpha-clipped to the shared corner radius r = 43/277 of the
+edge - `scripts/gen-icon.py` regenerates both from the mn-brand 2048 render;
+the full board used to be scaled down instead, which left the background
+colour running into every tile corner) into the themed PNG sizes (Pillow when
 present, otherwise the PNG itself as 48/256), and
 refreshes the desktop's caches. The entry carries
 `StartupWMClass=Mnpdf` - the class the port's windows report (measured with

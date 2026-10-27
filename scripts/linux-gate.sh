@@ -985,14 +985,65 @@ EM=$(sed -n 's/^EV-MASK evmask=//p' "$R/out.txt" | head -1)
 chk $? "the drawing area selects GDK_SMOOTH_SCROLL_MASK at runtime (evmask=${EM:-none})"
 
 echo
+echo "== the icon: rounded at the brand radius =="
+REPO=$(cd "$(dirname "$0")/.." && pwd)
+# The icon is clipped to the mn-brand card (crop, square-fit, rounded alpha
+# mask at r = 43/277 of the edge - mnbrand docs/icon-corner-radius.md). The
+# square full-board icon this replaces showed the board's flat #ebe7e3
+# background to the corners of every tile, which is the "make the corner
+# rounded" report. These checks pin the SHIPPED artifacts, not the generator's
+# good intentions: mnpdf.png is what the window, the launcher and the tarball
+# carry, mnpdf.ico is what Windows embeds.
+python3 - "$REPO/mnpdf.png" <<'PY' > "$STATE/icon.txt" 2>&1 || true
+import math, sys
+from PIL import Image
+im = Image.open(sys.argv[1]).convert("RGBA")
+w, h = im.size
+px = im.load()
+print("size %dx%d" % (w, h))
+corners = [px[0,0][3], px[w-1,0][3], px[0,h-1][3], px[w-1,h-1][3]]
+print("corners", corners)
+r = w * 43 / 277.0
+# the card's first row: y0 = (h - card_h)//2; find it as the first row with
+# any opaque pixel (the transparent padding above the card is 0)
+y0 = next((y for y in range(h) if any(px[x,y][3] > 0 for x in range(0, w, 4))), -1)
+fx = next((x for x in range(w) if px[x,y0][3] > 0), -1)
+print("y0", y0, "first-opaque-x", fx, "r", round(r,1))
+# expected: the arc starts at ~r - sqrt(2*r*0.875) at the first row
+PY
+grep -q "^size 512x512$" "$STATE/icon.txt"
+chk $? "mnpdf.png is the 512x512 artwork"
+grep -q "^corners \[0, 0, 0, 0\]$" "$STATE/icon.txt"
+chk $? "the icon's four corners are transparent (rounded, not square)"
+FX=$(sed -n 's/^y0 .*first-opaque-x //p' "$STATE/icon.txt" | cut -d' ' -f1)
+R=$(sed -n 's/.* r //p' "$STATE/icon.txt")
+if [ -n "$FX" ] && [ "$FX" -ge 64 ] && [ "$FX" -le 72 ] 2>/dev/null; then
+    ok "the corner arc starts at the brand radius (first opaque x=$FX, r=$R)"
+else
+    bad "the corner arc is wrong (first opaque x=${FX:-none}, expected ~$R)"
+fi
+# and the Windows icon carries the same shape: its 256px entry must be rounded
+python3 - "$REPO/mnpdf.ico" <<'PY' > "$STATE/ico.txt" 2>&1 || true
+import struct, sys
+from PIL import Image
+d = open(sys.argv[1], "rb").read()
+n = struct.unpack("<H", d[4:6])[0]
+print("entries", [(d[6+i*16] or 256, d[7+i*16] or 256) for i in range(n)])
+im = Image.open(sys.argv[1])
+print("largest", im.size, "corner-alpha", im.convert("RGBA").load()[0,0][3])
+PY
+grep -q "^entries \[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (256, 256)\]$" "$STATE/ico.txt"
+chk $? "mnpdf.ico carries its six sizes (16..256)"
+grep -q "^largest (256, 256) corner-alpha 0$" "$STATE/ico.txt"
+chk $? "the ico's 256px entry is rounded too (transparent corner)"
+
+echo
 echo "== the release plumbing this branch is trusted for =="
 # These checks exist because six release/packaging commits once reached main
 # without the pipeline's reviewer, and a fresh review found a partial-match
 # version check, an installer that installed no icons, and a gate that reported
 # ok when a tool was missing. Each is locked here so the regression cannot come
 # back silently.
-
-REPO=$(cd "$(dirname "$0")/.." && pwd)
 
 # 1. The contract script release.yml runs rejects a partial version. It lives
 #    in one place, so this executes the same rule the workflow does against
