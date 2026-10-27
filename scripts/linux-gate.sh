@@ -49,6 +49,9 @@ if ! command -v xvfb-run >/dev/null; then echo "gate: xvfb-run missing (apt inst
 if ! command -v xwininfo >/dev/null; then echo "gate: xwininfo missing (apt install x11-utils)" >&2; exit 1; fi
 if ! command -v xprop >/dev/null; then echo "gate: xprop missing (apt install x11-utils)" >&2; exit 1; fi
 if ! command -v curl >/dev/null; then echo "gate: curl missing (apt install curl)" >&2; exit 1; fi
+# xdotool drives the menu/touchpad probes below with REAL X server events -
+# the synthetic-event paths cannot test what the event mask filters.
+if ! command -v xdotool >/dev/null; then echo "gate: xdotool missing (apt install xdotool)" >&2; exit 1; fi
 
 echo "== launch, render, and write a pixel shot =="
 D=$STATE/launch; mkdir -p "$D"
@@ -917,6 +920,65 @@ chk $? "Save As is greyed out on a clean document"
 grep -qE ": 137$" "$C/menu.txt"
 chk $? "Print stays live on a clean document with a document open"
 
+
+echo
+echo "== the input fixes: menu opens on release, smooth-scroll mask =="
+# Reproductions for two user reports, driven with REAL X events (xdotool),
+# because both defects live in the layer synthetic events bypass: the event
+# mask and the grab that decides what a button release means.
+#
+# The old menu popped on button-PRESS, and GTK exempts the release that
+# follows only within a short time window - a right-click held a fraction of a
+# second (the normal gesture) put a menu item under the released button, the
+# item fired, and the menu closed itself. The menu now pops on the RELEASE
+# (Windows opens its context menu on WM_CONTEXTMENU, which is the release).
+# The touchpad fix is the GDK_SMOOTH_SCROLL_MASK the area never selected:
+# without it the backends fold smooth deltas into coarse discrete jumps and
+# the proportional path in onScroll never ran.
+R=$STATE/input; mkdir -p "$R/cfg"
+xvfb-run -a --server-args="-screen 0 1100x800x24" \
+  env GDK_BACKEND=x11 XDG_CONFIG_HOME="$R/cfg" MNPDF_TRACE_SCROLL=1 MNPDF_NO_UPDATE=1 \
+  sh -c '
+    "$0" "$1" > "$2" 2>&1 &
+    APP=$!
+    sleep 3
+    # the main window is the big Mnpdf-classed toplevel
+    MAIN=$(xwininfo -root -tree | awk "/arc.pdf/ {print \$1; exit}" | tr -d ":")
+    [ -n "$MAIN" ] || { echo GESTURE-TOPS 0; echo WHEEL-SCROLLY -1; exit 0; }
+    MAIN=$((MAIN))
+    xdotool mousemove 550 400; sleep 0.3
+    # the gesture that closed the old menu: press, hold, move, release
+    xdotool mousedown 3; sleep 0.35
+    xdotool mousemove 565 290; sleep 0.25
+    xdotool mouseup 3; sleep 0.5
+    echo GESTURE-TOPS $(xwininfo -root -children 2>/dev/null | grep -c "\"Mnpdf\"")
+    # an outside click must dismiss it
+    xdotool mousemove 120 720; sleep 0.2
+    xdotool click 1; sleep 0.5
+    echo AFTER-CLICK-TOPS $(xwininfo -root -children 2>/dev/null | grep -c "\"Mnpdf\"")
+    # a real wheel: discrete DOWN events the trace logs with the offset
+    xdotool mousemove 550 400; sleep 0.2
+    for i in 1 2 3 4; do xdotool click 5; sleep 0.12; done
+    sleep 0.5
+    echo WHEEL-SCROLLY $(grep -o "scrollY=[0-9-]*" "$2" | tail -1 | cut -d= -f2)
+    echo EV-MASK $(grep -o "evmask=0x[0-9a-f]*" "$2" | head -1)
+    kill $APP 2>/dev/null
+  ' "$BIN" "$PDF" "$R/app.log" > "$R/out.txt" 2>&1
+GT=$(sed -n 's/^GESTURE-TOPS //p' "$R/out.txt")
+[ "$GT" = "3" ]
+chk $? "the right-click menu survives press+hold+move+release (tops: $GT)"
+AT=$(sed -n 's/^AFTER-CLICK-TOPS //p' "$R/out.txt")
+[ "$AT" = "2" ]
+chk $? "and an outside click dismisses it (tops: $AT)"
+WS=$(sed -n 's/^WHEEL-SCROLLY //p' "$R/out.txt")
+[ -n "$WS" ] && [ "$WS" -gt 100 ] 2>/dev/null
+chk $? "a real wheel scrolls the view (scrollY after 4 notches: ${WS:-none})"
+EM=$(sed -n 's/^EV-MASK evmask=//p' "$R/out.txt" | head -1)
+# GDK_SMOOTH_SCROLL_MASK = 1 << 23 = 0x800000 (GDK_SCROLL_MASK is 1 << 21);
+# the old mask printed 0x200706 - scroll without smooth - and a touchpad's
+# deltas never reached the handler raw.
+[ -n "$EM" ] && [ $(( EM & 0x800000 )) -ne 0 ]
+chk $? "the drawing area selects GDK_SMOOTH_SCROLL_MASK at runtime (evmask=${EM:-none})"
 
 echo
 echo "== the release plumbing this branch is trusted for =="
