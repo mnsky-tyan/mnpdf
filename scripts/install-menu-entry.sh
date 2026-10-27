@@ -14,6 +14,10 @@ here=$(cd "$(dirname "$0")" && pwd)
 app="$here/mnpdf"
 apps="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 entry="$apps/mnpdf.desktop"
+iname="mnpdf"
+if [ -e "$here/mnpdf.png" ] && command -v sha256sum >/dev/null; then
+    iname="mnpdf-$(sha256sum "$here/mnpdf.png" | cut -c1-8)"
+fi
 
 # Entries this installer wrote, in any of its versions. The marker is the
 # current form; v2.8.1 and v2.9.0 shipped the same entry without it, so an
@@ -22,7 +26,7 @@ entry_ours() {
     [ -e "$1" ] || return 1
     grep -qx 'X-mnpdf-installer=yes' "$1" && return 0
     grep -qx 'Name=mnpdf' "$1" || return 1
-    grep -qx 'Icon=mnpdf' "$1" || return 1
+    grep -q '^Icon=mnpdf' "$1" || return 1
     grep -qx 'StartupWMClass=Mnpdf' "$1" || return 1
     case "$(sed -n 's/^Exec=//p' "$1" | head -1)" in
         */mnpdf\ %f|mnpdf\ %f) return 0 ;;
@@ -40,7 +44,9 @@ if [ "${1:-}" = "--remove" ]; then
     if [ ! -e "$entry" ]; then
         any=0
         for s in 16 32 48 64 128 256; do
-            [ -e "$base/icons/hicolor/${s}x${s}/apps/mnpdf.png" ] && any=1
+            d="$base/icons/hicolor/${s}x${s}/apps"
+            [ -e "$d/mnpdf.png" ] && any=1
+            ls "$d"/mnpdf-*.png >/dev/null 2>&1 && any=1
         done
         if [ "$any" = "0" ]; then
             echo "nothing to remove"
@@ -49,7 +55,9 @@ if [ "${1:-}" = "--remove" ]; then
     fi
     rm -f "$entry"
     for s in 16 32 48 64 128 256; do
-        rm -f "$base/icons/hicolor/${s}x${s}/apps/mnpdf.png"
+        d="$base/icons/hicolor/${s}x${s}/apps"
+        rm -f "$d/mnpdf.png"
+        rm -f "$d"/mnpdf-*.png 2>/dev/null
         rmdir "$base/icons/hicolor/${s}x${s}/apps" 2>/dev/null || true
         rmdir "$base/icons/hicolor/${s}x${s}" 2>/dev/null || true
     done
@@ -71,9 +79,28 @@ fi
 
 mkdir -p "$apps"
 
+# retire the icons any earlier install left under other names, so a theme dir
+# never holds two mnpdf sets
+for s in 16 32 48 64 128 256; do
+    d="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/${s}x${s}/apps"
+    [ -d "$d" ] || continue
+    for f in "$d"/mnpdf.png "$d"/mnpdf-*.png; do
+        [ -e "$f" ] || continue
+        case "$(basename "$f")" in "$iname.png") continue ;; esac
+        rm -f "$f"
+    done
+done
+
 # The icon: a PNG per size, resized from the shipped mnpdf.png (the same
 # source as the Windows mnpdf.ico), so the menu and the taskbar show the real
 # artwork rather than a generic sheet.
+#
+# The icon's THEME NAME carries a content hash: icon NAME is the key a desktop
+# caches its pixmaps under, and a same-name pixel change is never re-read by a
+# running session (measured: KDE's icon cache did not re-read mnpdf.png after
+# the bytes changed, so the launcher kept showing the old square bitmap).
+# Every pixel change therefore installs under a fresh name, and the entry's
+# Icon= points at it; the previous names are cleaned up below.
 #
 # The Pillow path is the good one. The fallback matters: python3 being present
 # is NOT the same as Pillow being present, and a first version of this block
@@ -83,7 +110,7 @@ mkdir -p "$apps"
 # exiting 1, and the fallback is chosen on that, not on python3's existence.
 base="${XDG_DATA_HOME:-$HOME/.local/share}"
 if [ -e "$here/mnpdf.png" ] && command -v python3 >/dev/null; then
-    if python3 - "$here/mnpdf.png" "$base" <<'PY'
+    if python3 - "$here/mnpdf.png" "$base" "$iname" <<'PY'
 import os, sys
 try:
     from PIL import Image
@@ -93,19 +120,19 @@ im = Image.open(sys.argv[1]).convert("RGBA")
 for s in (16, 32, 48, 64, 128, 256):
     d = f"{sys.argv[2]}/icons/hicolor/{s}x{s}/apps"
     os.makedirs(d, exist_ok=True)
-    im.resize((s, s), Image.LANCZOS).save(f"{d}/mnpdf.png")
+    im.resize((s, s), Image.LANCZOS).save(f"{d}/{sys.argv[3]}.png")
 PY
     then :; else
         echo "  (no Pillow - installing the shipped PNG as the icon; themes will scale it)"
         for s in 48 256; do
             d="$base/icons/hicolor/${s}x${s}/apps"
-            mkdir -p "$d" && cp "$here/mnpdf.png" "$d/mnpdf.png"
+            mkdir -p "$d" && cp "$here/mnpdf.png" "$d/$iname.png"
         done
     fi
 elif [ -e "$here/mnpdf.png" ]; then
     for s in 48 256; do
         d="$base/icons/hicolor/${s}x${s}/apps"
-        mkdir -p "$d" && cp "$here/mnpdf.png" "$d/mnpdf.png"
+        mkdir -p "$d" && cp "$here/mnpdf.png" "$d/$iname.png"
     done
 fi
 
@@ -116,7 +143,7 @@ Name=mnpdf
 GenericName=PDF Reader
 Comment=A small, fast, native PDF reader with a highlighter
 Exec="$app" %f
-Icon=mnpdf
+Icon=$iname
 Terminal=false
 Categories=Office;Viewer;
 MimeType=application/pdf;

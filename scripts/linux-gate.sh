@@ -966,6 +966,22 @@ xvfb-run -a --server-args="-screen 0 1100x800x24" \
     sleep 0.5
     echo WHEEL-SCROLLY $(grep -o "scrollY=[0-9-]*" "$2" | tail -1 | cut -d= -f2)
     echo EV-MASK $(grep -o "evmask=0x[0-9a-f]*" "$2" | head -1)
+    # and a BURST the way a touchpad delivers: many notches with no pause, so
+    # the reader has to either render each one (the lag) or coalesce them. The
+    # counts below are what the fix is judged on.
+    echo PRE-EVENTS $(grep -c "scroll: dir=" "$2")
+    echo PRE-RENDERS $(grep -c "render took" "$2")
+    echo PRE-TILES $(grep -c "tile-render" "$2")
+    # one xdotool process with no delay: a per-notch xdotool spawn costs ~4 ms,
+    # which lets the idle run between notches and coalesces nothing. This form
+    # queues the whole burst, the way a touchpad driver does.
+    xdotool click --repeat 16 --delay 0 5
+    sleep 1.2
+    echo POST-EVENTS $(grep -c "scroll: dir=" "$2")
+    echo POST-RENDERS $(grep -c "render took" "$2")
+    echo POST-TILES $(grep -c "tile-render" "$2")
+    echo BURST-FINAL $(grep -o "render took.*scrollY=[0-9-]*" "$2" | tail -1 | grep -o "scrollY=[0-9-]*" | cut -d= -f2)
+    echo BURST-LASTY $(grep -o "scrollY=[0-9-]*" "$2" | tail -1 | cut -d= -f2)
     kill $APP 2>/dev/null
   ' "$BIN" "$PDF" "$R/app.log" > "$R/out.txt" 2>&1
 GT=$(sed -n 's/^GESTURE-TOPS //p' "$R/out.txt")
@@ -983,6 +999,26 @@ EM=$(sed -n 's/^EV-MASK evmask=//p' "$R/out.txt" | head -1)
 # deltas never reached the handler raw.
 [ -n "$EM" ] && [ $(( EM & 0x800000 )) -ne 0 ]
 chk $? "the drawing area selects GDK_SMOOTH_SCROLL_MASK at runtime (evmask=${EM:-none})"
+
+# 3. a burst of notches does NOT render once per notch. Before the fix every
+#    scroll event rendered the visible pages from PDFium's vector data (~4 ms
+#    each at this window's device scale), so a touchpad burst saturated the
+#    main loop - the "very laggy when i scroll" report. Measured: 16 notches
+#    render 4 times, and each page's bitmap is rasterized once, not 16 times.
+PE=$(sed -n 's/^PRE-EVENTS //p' "$R/out.txt"); PO=$(sed -n 's/^POST-EVENTS //p' "$R/out.txt")
+PR=$(sed -n 's/^PRE-RENDERS //p' "$R/out.txt"); PP=$(sed -n 's/^POST-RENDERS //p' "$R/out.txt")
+PT=$(sed -n 's/^PRE-TILES //p' "$R/out.txt"); PS=$(sed -n 's/^POST-TILES //p' "$R/out.txt")
+BE=$((PO - PE)); BR=$((PP - PR)); BT=$((PS - PT))
+[ -n "$BE" ] && [ "$BE" -ge 12 ] 2>/dev/null
+chk $? "the burst probe really delivered its notches (events: ${BE:-none})"
+[ -n "$BR" ] && [ "$BR" -le 6 ] 2>/dev/null
+chk $? "a ${BE}-notch burst renders at most 6 frames (renders: ${BR:-none}, was 16 before the fix)"
+[ -n "$BT" ] && [ "$BT" -ge 1 ] && [ "$BT" -le 4 ] 2>/dev/null
+chk $? "and each page's bitmap is rasterized once, not per notch (tile renders: ${BT:-none})"
+BF=$(sed -n 's/^BURST-FINAL //p' "$R/out.txt")
+BL=$(sed -n 's/^BURST-LASTY //p' "$R/out.txt")
+[ -n "$BF" ] && [ "$BF" = "$BL" ]
+chk $? "the coalesced frame paints the burst's final position (final ${BF:-none}, last event ${BL:-none})"
 
 echo
 echo "== the icon: rounded at the brand radius =="
@@ -1092,11 +1128,36 @@ fi
 # The bug this locks: the resize step used to exit 0 when Pillow was missing
 # having written nothing, and the elif fallback (keyed on python3 being absent)
 # then never ran - no icon, no warning, exit 0.
-if [ -e "$INS/share/icons/hicolor/256x256/apps/mnpdf.png" ]; then
+INSICON=$(ls "$INS/share/icons/hicolor/256x256/apps/"mnpdf-*.png 2>/dev/null | head -1)
+if [ -n "$INSICON" ]; then
     ok "install-menu-entry.sh installs the themed icon with python3 present but no Pillow"
 else
     bad "install-menu-entry.sh installed no icon (python3 without Pillow)"
     sed 's/^/       installer: /' "$INS/log.txt" >&2 || true
+fi
+# the entry's Icon= must name an icon that exists, and that name must be the
+# content-hashed one: the hash is what makes a running desktop re-read the
+# pixels after a change (a same-name change stays cached for the life of the
+# session - measured on this machine's own panel, which never re-read)
+ENTRY="$INS/share/applications/mnpdf.desktop"
+ENTICON=$(sed -n 's/^Icon=//p' "$ENTRY" 2>/dev/null | head -1)
+if [ -n "$ENTICON" ] && [ -e "$INS/share/icons/hicolor/256x256/apps/$ENTICON.png" ]; then
+    ok "the entry's Icon= names an installed theme file ($ENTICON)"
+else
+    bad "the entry's Icon= does not name an installed theme file (${ENTICON:-none})"
+fi
+case "$ENTICON" in
+    mnpdf-????????) ok "the icon name carries the content hash (name: $ENTICON)" ;;
+    *) bad "the icon name is not content-hashed (${ENTICON:-none})" ;;
+esac
+# and an install must retire icon files from earlier installs
+cp "$INS/share/icons/hicolor/256x256/apps/$ENTICON.png" \
+   "$INS/share/icons/hicolor/256x256/apps/mnpdf-aaaabbbb.png" 2>/dev/null
+( cd "$INS/app" && XDG_DATA_HOME="$INS/share" timeout 60 ./install-menu-entry.sh ) >>"$INS/log2.txt" 2>&1
+if [ -e "$INS/share/icons/hicolor/256x256/apps/mnpdf-aaaabbbb.png" ]; then
+    bad "installing under a hash leaves the previous icon file behind"
+else
+    ok "installing retires icon files from earlier installs"
 fi
 # ...and the ordinary install takes the good path (Pillow here, or the fallback
 # on a machine without it), so --remove is exercised on a full icon set.
@@ -1213,7 +1274,7 @@ chk $? "the window icon is the 512x512 mnpdf.png beside the binary, not the CWD"
 #    and says so when there is nothing left.
 ( cd "$INS/app" && XDG_DATA_HOME="$INS/share" timeout 60 ./install-menu-entry.sh --remove ) >"$INS/rm.txt" 2>&1
 if [ ! -e "$ENTRY" ] \
-   && [ ! -e "$INS/share/icons/hicolor/256x256/apps/mnpdf.png" ] \
+   && ! ls "$INS/share/icons/hicolor/256x256/apps/"mnpdf*.png >/dev/null 2>&1 \
    && [ ! -d "$INS/share/icons/hicolor/256x256/apps" ] \
    && [ ! -d "$INS/share/icons/hicolor/48x48/apps" ] \
    && [ ! -d "$INS/share/icons/hicolor/48x48" ]; then

@@ -1517,6 +1517,24 @@ static gboolean onMotion(GtkWidget* w, GdkEventMotion* ev, gpointer) {
     return TRUE;
 }
 
+// A scroll event does not render immediately: it marks the frame dirty and an
+// idle callback renders ONCE for the whole burst. A touchpad delivers dozens of
+// deltas between two frames; rendering each of them did the work of a whole
+// scroll every frame and was the "very laggy when i scroll" report. Everything
+// else (zoom, mark edits, tab switches) still renders synchronously - only the
+// scroll path, where the intermediate positions are never shown, is coalesced.
+static bool gRenderPending = false;
+static gboolean renderFrameIdle(gpointer) {
+    gRenderPending = false;
+    renderPage();
+    return G_SOURCE_REMOVE;
+}
+static void requestRender() {
+    if (gRenderPending) return;
+    gRenderPending = true;
+    g_idle_add_full(G_PRIORITY_DEFAULT_IDLE, renderFrameIdle, nullptr, nullptr);
+}
+
 static gboolean onScroll(GtkWidget* w, GdkEventScroll* ev, gpointer) {
     // MNPDF_TRACE_SCROLL: the Xvfb wheel probe reads this to tell "events never
     // arrive" from "the handler mis-steps" - the two need different fixes. The
@@ -1572,7 +1590,7 @@ static gboolean onScroll(GtkWidget* w, GdkEventScroll* ev, gpointer) {
         }
         if (dy) { scrollByDy((int)(dy * stepPx + (dy > 0 ? 0.5 : -0.5))); markSave(); }
         if (dx) { gScrollX += (int)(dx * stepPx + (dx > 0 ? 0.5 : -0.5)); clampScroll(); }
-        renderPage();
+        requestRender();
         return TRUE;
     }
     if (ctrl) {
@@ -1580,7 +1598,7 @@ static gboolean onScroll(GtkWidget* w, GdkEventScroll* ev, gpointer) {
     } else {
         if (dy) { scrollByDy((int)(dy * stepPx)); markSave(); }
         if (dx) { gScrollX += (int)(dx * stepPx); clampScroll(); }
-        renderPage();
+        requestRender();
     }
     return TRUE;
 }
