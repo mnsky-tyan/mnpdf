@@ -941,11 +941,15 @@ xvfb-run -a --server-args="-screen 0 1100x800x24" \
   sh -c '
     "$0" "$1" > "$2" 2>&1 &
     APP=$!
-    sleep 3
     # the main window is the big Mnpdf-classed toplevel
-    MAIN=$(xwininfo -root -tree | awk "/arc.pdf/ {print \$1; exit}" | tr -d ":")
+    MAIN=
+    i=0
+    while [ -z "$MAIN" ] && [ $i -lt 40 ]; do
+      MAIN=$(xwininfo -root -tree | awk "/arc.pdf/ {print \$1; exit}" | tr -d ":")
+      [ -n "$MAIN" ] || sleep 0.2
+      i=$((i+1))
+    done
     [ -n "$MAIN" ] || { echo GESTURE-TOPS 0; echo WHEEL-SCROLLY -1; exit 0; }
-    MAIN=$((MAIN))
     xdotool mousemove 550 400; sleep 0.3
     # the gesture that closed the old menu: press, hold, move, release
     xdotool mousedown 3; sleep 0.35

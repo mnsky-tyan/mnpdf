@@ -771,7 +771,7 @@ static inline int devX(double x) { return (int)(x * ui_scale() + 0.5); }
 static inline int devY(double y) { return (int)(y * ui_scale() + 0.5); }
 
 // ---- drawing area ----
-static void onDraw(GtkWidget* w, cairo_t* cr, gpointer) {
+static gboolean onDraw(GtkWidget* w, cairo_t* cr, gpointer) {
     ui_paint(cr);
     (void)w;
     // Scrollbars painted over the frame. sbRects and the thumb helpers work in
@@ -796,6 +796,7 @@ static void onDraw(GtkWidget* w, cairo_t* cr, gpointer) {
         cairo_rectangle(cr, tx / s, by + 2, tw / s, kSbThick - 4);
         cairo_fill(cr);
     }
+    return FALSE;
 }
 
 static void onAreaSize(GtkWidget* w, GtkAllocation* a, gpointer) {
@@ -2160,7 +2161,8 @@ static void toggleThumbDrawer() {
     // the drawer answers the keyboard, so it takes key presses and can hold
     // the focus the keys arrive on
     gtk_widget_set_can_focus(gThumbArea, TRUE);
-    gtk_widget_add_events(gThumbArea, GDK_BUTTON_PRESS_MASK | GDK_SCROLL_MASK | GDK_KEY_PRESS_MASK);
+    gtk_widget_add_events(gThumbArea,
+        GDK_BUTTON_PRESS_MASK | GDK_SCROLL_MASK | GDK_SMOOTH_SCROLL_MASK | GDK_KEY_PRESS_MASK);
     g_signal_connect(gThumbArea, "draw", G_CALLBACK(onThumbDraw), nullptr);
     g_signal_connect(gThumbArea, "button-press-event", G_CALLBACK(onThumbPress), nullptr);
     g_signal_connect(gThumbArea, "scroll-event", G_CALLBACK(onThumbScrollEv), nullptr);
@@ -2316,12 +2318,14 @@ static void requestQuit() {
     if (!onWindowDelete(nullptr, nullptr, nullptr)) gtk_widget_destroy(gWin);
 }
 
-static void onWindowConfigure(GtkWidget*, GdkEventConfigure* ev, gpointer) {
+static gboolean onWindowConfigure(GtkWidget*, GdkEventConfigure* ev, gpointer) {
     gWinX = ev->x; gWinY = ev->y; gWinW = ev->width; gWinH = ev->height;
+    return FALSE;
 }
 
-static void onWindowState(GtkWidget*, GdkEventWindowState* ev, gpointer) {
+static gboolean onWindowState(GtkWidget*, GdkEventWindowState* ev, gpointer) {
     gWinMax = (ev->new_window_state & GDK_WINDOW_STATE_MAXIMIZED) != 0;
+    return FALSE;
 }
 
 // The saved frame comes back where the last session left it, bounded the way the
