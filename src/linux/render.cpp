@@ -15,6 +15,7 @@
 
 #include <cairo.h>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
@@ -34,6 +35,21 @@ static FPDF_BITMAP gPdfBitmap = nullptr;
 
 // ---- the page tile cache ----
 //
+// The stable document key: a tile must be reused only for the document whose
+// pixels it holds. The Doc* handle is not enough on its own (openPath closes the
+// old handle and stores the new one, but two documents with the same page size
+// in the same tab would otherwise collide on (page, size, rotation) with the
+// tab pointer alone), and the handle changes on every load while a stale tile
+// would not know. The key pairs the tab pointer with a counter that increments
+// on every flushPageCache() - the choke point every content change funnels
+// through (open, save/bake, page surgery, merge/split, tab switches) - so the
+// key survives within one document and never survives into the next.
+static uint64_t gDocEpoch = 1;
+static uint64_t docKeyFor(const void* tab) {
+    return ((uint64_t)(uintptr_t)tab << 32) ^ gDocEpoch;
+}
+void ui_tileEpochBump() { gDocEpoch++; }
+//
 // Scrolling used to rasterize every visible page from PDFium's vector data on
 // EVERY scroll event. A touchpad sends dozens of deltas a second and each
 // raster is a whole page of glyphs at device scale, so the reader lagged behind
@@ -49,7 +65,7 @@ static FPDF_BITMAP gPdfBitmap = nullptr;
 struct PageTile {
     int page = -1;
     int w = 0, h = 0, rot = 0;
-    const void* owner = nullptr;          // the Doc* the page belongs to
+    uint64_t docKey = 0;                   // stable key for the current document
     unsigned long tick = 0;
     FPDF_BITMAP bmp = nullptr;
 };
@@ -64,7 +80,7 @@ static FPDF_BITMAP pageTile(int i, FPDF_PAGE p, int pw, int ph, int rot) {
     for (size_t k = 0; k < kTileSlots; k++) {
         PageTile& t = gTiles[k];
         if (t.page == i && t.w == pw && t.h == ph && t.rot == rot && t.bmp
-            && t.owner == (const void*)gViewTab) {
+            && t.docKey == docKeyFor((const void*)gViewTab)) {
             t.tick = ++gTileClock;
             return t.bmp;
         }
@@ -97,7 +113,7 @@ static FPDF_BITMAP pageTile(int i, FPDF_PAGE p, int pw, int ph, int rot) {
     FPDFBitmap_FillRect(slot->bmp, 0, 0, pw, ph, 0xFFFFFFFF);
     FPDF_RenderPageBitmap(slot->bmp, p, 0, 0, pw, ph, rot, FPDF_ANNOT | FPDF_LCD_TEXT);
     slot->page = i; slot->w = pw; slot->h = ph; slot->rot = rot;
-    slot->owner = (const void*)gViewTab;
+    slot->docKey = docKeyFor((const void*)gViewTab);
     slot->tick = ++gTileClock;
     gTileBytes += need;
     if (gTraceTiles)

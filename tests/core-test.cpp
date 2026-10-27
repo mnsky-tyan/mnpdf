@@ -33,6 +33,7 @@ static std::string gLastCopy;
 double ui_scale() { return 1.0; }
 void ui_invalidate() {}
 void ui_set_title(const std::string&) {}
+void ui_tileEpochBump() {}
 int ui_message(const std::string& text, const std::string&, bool) { gMessages.push_back(text); return UI_MSGBOX_YES; }
 std::string ui_open_file() { return gStubOpenPath; }
 std::string ui_save_file(const std::string& s) { return gStubSavePath.empty() ? s : gStubSavePath; }

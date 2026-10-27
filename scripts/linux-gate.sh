@@ -1074,6 +1074,57 @@ grep -q "^largest (256, 256) corner-alpha 0$" "$STATE/ico.txt"
 chk $? "the ico's 256px entry is rounded too (transparent corner)"
 
 echo
+echo "== the tile cache never shows a stale document =="
+REPO=$(cd "$(dirname "$0")/.." && pwd)
+PDFABS=$(cd "$REPO" && readlink -f tests/arc.pdf)
+# The pipeline's own test review named the dangerous case: open a DIFFERENT
+# document in the SAME tab, and a tile keyed only on (tab, page, size, rotation)
+# would be reused if both documents' pages happened to share a size - showing
+# the previous document's pixels. The tile key therefore carries a document
+# epoch that advances on every flushPageCache() (the choke point openPath,
+# save/bake, surgery, merge/split and tab switches all funnel through).
+T=$STATE/tiles; mkdir -p "$T/cfg/mnpdf"
+cp "$PDFABS" "$T/second.pdf"
+# the probe: launch with arc.pdf (its page 0 rasterizes at startup, so a tile
+# EXISTS), then MNPDF_OPEN_PATH + a command id switch the SAME TAB to second.pdf
+# - a byte-identical copy of arc.pdf, so every tile key except the document
+# epoch matches exactly. Scrolling then must RE-rasterize (epoch dropped the
+# old tiles); a tile cache keyed without the epoch would reuse arc.pdf's pixels
+# and the log would show no second tile render. second.pdf being arc.pdf's twin
+# is the point: same sizes, same rotation, only the pixels differ.
+xvfb-run -a --server-args="-screen 0 1100x800x24" \
+  env GDK_BACKEND=x11 XDG_CONFIG_HOME="$T/cfg" MNPDF_TRACE_SCROLL=1 MNPDF_NO_UPDATE=1 \
+      MNPDF_OPEN_PATH="$T/second.pdf" MNPDF_CMD=104 \
+  sh -c '
+    "$0" "$1" > "$2" 2>&1 &
+    APP=$!
+    sleep 3.5
+    # the switch already happened (MNPDF_OPEN_PATH fired at command time);
+    # scrolling now must rasterize SECOND.pdf, not blit an arc.pdf tile
+    xdotool mousemove 550 400; sleep 0.2
+    xdotool click --repeat 3 --delay 0 5; sleep 0.8
+    echo AFTER-SWITCH-TILES $(grep -c "tile-render" "$2")
+    kill $APP 2>/dev/null
+  ' "$BIN" "$PDF" "$T/switch.log" > "$T/out2.txt" 2>&1
+AT=$(sed -n 's/^AFTER-SWITCH-TILES //p' "$T/out2.txt")
+[ -n "$AT" ] && [ "$AT" -ge 1 ] 2>/dev/null
+chk $? "scrolling after the switch rasterizes the NEW document's tiles (tile renders: ${AT:-none})"
+# the launch log must show the app actually switched: the tile-render lines
+# name sizes, and the second open re-rasterizes page 0 (the epoch dropped the
+# first document's tile). A run whose trace shows NO tile render after the
+# switch would mean the tile survived - the stale-pixel bug.
+# the discriminator: startup rasterizes page 0 of arc.pdf (1 tile render), the
+# switch must have dropped it, and the scroll re-rasterizes page 0 of
+# second.pdf (a 2nd tile render). A key without the epoch reuses the first
+# document's tile and the log stops at 1.
+TILES=$(grep -c "tile-render" "$T/switch.log")
+[ -n "$TILES" ] && [ "$TILES" -ge 2 ] 2>/dev/null
+chk $? "a same-tab switch to a same-sized document re-rasterizes (tile renders: ${TILES:-none}; 1 would mean stale reuse)"
+FSY=$(grep -o "scrollY=[0-9-]*" "$T/switch.log" | tail -1 | cut -d= -f2)
+[ -n "$FSY" ] && [ "$FSY" -gt 0 ] 2>/dev/null
+chk $? "the scrolls actually moved the view (final scrollY: ${FSY:-none})"
+
+echo
 echo "== the release plumbing this branch is trusted for =="
 # These checks exist because six release/packaging commits once reached main
 # without the pipeline's reviewer, and a fresh review found a partial-match

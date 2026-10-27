@@ -1736,6 +1736,11 @@ static gboolean onShotIdle(gpointer) {
     const char* cmd = getenv("MNPDF_CMD");
     if (cmd && *cmd && !ranCommand) {
         ranCommand = true;
+        // MNPDF_OPEN_PATH: open this file as command 107 does (a menu Open
+        // without the chooser), so a probe can drive open-in-the-same-tab -
+        // the tile cache's most dangerous reuse case.
+        if (const char* op = getenv("MNPDF_OPEN_PATH"))
+            openPath(utf8ToWide(op));
         std::string list(cmd);
         size_t at = 0;
         while (at <= list.size()) {

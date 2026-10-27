@@ -31,6 +31,7 @@ void refreshDrawers();
 // reader did not pick. The Windows build keeps gThumbSel beside the drawer it
 // belongs to (src/main.cpp:4476) and sets it in movePage (src/main.cpp:4619).
 extern int gThumbSel;
+void ui_tileEpochBump();   // render.cpp: drop every cached page tile (content changed)
 void ui_set_title(const std::string& t); // window/tab title
 
 // modal-ish message box (the quit prompt asks Yes/No/Cancel as Windows does;
