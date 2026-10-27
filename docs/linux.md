@@ -515,6 +515,15 @@ touchpad" cause. `MNPDF_TRACE_SCROLL=1` logs every scroll event with its
 direction, deltas, scroll offset and the area's runtime event mask - the layer
 synthetic tests cannot reach.
 
+Scrolling does not rasterize per event. A touchpad delivers dozens of deltas
+between two frames; each delta only moves the offset, and one idle callback
+renders the final frame. The pages themselves come from a page-tile cache
+(up to four page-sized bitmaps, 48 MB budget): a page is rasterized from
+PDFium's vector data once per (page, size, rotation, document), and a scroll
+copies the visible rows of that tile into the frame. `MNPDF_TRACE_SCROLL=1`
+logs the event stream, each frame's cost and every tile render, which is how
+the "very laggy when i scroll" report was pinned to the per-event raster.
+
 The context menu opens on button-RELEASE, the way Windows opens it
 (`WM_CONTEXTMENU`). Opening on the press made the release that follows race
 GTK's exemption window: hold the right button a fraction of a second and a menu
