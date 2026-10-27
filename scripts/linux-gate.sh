@@ -1009,16 +1009,15 @@ r = w * 43 / 277.0
 y0 = next((y for y in range(h) if any(px[x,y][3] > 0 for x in range(0, w, 4))), -1)
 fx = next((x for x in range(w) if px[x,y0][3] > 0), -1)
 print("y0", y0, "first-opaque-x", fx, "r", round(r,1))
-# expected: the arc starts at ~r - sqrt(2*r*0.5) at the first row
+# expected: the arc starts at ~r - sqrt(2*r*0.875) at the first row
 PY
 grep -q "^size 512x512$" "$STATE/icon.txt"
 chk $? "mnpdf.png is the 512x512 artwork"
 grep -q "^corners \[0, 0, 0, 0\]$" "$STATE/icon.txt"
 chk $? "the icon's four corners are transparent (rounded, not square)"
-Y0=$(sed -n 's/^y0 //p' "$STATE/icon.txt" | cut -d' ' -f1)
 FX=$(sed -n 's/^y0 .*first-opaque-x //p' "$STATE/icon.txt" | cut -d' ' -f1)
 R=$(sed -n 's/.* r //p' "$STATE/icon.txt")
-if [ -n "$FX" ] && [ "$FX" -ge 65 ] && [ "$FX" -le 84 ] 2>/dev/null; then
+if [ -n "$FX" ] && [ "$FX" -ge 64 ] && [ "$FX" -le 72 ] 2>/dev/null; then
     ok "the corner arc starts at the brand radius (first opaque x=$FX, r=$R)"
 else
     bad "the corner arc is wrong (first opaque x=${FX:-none}, expected ~$R)"

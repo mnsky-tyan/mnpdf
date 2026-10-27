@@ -88,21 +88,18 @@ def render(src, size):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("source", nargs="?", default=DEFAULT_SOURCE)
-    ap.add_argument("--out-dir", default=".")
     args = ap.parse_args()
 
     src = Image.open(args.source).convert("RGB")
     ico_all = [render(src, s) for s in SIZES_ICO]
     big = ico_all[-1]
     others = ico_all[:-1]
-    ico_path = os.path.join(args.out_dir, "mnpdf.ico")
-    big.save(ico_path, format="ICO", append_images=others,
+    big.save("mnpdf.ico", format="ICO", append_images=others,
              sizes=[(s, s) for s in SIZES_ICO])
 
-    png_path = os.path.join(args.out_dir, "mnpdf.png")
-    render(src, PNG_SIZE).save(png_path)
+    render(src, PNG_SIZE).save("mnpdf.png")
 
-    print("wrote %s and %s" % (ico_path, png_path), file=sys.stderr)
+    print("wrote mnpdf.ico and mnpdf.png", file=sys.stderr)
 
 
 if __name__ == "__main__":
