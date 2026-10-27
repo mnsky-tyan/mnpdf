@@ -508,7 +508,19 @@ step, instead of accumulating them until a whole unit and then moving a fixed
 coarse. A delta now moves a proportional 120 design pixels per unit, so the page
 follows the fingers and the step keeps the same apparent size at any density. A
 scroll that arrives while a context popup is open is ignored rather than
-repainting under the menu.
+repainting under the menu. The area also selects `GDK_SMOOTH_SCROLL_MASK`:
+without that bit the backends fold smooth deltas into coarse discrete events
+before the handler ever sees them, which is the second "does not respond to the
+touchpad" cause. `MNPDF_TRACE_SCROLL=1` logs every scroll event with its
+direction, deltas, scroll offset and the area's runtime event mask - the layer
+synthetic tests cannot reach.
+
+The context menu opens on button-RELEASE, the way Windows opens it
+(`WM_CONTEXTMENU`). Opening on the press made the release that follows race
+GTK's exemption window: hold the right button a fraction of a second and a menu
+item sat under the released pointer, the item fired, and the menu "closed
+itself". The gate reproduces the gesture with real X events (xdotool) because
+the defect lived in the grab layer synthetic events bypass.
 
 ## Desktop integration
 

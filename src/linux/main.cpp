@@ -771,7 +771,7 @@ static inline int devX(double x) { return (int)(x * ui_scale() + 0.5); }
 static inline int devY(double y) { return (int)(y * ui_scale() + 0.5); }
 
 // ---- drawing area ----
-static void onDraw(GtkWidget* w, cairo_t* cr, gpointer) {
+static gboolean onDraw(GtkWidget* w, cairo_t* cr, gpointer) {
     ui_paint(cr);
     (void)w;
     // Scrollbars painted over the frame. sbRects and the thumb helpers work in
@@ -796,6 +796,7 @@ static void onDraw(GtkWidget* w, cairo_t* cr, gpointer) {
         cairo_rectangle(cr, tx / s, by + 2, tw / s, kSbThick - 4);
         cairo_fill(cr);
     }
+    return FALSE;
 }
 
 static void onAreaSize(GtkWidget* w, GtkAllocation* a, gpointer) {
@@ -1382,10 +1383,10 @@ static void dumpEveryMenuShape() {
 }
 
 // ---- mouse ----
-static void onButtonPress(GtkWidget* w, GdkEventButton* ev, gpointer) {
+static gboolean onButtonPress(GtkWidget* w, GdkEventButton* ev, gpointer) {
     gtk_widget_grab_focus(w);
-    if (ev->button == GDK_BUTTON_SECONDARY) { onContextMenu(w, ev); return; }
-    if (ev->button != GDK_BUTTON_PRIMARY) return;
+    // the context menu moves to the RELEASE handler; a secondary press does nothing
+    if (ev->button != GDK_BUTTON_PRIMARY) return TRUE;
     const int ex = devX(ev->x), ey = devY(ev->y);
 
     // scrollbars first
@@ -1401,7 +1402,7 @@ static void onButtonPress(GtkWidget* w, GdkEventButton* ev, gpointer) {
                 scrollByDy(step); renderPage();
             }
         }
-        return;
+        return TRUE;
     }
     if (ey >= hy && hThumb(&tx, &tw)) {
         if (ex >= tx && ex < tx + tw) { gSbDragging = true; gSbWhich = 2; gSbGrab = (int)ex - tx; }
@@ -1412,7 +1413,7 @@ static void onButtonPress(GtkWidget* w, GdkEventButton* ev, gpointer) {
                 clampScroll(); renderPage();
             }
         }
-        return;
+        return TRUE;
     }
 
     if (!gSigPlacing.empty()) {
@@ -1422,30 +1423,30 @@ static void onButtonPress(GtkWidget* w, GdkEventButton* ev, gpointer) {
                 commitSigPlacement(i, ex - px, ey - py);
                 // a signature landed, so "Clear signatures" is usable now
                 refreshMenuLabels();
-                return;
+                return TRUE;
             }
         }
-        return;
+        return TRUE;
     }
     if (ev->type == GDK_2BUTTON_PRESS) {
         int pg;
         int idx = charIndexClamped((int)ex, (int)ey, &pg);
-        if (idx < 0 || pg < 0) return;
+        if (idx < 0 || pg < 0) return TRUE;
         gSelAnchorPage = gSelHeadPage = pg;
         gSelAnchor = gSelHead = idx;
         selectWord(pg, idx);
         gDragging = true;
         renderPage();
-        return;
+        return TRUE;
     }
     if (ev->type == GDK_3BUTTON_PRESS) {
         int pg;
         int idx = charIndexClamped((int)ex, (int)ey, &pg);
-        if (idx < 0 || pg < 0) return;
+        if (idx < 0 || pg < 0) return TRUE;
         selectLine(pg, idx);
         gDragging = true;
         renderPage();
-        return;
+        return TRUE;
     }
     int pg;
     int idx = charIndexClamped((int)ex, (int)ey, &pg);
@@ -1453,15 +1454,28 @@ static void onButtonPress(GtkWidget* w, GdkEventButton* ev, gpointer) {
     gSelAnchor = gSelHead = idx;
     gDragging = true;
     renderPage();
+    return TRUE;
 }
 
-static void onButtonRelease(GtkWidget*, GdkEventButton* ev, gpointer) {
-    if (ev->button != GDK_BUTTON_PRIMARY) return;
+static gboolean onButtonRelease(GtkWidget* w, GdkEventButton* ev, gpointer) {
+    if (ev->button == GDK_BUTTON_SECONDARY) {
+        // The menu opens here, on the release: the event still carries the
+        // pointer position, device and time the popup needs, and no button is
+        // held once it is up, so no release can land on an item by accident.
+        onContextMenu(w, ev);
+        return TRUE;
+    }
+    if (ev->button != GDK_BUTTON_PRIMARY) return TRUE;
     gDragging = false;
     gSbDragging = false;
+    return TRUE;
 }
 
-static void onMotion(GtkWidget* w, GdkEventMotion* ev, gpointer) {
+// Handlers on a *_event signal answer a BOOLEAN question ("handled?"); a void
+// body leaves that return slot to whatever the register happened to hold,
+// which is undefined behaviour the compiler cannot even warn about through
+// g_signal_connect's void*.
+static gboolean onMotion(GtkWidget* w, GdkEventMotion* ev, gpointer) {
     if (gSbDragging) {
         int vx, vy, vw, vh, hx, hy, hw, hh;
         sbRects(&vx, &vy, &vw, &vh, &hx, &hy, &hw, &hh);
@@ -1487,7 +1501,7 @@ static void onMotion(GtkWidget* w, GdkEventMotion* ev, gpointer) {
             gScrollX = (int)(frac * (total - view));
             clampScroll(); renderPage();
         }
-        return;
+        return TRUE;
     }
     // cursor shape over text
     int pg;
@@ -1500,13 +1514,30 @@ static void onMotion(GtkWidget* w, GdkEventMotion* ev, gpointer) {
             renderPage();
         }
     }
+    return TRUE;
 }
 
-static void onScroll(GtkWidget*, GdkEventScroll* ev, gpointer) {
+static gboolean onScroll(GtkWidget* w, GdkEventScroll* ev, gpointer) {
+    // MNPDF_TRACE_SCROLL: the Xvfb wheel probe reads this to tell "events never
+    // arrive" from "the handler mis-steps" - the two need different fixes. The
+    // first line also prints the drawing area's runtime event mask, so the gate
+    // can assert GDK_SMOOTH_SCROLL_MASK was really selected on the window (a
+    // missing mask folds a touchpad's deltas into discrete events before this
+    // handler ever sees them).
+    static const bool trace = getenv("MNPDF_TRACE_SCROLL") != nullptr;
+    if (trace && w && gtk_widget_get_window(w))
+        fprintf(stderr, "scroll: dir=%d dx=%.2f dy=%.2f state=0x%x scrollY=%d fitW=%d zoom=%.3f uis=%.3f evmask=0x%x\n",
+                (int)ev->direction, ev->delta_x, ev->delta_y, (unsigned)ev->state,
+                gScrollY, (int)gFitWidth, gZoom, ui_scale(),
+                (unsigned)gdk_window_get_events(gtk_widget_get_window(w)));
+    else if (trace)
+        fprintf(stderr, "scroll: dir=%d dx=%.2f dy=%.2f state=0x%x scrollY=%d fitW=%d zoom=%.3f uis=%.3f\n",
+                (int)ev->direction, ev->delta_x, ev->delta_y, (unsigned)ev->state,
+                gScrollY, (int)gFitWidth, gZoom, ui_scale());
     // A popup owns the pointer; if a scroll still reaches the page (a touchpad
     // can deliver one while a menu is up), ignore it rather than repainting
     // underneath the menu and risking a popdown.
-    if (gOpenMenu) return;
+    if (gOpenMenu) return TRUE;
     bool ctrl = (ev->state & GDK_CONTROL_MASK) != 0;
     // GTK's scroll deltas read as content motion: a positive delta_y scrolls
     // down, just as a discrete GDK_SCROLL_DOWN does (measured here: smooth
@@ -1518,7 +1549,7 @@ static void onScroll(GtkWidget*, GdkEventScroll* ev, gpointer) {
     double dy = (ev->direction == GDK_SCROLL_UP) ? -1 : (ev->direction == GDK_SCROLL_DOWN) ? 1 : 0;
     double dx = 0;
     if (ev->direction == GDK_SCROLL_SMOOTH) { dx = ev->delta_x; dy = ev->delta_y; }
-    if (dy == 0 && dx == 0) return;
+    if (dy == 0 && dx == 0) return TRUE;
     // A touchpad sends GDK_SCROLL_SMOOTH in many tiny deltas (one per frame); a
     // wheel sends one delta of +/-1 per notch. The old code accumulated smooth
     // deltas until |sum| >= 1 and then moved a fixed 120 px step, so a touchpad
@@ -1533,16 +1564,16 @@ static void onScroll(GtkWidget*, GdkEventScroll* ev, gpointer) {
             // meaningful amount, then zoom once, so a pinch does not jitter.
             static double sZoomAcc = 0;
             sZoomAcc += dy;
-            if (fabs(sZoomAcc) < 1.0) return;
+            if (fabs(sZoomAcc) < 1.0) return TRUE;
             double step = sZoomAcc > 0 ? 1 : -1;
             sZoomAcc = 0;
             zoomAt(step < 0 ? 1.1 : 1 / 1.1, devX(ev->x), devY(ev->y));
-            return;
+            return TRUE;
         }
         if (dy) { scrollByDy((int)(dy * stepPx + (dy > 0 ? 0.5 : -0.5))); markSave(); }
         if (dx) { gScrollX += (int)(dx * stepPx + (dx > 0 ? 0.5 : -0.5)); clampScroll(); }
         renderPage();
-        return;
+        return TRUE;
     }
     if (ctrl) {
         if (dy) zoomAt(dy < 0 ? 1.1 : 1 / 1.1, devX(ev->x), devY(ev->y));
@@ -1551,6 +1582,7 @@ static void onScroll(GtkWidget*, GdkEventScroll* ev, gpointer) {
         if (dx) { gScrollX += (int)(dx * stepPx); clampScroll(); }
         renderPage();
     }
+    return TRUE;
 }
 
 // ---- keyboard ----
@@ -1601,9 +1633,14 @@ static gboolean onKey(GtkWidget*, GdkEventKey* ev, gpointer) {
 static void makeArea(GtkWidget** out) {
     GtkWidget* area = gtk_drawing_area_new();
     gtk_widget_set_can_focus(area, TRUE);
+    // GDK_SMOOTH_SCROLL_MASK is not optional: without it the backends fold a
+    // touchpad's smooth deltas into coarse discrete events (X11 accumulates and
+    // synthesizes one UP/DOWN per whole unit of delta), which is the "does not
+    // respond to the touchpad" report - the proportional smooth path in
+    // onScroll never ran because smooth events never arrived.
     gtk_widget_add_events(area,
         GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK | GDK_POINTER_MOTION_MASK |
-        GDK_SCROLL_MASK | GDK_KEY_PRESS_MASK);
+        GDK_SCROLL_MASK | GDK_SMOOTH_SCROLL_MASK | GDK_KEY_PRESS_MASK);
     g_signal_connect(area, "draw", G_CALLBACK(onDraw), nullptr);
     g_signal_connect(area, "size-allocate", G_CALLBACK(onAreaSize), nullptr);
     g_signal_connect(area, "button-press-event", G_CALLBACK(onButtonPress), nullptr);
@@ -2124,7 +2161,8 @@ static void toggleThumbDrawer() {
     // the drawer answers the keyboard, so it takes key presses and can hold
     // the focus the keys arrive on
     gtk_widget_set_can_focus(gThumbArea, TRUE);
-    gtk_widget_add_events(gThumbArea, GDK_BUTTON_PRESS_MASK | GDK_SCROLL_MASK | GDK_KEY_PRESS_MASK);
+    gtk_widget_add_events(gThumbArea,
+        GDK_BUTTON_PRESS_MASK | GDK_SCROLL_MASK | GDK_SMOOTH_SCROLL_MASK | GDK_KEY_PRESS_MASK);
     g_signal_connect(gThumbArea, "draw", G_CALLBACK(onThumbDraw), nullptr);
     g_signal_connect(gThumbArea, "button-press-event", G_CALLBACK(onThumbPress), nullptr);
     g_signal_connect(gThumbArea, "scroll-event", G_CALLBACK(onThumbScrollEv), nullptr);
@@ -2280,12 +2318,14 @@ static void requestQuit() {
     if (!onWindowDelete(nullptr, nullptr, nullptr)) gtk_widget_destroy(gWin);
 }
 
-static void onWindowConfigure(GtkWidget*, GdkEventConfigure* ev, gpointer) {
+static gboolean onWindowConfigure(GtkWidget*, GdkEventConfigure* ev, gpointer) {
     gWinX = ev->x; gWinY = ev->y; gWinW = ev->width; gWinH = ev->height;
+    return FALSE;
 }
 
-static void onWindowState(GtkWidget*, GdkEventWindowState* ev, gpointer) {
+static gboolean onWindowState(GtkWidget*, GdkEventWindowState* ev, gpointer) {
     gWinMax = (ev->new_window_state & GDK_WINDOW_STATE_MAXIMIZED) != 0;
+    return FALSE;
 }
 
 // The saved frame comes back where the last session left it, bounded the way the
