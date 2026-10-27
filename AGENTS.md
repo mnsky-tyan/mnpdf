@@ -77,9 +77,13 @@ select-msg-test.ps1      a Windows suite driving the selection path
 README.md / README.txt   the user README; README.txt is the version contract
 README-linux.txt         the Linux reader's own readme, inside the Linux tarball
 PDFIUM-LICENSE.txt       the PDFium license, shipped in release ZIPs
-mnpdf.ico, mnpdf.rc, resource.h   the Windows icon resource
+mnpdf.ico, mnpdf.rc, resource.h   the Windows icon resource (brand card
+                         clipped to the shared corner radius)
 mnpdf.png               the Linux window/launcher artwork (512px PNG, the
-                         same mn-brand source as mnpdf.ico)
+                         same mn-brand source as mnpdf.ico, same clip)
+scripts/gen-icon.py     regenerates both from the mn-brand 2048 render: card
+                         crop, square fit, rounded alpha mask r = 43/277
+                         (mnbrand docs/icon-corner-radius.md)
 third_party/pdfium/        Windows PDFium (headers, import lib, DLL, license)
 third_party/pdfium-linux/  Linux PDFium (headers, libpdfium.so, license)
 ```
