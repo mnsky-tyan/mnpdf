@@ -5,9 +5,9 @@
 #
 # Both greps are anchored to the end of the version, so a partial match cannot
 # pass: kAppVersion = L"2.9.0-rc1" must not satisfy a v2.9.0 tag, and README.txt
-# saying "mnpdf v2.9.0-rc1" must not either. (The real README header reads
-# "mnpdf v2.9.0 - Windows x64 portable release", so its leg allows whitespace
-# or end-of-line after the version.)
+# saying "mnpdf v2.9.0-rc1" must not either. (The real README header continues
+# with " - Windows x64 portable release" after the version, so its leg allows
+# whitespace or end-of-line after the version.)
 #
 #   ./scripts/check-release-contract.sh [repo-root] [tag]
 #
