@@ -1101,7 +1101,7 @@ xvfb-run -a --server-args="-screen 0 1100x800x24" \
     APP=$!
     sleep 3.5
     # the switch already happened (MNPDF_OPEN_PATH fired at command time);
-    # scrolling now must BLIT the switch's fresh tiles - rasterizing again here
+    # scrolling now must BLIT the fresh tiles of the switch - rasterizing again here
     # would mean the cache is not caching. The discriminator below counts the
     # re-render the switch itself caused.
     xdotool mousemove 550 400; sleep 0.2
