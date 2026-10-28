@@ -25,7 +25,9 @@ src/linux/               the Linux port: one directory per concern
   doc.cpp                state, geometry, palette, page cache, selection,
                          marks, undo/redo (ported from main.cpp)
   render.cpp             the screen-sized back buffer, overlays, night mode,
-                         print raster (GTK/cairo replaces GDI)
+                         print raster; plus the page-tile cache (a scroll blits
+                         cached page bitmaps instead of rasterizing per event;
+                         4 tiles, 48 MB budget) (GTK/cairo replaces GDI)
   search.cpp             find: runSearch, nextMatch, match remapping
   sidecar.cpp            per-document sidecar, app.txt prefs, last.txt
   opendoc.cpp            open, save/bake, signature stamps, the JPEG guard
@@ -53,7 +55,10 @@ scripts/check-release-contract.sh  the tag/kAppVersion/README version contract,
                          run by release.yml and the Linux gate
 scripts/make-release-tarball.sh  the Linux release asset: mnpdf-linux-x64-<tag>.tar.gz
 scripts/install-menu-entry.sh    ships in the tarball: writes the desktop entry
-                         and icon so the unpacked reader is findable by name
+                         and icon so the unpacked reader is findable by name;
+                         the icon's theme name carries the PNG's content hash
+                         (a same-name pixel change is never re-read by a
+                         running desktop - measured)
 scripts/gate-common.ps1  shared Windows gate recipe (one pass/fail rule)
 scripts/gate-test.sh     the Windows gate's WSL entry point
 scripts/test-ci.ps1      the Windows/CI entry point (same nine suites)

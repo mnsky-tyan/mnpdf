@@ -1517,6 +1517,24 @@ static gboolean onMotion(GtkWidget* w, GdkEventMotion* ev, gpointer) {
     return TRUE;
 }
 
+// A scroll event does not render immediately: it marks the frame dirty and an
+// idle callback renders ONCE for the whole burst. A touchpad delivers dozens of
+// deltas between two frames; rendering each of them did the work of a whole
+// scroll every frame and was the "very laggy when i scroll" report. Everything
+// else (zoom, mark edits, tab switches) still renders synchronously - only the
+// scroll path, where the intermediate positions are never shown, is coalesced.
+static bool gRenderPending = false;
+static gboolean renderFrameIdle(gpointer) {
+    gRenderPending = false;
+    renderPage();
+    return G_SOURCE_REMOVE;
+}
+static void requestRender() {
+    if (gRenderPending) return;
+    gRenderPending = true;
+    g_idle_add_full(G_PRIORITY_DEFAULT_IDLE, renderFrameIdle, nullptr, nullptr);
+}
+
 static gboolean onScroll(GtkWidget* w, GdkEventScroll* ev, gpointer) {
     // MNPDF_TRACE_SCROLL: the Xvfb wheel probe reads this to tell "events never
     // arrive" from "the handler mis-steps" - the two need different fixes. The
@@ -1572,7 +1590,7 @@ static gboolean onScroll(GtkWidget* w, GdkEventScroll* ev, gpointer) {
         }
         if (dy) { scrollByDy((int)(dy * stepPx + (dy > 0 ? 0.5 : -0.5))); markSave(); }
         if (dx) { gScrollX += (int)(dx * stepPx + (dx > 0 ? 0.5 : -0.5)); clampScroll(); }
-        renderPage();
+        requestRender();
         return TRUE;
     }
     if (ctrl) {
@@ -1580,7 +1598,7 @@ static gboolean onScroll(GtkWidget* w, GdkEventScroll* ev, gpointer) {
     } else {
         if (dy) { scrollByDy((int)(dy * stepPx)); markSave(); }
         if (dx) { gScrollX += (int)(dx * stepPx); clampScroll(); }
-        renderPage();
+        requestRender();
     }
     return TRUE;
 }
@@ -1718,6 +1736,11 @@ static gboolean onShotIdle(gpointer) {
     const char* cmd = getenv("MNPDF_CMD");
     if (cmd && *cmd && !ranCommand) {
         ranCommand = true;
+        // MNPDF_OPEN_PATH: open this file as command 107 does (a menu Open
+        // without the chooser), so a probe can drive open-in-the-same-tab -
+        // the tile cache's most dangerous reuse case.
+        if (const char* op = getenv("MNPDF_OPEN_PATH"))
+            openPath(utf8ToWide(op));
         std::string list(cmd);
         size_t at = 0;
         while (at <= list.size()) {
@@ -2638,9 +2661,13 @@ int main(int argc, char** argv) {
     // It is resolved from /proc/self/exe, not the current directory: launched
     // from the menu entry the installer writes, the CWD is $HOME, so a
     // "mnpdf.png" file test there failed and the real artwork was skipped even
-    // though the installer had just put a themed icon named mnpdf in hicolor.
-    // The fallback is that theme name - which the installer populates - and
-    // only then the generic sheet, so a menu launch shows the brand artwork.
+    // though the installer had just put the artwork into hicolor. The fallback
+    // below is the literal theme name "mnpdf" - the name installs used to
+    // populate before the content-hashed ones (a same-name pixel change is
+    // never re-read by a running desktop, so the installer now writes only
+    // "mnpdf-<8 hex>" and retires the rest) - which means after a current
+    // install this branch lands on the generic sheet, and the artwork beside
+    // the binary above is what carries the brand.
     std::string exe;
     char lnk[PATH_MAX + 1] = {0};
     ssize_t n = readlink("/proc/self/exe", lnk, PATH_MAX);
@@ -2654,7 +2681,8 @@ int main(int argc, char** argv) {
         if (e) { g_error_free(e); e = nullptr; }
     } else {
         if (e) { g_error_free(e); e = nullptr; }
-        // The installer's own icon, then the theme's generic PDF sheet
+        // The literal theme name - the pre-hash installs populated it, a
+        // current install retires it - then the theme's generic PDF sheet
         GtkIconTheme* theme = gtk_icon_theme_get_default();
         if (gtk_icon_theme_has_icon(theme, "mnpdf"))
             gtk_window_set_icon_name(GTK_WINDOW(gWin), "mnpdf");

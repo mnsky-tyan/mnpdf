@@ -428,6 +428,7 @@ void commitSigPlacement(int page, double sx, double sy) {
     }
     gSigs.push_back(s);
     gSigPlacing.clear();
+    flushPageCache();
     markDirty();
     writeSidecarNow();
     renderPage();

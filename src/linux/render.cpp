@@ -4,20 +4,26 @@
 // (highlights, pins, matches, selection) are drawn with cairo over the buffer,
 // which gives antialiased pins and easy alpha the way GDI+ did.
 //
-// RAM discipline is the same as the Windows build: the only allocation that
-// scales with anything is one client-sized buffer, and the print path allocates
-// exactly one page raster at a time and frees it.
+// RAM discipline is the Windows build's, plus one bounded addition: the
+// client-sized frame buffer, the print path's single page raster, and a page
+// tile cache of at most 4 tiles whose total is capped at 48 MB (a page at
+// maximum zoom can be tens of megabytes, so the cache has a budget rather than
+// a plain slot count). The cache exists because re-rasterizing a page per
+// scroll event is what made a touchpad scroll lag.
 #include "doc.h"
 #include "ui.h"
 
 #include <cairo.h>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <string>
 #include <vector>
 
 // supplied by search.cpp / main.cpp
+static bool gTraceScroll = false, gTraceSeen = false;
 extern int ui_matchCount();
 extern int ui_matchActive();
 extern void ui_matchAt(int i, int* page, int* start, int* count);
@@ -26,6 +32,95 @@ extern void ui_matchAt(int i, int* page, int* start, int* count);
 static unsigned char* gBits = nullptr;
 static int gBufW = 0, gBufH = 0;
 static FPDF_BITMAP gPdfBitmap = nullptr;
+
+// ---- the page tile cache ----
+//
+// The stable document key: a tile must be reused only for the document whose
+// pixels it holds. The Doc* handle is not enough on its own (openPath closes the
+// old handle and stores the new one, but two documents with the same page size
+// in the same tab would otherwise collide on (page, size, rotation) with the
+// tab pointer alone), and the handle changes on every load while a stale tile
+// would not know. The key pairs the tab pointer with a counter that increments
+// on every flushPageCache() - the choke point every content change funnels
+// through (open, save/bake, page surgery, merge/split, signature placement,
+// tab switches) - so the key survives within one document and never survives
+// into the next.
+static uint64_t gDocEpoch = 1;
+static uint64_t docKeyFor(const void* tab) {
+    return ((uint64_t)(uintptr_t)tab << 32) ^ gDocEpoch;
+}
+void ui_tileEpochBump() { gDocEpoch++; }
+//
+// Scrolling used to rasterize every visible page from PDFium's vector data on
+// EVERY scroll event. A touchpad sends dozens of deltas a second and each
+// raster is a whole page of glyphs at device scale, so the reader lagged behind
+// the fingers - the "very laggy when I scroll" report. The page bitmap is now
+// rendered once per (page, size, rotation, document) into a tile, and a scroll
+// event only copies the visible rows of that tile into the frame. A tile is
+// re-rendered only when one of those four keys changes, or when it is evicted.
+//
+// RAM: up to TILE_SLOTS page-sized bitmaps, and a tile is only cached while the
+// total stays under kTileBudget bytes - a page at maximum zoom can be tens of
+// megabytes, and the reader must not trade scroll speed for an OOM. A page too
+// big for the budget is rendered straight into the frame (the old path).
+struct PageTile {
+    int page = -1;
+    int w = 0, h = 0, rot = 0;
+    uint64_t docKey = 0;                   // stable key for the current document
+    unsigned long tick = 0;
+    FPDF_BITMAP bmp = nullptr;
+};
+static const size_t kTileSlots = 4;
+static const size_t kTileBudget = 48u * 1024 * 1024;
+static PageTile gTiles[kTileSlots];
+static unsigned long gTileClock = 0;
+static size_t gTileBytes = 0;
+static bool gTraceTiles = false;
+
+static FPDF_BITMAP pageTile(int i, FPDF_PAGE p, int pw, int ph, int rot) {
+    for (size_t k = 0; k < kTileSlots; k++) {
+        PageTile& t = gTiles[k];
+        if (t.page == i && t.w == pw && t.h == ph && t.rot == rot && t.bmp
+            && t.docKey == docKeyFor((const void*)gViewTab)) {
+            t.tick = ++gTileClock;
+            return t.bmp;
+        }
+    }
+    // only cache a page whose bitmap fits the budget, and make room for it
+    size_t need = (size_t)pw * ph * 4;
+    if (need > kTileBudget) return nullptr;
+    while (gTileBytes + need > kTileBudget) {
+        PageTile* worst = nullptr;
+        for (size_t k = 0; k < kTileSlots; k++)
+            if (gTiles[k].bmp && (!worst || gTiles[k].tick < worst->tick)) worst = &gTiles[k];
+        if (!worst) break;
+        gTileBytes -= (size_t)worst->w * worst->h * 4;
+        FPDFBitmap_Destroy(worst->bmp);
+        worst->bmp = nullptr; worst->page = -1;
+    }
+    PageTile* slot = nullptr;
+    for (size_t k = 0; k < kTileSlots; k++)
+        if (!gTiles[k].bmp) { slot = &gTiles[k]; break; }
+    if (!slot) {
+        slot = &gTiles[0];
+        for (size_t k = 1; k < kTileSlots; k++)
+            if (gTiles[k].tick < slot->tick) slot = &gTiles[k];
+        gTileBytes -= (size_t)slot->w * slot->h * 4;
+        FPDFBitmap_Destroy(slot->bmp);
+        slot->bmp = nullptr;
+    }
+    slot->bmp = FPDFBitmap_CreateEx(pw, ph, FPDFBitmap_BGRA, nullptr, 0);
+    if (!slot->bmp) { slot->page = -1; return nullptr; }
+    FPDFBitmap_FillRect(slot->bmp, 0, 0, pw, ph, 0xFFFFFFFF);
+    FPDF_RenderPageBitmap(slot->bmp, p, 0, 0, pw, ph, rot, FPDF_ANNOT | FPDF_LCD_TEXT);
+    slot->page = i; slot->w = pw; slot->h = ph; slot->rot = rot;
+    slot->docKey = docKeyFor((const void*)gViewTab);
+    slot->tick = ++gTileClock;
+    gTileBytes += need;
+    if (gTraceTiles)
+        fprintf(stderr, "tile-render page=%d %dx%d (tiles %zu bytes)\n", i, pw, ph, gTileBytes);
+    return slot->bmp;
+}
 
 // The frame is a DEVICE-pixel buffer: the client area is reported in logical
 // pixels by GTK, and every geometry function works in device pixels, so the
@@ -130,6 +225,17 @@ static void drawEmptyHint(cairo_t* cr) {
 }
 
 void renderPage() {
+    // MNPDF_TRACE_SCROLL (the same flag the scroll handler logs) also times
+    // each frame and logs each page-tile render, which is how "events never
+    // arrive" is told apart from "the handler mis-steps" and "every event
+    // re-rasterizes the page".
+    if (!gTraceSeen) {
+        gTraceSeen = true;
+        gTraceTiles = gTraceScroll = getenv("MNPDF_TRACE_SCROLL") != nullptr;
+    }
+    struct timespec t0;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+
     ui_set_title("");                 // the platform recomputes the title and tab labels
     ensureBuffer();
     if (!gPdfBitmap || !gBits) return;
@@ -147,11 +253,27 @@ void renderPage() {
             if (!p) continue;
             int pw = pageWpx(i), vx = pageVx(i), vy = pageVy(i);
             int px0, py0, px1, py1;
-            // pdfium paints no page background, so a bare page would read as
-            // faint text on the letterbox. Paint the paper first.
-            if (clipPageRect(i, &px0, &py0, &px1, &py1))
+            if (!clipPageRect(i, &px0, &py0, &px1, &py1)) continue;
+            FPDF_BITMAP tile = pageTile(i, p, pw, pageHpx(i), gRot[i]);
+            if (tile) {
+                // copy only the visible rows of the cached page bitmap: no
+                // rasterization, no fill - the tile already holds the paper
+                const unsigned char* src = (const unsigned char*)FPDFBitmap_GetBuffer(tile);
+                int sstride = FPDFBitmap_GetStride(tile);
+                unsigned char* dst = gBits;
+                int dstride = gBufW * 4;
+                size_t n = (size_t)(px1 - px0) * 4;
+                for (int y = py0; y < py1; y++)
+                    memcpy(dst + (size_t)y * dstride + (size_t)px0 * 4,
+                           src + (size_t)(y - vy) * sstride + (size_t)(px0 - vx) * 4, n);
+            } else {
+                // no budget for a tile this size: pdfium paints no page
+                // background, so a bare page would read as faint text on the
+                // letterbox. Paint the paper first.
                 FPDFBitmap_FillRect(gPdfBitmap, px0, py0, px1 - px0, py1 - py0, 0xFFFFFFFF);
-            FPDF_RenderPageBitmap(gPdfBitmap, p, vx, vy, pw, ph, gRot[i], FPDF_ANNOT | FPDF_LCD_TEXT);
+                FPDF_RenderPageBitmap(gPdfBitmap, p, vx, vy, pw, ph, gRot[i],
+                                      FPDF_ANNOT | FPDF_LCD_TEXT);
+            }
         }
     }
 
@@ -194,6 +316,13 @@ void renderPage() {
     cairo_surface_destroy(surf);
 
     ui_invalidate();
+
+    if (gTraceScroll) {
+        struct timespec t1;
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        double ms = (t1.tv_sec - t0.tv_sec) * 1000.0 + (t1.tv_nsec - t0.tv_nsec) / 1e6;
+        fprintf(stderr, "render took %.2f ms (scrollY=%d)\n", ms, gScrollY);
+    }
 }
 
 // GTK's draw signal: blit the current back buffer.
