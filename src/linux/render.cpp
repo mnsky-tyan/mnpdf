@@ -42,8 +42,9 @@ static FPDF_BITMAP gPdfBitmap = nullptr;
 // tab pointer alone), and the handle changes on every load while a stale tile
 // would not know. The key pairs the tab pointer with a counter that increments
 // on every flushPageCache() - the choke point every content change funnels
-// through (open, save/bake, page surgery, merge/split, tab switches) - so the
-// key survives within one document and never survives into the next.
+// through (open, save/bake, page surgery, merge/split, signature placement,
+// tab switches) - so the key survives within one document and never survives
+// into the next.
 static uint64_t gDocEpoch = 1;
 static uint64_t docKeyFor(const void* tab) {
     return ((uint64_t)(uintptr_t)tab << 32) ^ gDocEpoch;

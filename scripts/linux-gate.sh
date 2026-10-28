@@ -1082,7 +1082,8 @@ PDFABS=$(cd "$REPO" && readlink -f tests/arc.pdf)
 # would be reused if both documents' pages happened to share a size - showing
 # the previous document's pixels. The tile key therefore carries a document
 # epoch that advances on every flushPageCache() (the choke point openPath,
-# save/bake, surgery, merge/split and tab switches all funnel through).
+# save/bake, surgery, merge/split, signature placement and tab switches all
+# funnel through).
 T=$STATE/tiles; mkdir -p "$T/cfg/mnpdf"
 cp "$PDFABS" "$T/second.pdf"
 # the probe: launch with arc.pdf (its page 0 rasterizes at startup, so a tile

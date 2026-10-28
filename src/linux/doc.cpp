@@ -273,7 +273,8 @@ void flushPageCache() {
     // the page TILES (render.cpp) must go with the pages: a tile is keyed on
     // (tab, epoch), and the epoch advances here - the choke point every content
     // change funnels through - so a tile can never outlive the document whose
-    // pixels it holds (open, save/bake, surgery, merge/split, tab switch).
+    // pixels it holds (open, save/bake, surgery, merge/split, signature
+    // placement, tab switch).
     ui_tileEpochBump();
     for (int k = 0; k < PCACHE; k++) {
         if (gPcText[k]) { FPDFText_ClosePage(gPcText[k]); gPcText[k] = nullptr; }

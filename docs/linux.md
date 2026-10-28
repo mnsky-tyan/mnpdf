@@ -477,6 +477,13 @@ about the update check sets it so its runs stay off the network. It skips only
 the launch check - a suite that clicks "Check for updates" gets the real
 answer, because a click is the reader asking.
 
+`MNPDF_OPEN_PATH` is the sixth, and it runs inside the `MNPDF_CMD` turn:
+before the commanded ids fire, the named file is opened in the current tab the
+way command 107 (the menu's Open) does, with no chooser. It is the seam the
+tile-cache probe drives to switch a tab to a byte-identical second document -
+the one reuse case a page tile keyed without the document's identity would get
+wrong.
+
 ## Device scale and input
 
 The frame is a device-pixel buffer: the drawing area's allocation is logical, so
