@@ -49,8 +49,8 @@ tests/arc-annot.pdf      a fixture carrying annotations
 tests/sig-sample.jpg     a real signature JPEG, used by the refusals test
 tests/lib.ps1            shared Windows suite harness (window lookup, launch)
 tests/watchdog.ps1        Windows suite watchdog
-scripts/linux-gate.sh    the Linux gate: builds, runs the headless engine suite,
-                         then drives the real binary on Xvfb
+scripts/linux-gate.sh    the Linux gate: runs the headless engine suite, then
+                         drives the built binary on Xvfb
 scripts/check-release-contract.sh  the tag/kAppVersion/README version contract,
                          run by release.yml and the Linux gate
 scripts/make-release-tarball.sh  the Linux release asset: mnpdf-linux-x64-<tag>.tar.gz

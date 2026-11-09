@@ -241,12 +241,13 @@ powershell -ExecutionPolicy Bypass -File scripts\test-ci.ps1
 update flow itself - what the dialog answers, a full install against a scratch
 copy, and an update that fails with a reason.
 
-On Linux, `scripts/linux-gate.sh` builds the same source and drives the real
-binary on a virtual X display. It checks rendered pixels, sidecar and
-preference files, drawers, scale handling, shared-window behaviour and the
-update check:
+On Linux, `./build-linux.sh` builds the reader and runs the headless engine
+suite, then `scripts/linux-gate.sh` drives the built binary on a virtual X
+display. It checks rendered pixels, sidecar and preference files, drawers,
+scale handling, shared-window behaviour and the update check:
 
 ```
+./build-linux.sh
 bash scripts/linux-gate.sh
 ```
 
@@ -269,7 +270,8 @@ test-release.ps1      release contract: version agreement with README.txt, the
                       ZIP file list, the update dialog, a full self-install
 scripts/gate-test.sh  WSL entry point: build and all nine suites
 scripts/test-ci.ps1   Windows CI entry point: the same build and suites
-scripts/linux-gate.sh Linux CI entry point: build, engine suite, Xvfb gate
+scripts/linux-gate.sh Linux CI entry point: build first (./build-linux.sh),
+                      then engine suite, then Xvfb gate
 scripts/make-release-zip.ps1  the release ZIP: it refuses to build when
                       kAppVersion, README.txt and the archive name disagree
 scripts/make-release-tarball.sh  the Linux tarball, with the binary, PDFium,

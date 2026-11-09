@@ -71,3 +71,21 @@ jobs:
 
       - name: Run the Linux gate
         run: ./scripts/linux-gate.sh
+        env:
+          MNPDF_KEEP_STATE: "1"
+
+      # The gate removes its scratch tree on success; MNPDF_KEEP_STATE makes
+      # it keep the pixel shots, per-app logs and state files of a failing
+      # (or cancelled) run so this upload can hand them to the reader of a red
+      # check - the same evidence rule the windows-suite job follows above. A
+      # green run cleaned up after itself and finds nothing to upload.
+      - name: Upload the gate state on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-gate-state
+          path: |
+            /tmp/mnpdf-linux-gate.*
+            /tmp/mnpdf-gate-core.*
+          if-no-files-found: ignore
+          retention-days: 7

@@ -17,7 +17,15 @@ cd "$(dirname "$0")/.."
 PDF="${1:-tests/arc.pdf}"
 BIN=./build-linux/mnpdf
 STATE=$(mktemp -d /tmp/mnpdf-linux-gate.XXXXXX)
-trap 'rm -rf "$STATE"' EXIT
+gate_cleanup() {
+    local s=$?
+    if [ -n "${MNPDF_KEEP_STATE:-}" ] && [ "$s" -ne 0 ]; then
+        echo "gate: keeping state at $STATE (MNPDF_KEEP_STATE is set)" >&2
+    else
+        rm -rf "$STATE"
+    fi
+}
+trap gate_cleanup EXIT
 OUT=$STATE/shot.png
 PASS=0; FAIL=0
 ok()  { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
@@ -1371,5 +1379,4 @@ done
 
 echo
 printf 'pass=%d fail=%d\n' "$PASS" "$FAIL"
-rm -rf "$STATE"
 [ "$FAIL" = "0" ]
