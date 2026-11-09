@@ -92,8 +92,8 @@ paints the composited frame and draws its own scrollbars.
 `src/linux/sidecar.cpp` writes the same bytes the Windows app writes:
 `fmt=`, `zoom=`, `fit=`, `page=`, `hl=`, `rot=`, `dl=`, `pin=`, `sig=` and the
 same `app.txt` keys. The escape tables match (`\n` in pin text, `\c` in stamp
-paths). The sidecar filename is the same FNV-1a hash of the UTF-16 path bytes,
-so even a shared config directory resolves to the same file on both platforms.
+paths). For the sidecar path requirements, see
+[Where things live](../README.md#where-things-live).
 
 One divergence is deliberate and recorded rather than hidden: after an undone
 pin deletion the Linux engine puts the pin back in its original slot, where the

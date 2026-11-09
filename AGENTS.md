@@ -49,8 +49,8 @@ tests/arc-annot.pdf      a fixture carrying annotations
 tests/sig-sample.jpg     a real signature JPEG, used by the refusals test
 tests/lib.ps1            shared Windows suite harness (window lookup, launch)
 tests/watchdog.ps1        Windows suite watchdog
-scripts/linux-gate.sh    the Linux gate: builds, runs the headless engine suite,
-                         then drives the real binary on Xvfb
+scripts/linux-gate.sh    the Linux gate: runs the headless engine suite, then
+                         drives the built binary on Xvfb
 scripts/check-release-contract.sh  the tag/kAppVersion/README version contract,
                          run by release.yml and the Linux gate
 scripts/make-release-tarball.sh  the Linux release asset: mnpdf-linux-x64-<tag>.tar.gz
@@ -68,9 +68,10 @@ build.bat                the Windows build recipe
 build-linux.sh           the Linux build recipe (cmake, plus the PDFium probe
                          and the engine suite first)
 CMakeLists.txt           the Linux build, including the mnpdf-core-test target
-.github/workflows/ci.yml the Windows CI (test-ci.ps1 on a Windows runner)
+.github/workflows/ci.yml both platform gates (see README.md, Tests)
 .github/workflows/release.yml the release pipeline: both platforms built from
                          a v* tag, both assets asserted, then published
+.github/dependabot.yml   weekly GitHub Actions dependency updates
 docs/linux.md            the Linux port: decisions, format contract, tests,
                          measured resource cost
 docs/reviews/            codebase review reports (dated per pass)
@@ -120,8 +121,7 @@ Windows `%APPDATA%\mnpdf`, with byte-identical file formats:
 | `last.txt` | the document a plain launch reopens |
 | `instance.lock` | the lock file that names the window allowed to write `app.txt` and `last.txt` |
 
-The sidecar name is the same FNV-1a hash of the document path the Windows app
-uses, so a shared config directory lines both readers up on the same document.
+For cross-platform path requirements, see README.md, "Where things live".
 
 ## The release gate is the pipeline gate
 
