@@ -66,5 +66,8 @@ jobs:
             libgtk-3-dev libcurl4-openssl-dev \
             xvfb x11-utils python3-pil desktop-file-utils xdotool
 
-      - name: Build and run the Linux gate
+      - name: Build and run the engine suite
+        run: ./build-linux.sh
+
+      - name: Run the Linux gate
         run: ./scripts/linux-gate.sh
