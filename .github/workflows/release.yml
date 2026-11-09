@@ -145,12 +145,12 @@ jobs:
         with:
           ref: ${{ github.event.inputs.tag || github.ref_name }}
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: windows-zip
           path: dist
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: linux-tar
           path: dist
