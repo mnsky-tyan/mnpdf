@@ -83,7 +83,7 @@ jobs:
         shell: pwsh
         run: ./scripts/make-release-zip.ps1 -OutDir build
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows-zip
           path: build/mnpdf-win-x64-*.zip
@@ -130,7 +130,7 @@ jobs:
           TAG: ${{ needs.contract.outputs.tag }}
         run: ./scripts/make-release-tarball.sh "$TAG"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux-tar
           path: build-linux/mnpdf-linux-x64-*.tar.gz
