@@ -32,12 +32,12 @@ jobs:
   # kAppVersion and README.txt must agree, or a release is published whose
   # updater asks for a ZIP whose name nobody built.
   contract:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
       tag: ${{ steps.check.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.inputs.tag || github.ref_name }}
       - name: The tag, kAppVersion and README.txt must agree
@@ -60,7 +60,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.inputs.tag || github.ref_name }}
 
@@ -83,7 +83,7 @@ jobs:
         shell: pwsh
         run: ./scripts/make-release-zip.ps1 -OutDir build
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows-zip
           path: build/mnpdf-win-x64-*.zip
@@ -91,10 +91,10 @@ jobs:
 
   linux:
     needs: contract
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.inputs.tag || github.ref_name }}
 
@@ -130,7 +130,7 @@ jobs:
           TAG: ${{ needs.contract.outputs.tag }}
         run: ./scripts/make-release-tarball.sh "$TAG"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux-tar
           path: build-linux/mnpdf-linux-x64-*.tar.gz
@@ -138,19 +138,19 @@ jobs:
 
   publish:
     needs: [contract, windows, linux]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.inputs.tag || github.ref_name }}
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: windows-zip
           path: dist
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: linux-tar
           path: dist
