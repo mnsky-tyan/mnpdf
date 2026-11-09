@@ -32,7 +32,7 @@ jobs:
   # kAppVersion and README.txt must agree, or a release is published whose
   # updater asks for a ZIP whose name nobody built.
   contract:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
       tag: ${{ steps.check.outputs.tag }}
@@ -91,7 +91,7 @@ jobs:
 
   linux:
     needs: contract
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
@@ -138,7 +138,7 @@ jobs:
 
   publish:
     needs: [contract, windows, linux]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
