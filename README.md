@@ -231,7 +231,7 @@ On a plain Windows machine - and in CI - there is no `wslpath`, so
 the way. Both runners share one roster (`scripts/suites.txt`), one build recipe
 and one pass/fail rule (`scripts/gate-common.ps1`), so a suite cannot pass in
 WSL and behave differently in CI. It is what `.github/workflows/ci.yml` runs on
-a Windows runner, so every push and pull request carries a real check.
+a Windows runner.
 
 ```
 powershell -ExecutionPolicy Bypass -File scripts\test-ci.ps1
@@ -252,9 +252,9 @@ scale handling, shared-window behaviour and the update check:
 bash scripts/linux-gate.sh
 ```
 
-GitHub Actions runs both platform gates on every push to `main` and every pull
-request. The release workflow runs them again from the tag before publishing
-either asset.
+GitHub Actions runs both platform gates on pushes and pull requests to `main`.
+The release workflow runs them again from the tag before publishing either
+asset.
 
 ## Repository layout
 
@@ -271,13 +271,13 @@ test-release.ps1      release contract: version agreement with README.txt, the
                       ZIP file list, the update dialog, a full self-install
 scripts/gate-test.sh  WSL entry point: build and all nine suites
 scripts/test-ci.ps1   Windows CI entry point: the same build and suites
-scripts/linux-gate.sh Linux CI entry point: build first (./build-linux.sh),
-                      then engine suite, then Xvfb gate
+build-linux.sh + scripts/linux-gate.sh
+                      Linux CI: build, engine suite, Xvfb gate
 scripts/make-release-zip.ps1  the release ZIP: it refuses to build when
                       kAppVersion, README.txt and the archive name disagree
 scripts/make-release-tarball.sh  the Linux tarball, with the binary, PDFium,
                       launcher icon and menu installer
-.github/workflows/ci.yml  runs the Windows and Linux gates on every push/PR
+.github/workflows/ci.yml  runs both platform gates (see Tests)
 .github/workflows/release.yml  publishes both platform assets from a v* tag
 ```
 
@@ -298,7 +298,7 @@ compare against itself, because it derives the archive name from `kAppVersion`;
 instead it checks that the app's own update-URL template builds that same
 `mnpdf-win-x64-<tag>.zip` name, and refuses if the app's pattern was renamed.
 
-A release is a tag plus a ZIP built from exactly four files: `mnpdf.exe`,
+The Windows release asset is a ZIP built from exactly four files: `mnpdf.exe`,
 `pdfium.dll`, `README.txt` and `PDFIUM-LICENSE.txt` - which is the ZIP
 `scripts/make-release-zip.ps1` assembles.
 
@@ -306,6 +306,8 @@ A release is a tag plus a ZIP built from exactly four files: `mnpdf.exe`,
 through both update seams (`MNPDF_UPDATE_ZIP` and `MNPDF_UPDATE_DIR`, in the
 table above) against a scratch copy, so the whole flow runs with no network
 and without the machine's own reader as its subject.
+
+For publishing both platform assets, see [Releasing](docs/linux.md#releasing).
 
 ## License
 

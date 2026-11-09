@@ -68,8 +68,7 @@ build.bat                the Windows build recipe
 build-linux.sh           the Linux build recipe (cmake, plus the PDFium probe
                          and the engine suite first)
 CMakeLists.txt           the Linux build, including the mnpdf-core-test target
-.github/workflows/ci.yml both platform gates on every push and pull request
-                         (test-ci.ps1 on Windows, linux-gate.sh on Linux)
+.github/workflows/ci.yml both platform gates (see README.md, Tests)
 .github/workflows/release.yml the release pipeline: both platforms built from
                          a v* tag, both assets asserted, then published
 .github/dependabot.yml   weekly GitHub Actions dependency updates
@@ -122,8 +121,7 @@ Windows `%APPDATA%\mnpdf`, with byte-identical file formats:
 | `last.txt` | the document a plain launch reopens |
 | `instance.lock` | the lock file that names the window allowed to write `app.txt` and `last.txt` |
 
-The sidecar name is the same FNV-1a hash of the document path the Windows app
-uses, so a shared config directory lines both readers up on the same document.
+For cross-platform path requirements, see README.md, "Where things live".
 
 ## The release gate is the pipeline gate
 
