@@ -77,10 +77,8 @@ jobs:
       # The gate removes its scratch tree on success; MNPDF_KEEP_STATE makes
       # it keep the pixel shots, per-app logs and state files of a failing run
       # so this upload can hand them to the reader of a red check - the same
-      # failing-run evidence rule the windows-suite job follows above. A
-      # cancelled run keeps nothing: the cleanup runs from an EXIT trap, which
-      # a signal does not reliably trigger. A green run cleaned up after
-      # itself and finds nothing to upload.
+      # failing-run evidence rule the windows-suite job follows above.
+      # A green run cleaned up after itself and finds nothing to upload.
       - name: Upload the gate state on failure
         if: always()
         uses: actions/upload-artifact@v4

@@ -138,9 +138,10 @@ including after quitting while minimised.
 ## Where things live
 
 Windows keeps everything under `%APPDATA%\mnpdf`; Linux uses
-`${XDG_CONFIG_HOME:-~/.config}/mnpdf`. The files have the same format, and the
-document sidecar has the same path hash, so a shared config directory lines
-the two readers up on the same document.
+`${XDG_CONFIG_HOME:-~/.config}/mnpdf`. Both readers use the same file formats
+and sidecar hash algorithm. Shared per-document state requires identical
+document path strings. Sharing the config directory alone does not translate
+`C:\Docs\a.pdf` to `/mnt/c/Docs/a.pdf` or transfer marks between those paths.
 
 | File | Contents |
 |---|---|
