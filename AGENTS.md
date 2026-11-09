@@ -69,7 +69,7 @@ build-linux.sh           the Linux build recipe (cmake, plus the PDFium probe
                          and the engine suite first)
 CMakeLists.txt           the Linux build, including the mnpdf-core-test target
 .github/workflows/ci.yml both platform gates (see README.md, Tests)
-.github/workflows/release.yml the release pipeline: both platforms built from
+.github/workflows/release.yml the release workflow: both platforms built from
                          a v* tag, both assets asserted, then published
 .github/dependabot.yml   weekly GitHub Actions dependency updates
 docs/linux.md            the Linux port: decisions, format contract, tests,
@@ -123,19 +123,19 @@ Windows `%APPDATA%\mnpdf`, with byte-identical file formats:
 
 For cross-platform path requirements, see README.md, "Where things live".
 
-## The release gate is the pipeline gate
+## Checks before main
 
-Anything that can change what ships goes through `no-mistakes` before it reaches
-`main` - code, scripts, packaging, workflows, docs that describe a shipped
-behaviour, and **the version bump itself**. A bump is not bookkeeping: it is the
-commit that delivers the release, and the release workflow's contract job is a
-grep, not a reviewer.
+**`no-mistakes` and agent-run review/landing pipelines are banned.** Work
+directly with Git, local checks and GitHub. Do not invoke `no-mistakes`, add it
+back, or make any review/landing pipeline a prerequisite for merge.
 
-The one exception is a commit that cannot affect a build at all - a rule or
-history note in this file, nothing else in the tree. It still states that it is
-docs-only in its message. (The commit that introduced this paragraph was exactly
-such a commit, and pushed directly; if a docs change touches anything a reader or
-a release depends on, it is not the exception.)
+Anything that can change what ships must be checked before it reaches `main` -
+code, scripts, packaging, workflows, docs that describe a shipped behaviour, and
+**the version bump itself**. Review the diff, run the local checks appropriate to
+the platforms touched, push a branch, and require GitHub Actions to pass on the
+exact head before merging. The version bump is not bookkeeping: it is the commit
+that delivers the release, and the release workflow's contract job is a grep,
+not a reviewer.
 
 Six commits once went straight to `main` with only local suites and the release
 workflow's build jobs behind them (the icon switch, the menu-entry installer, the
@@ -148,10 +148,10 @@ brand artwork), an unquoted `Exec=`, a `--remove` that left files behind and
 lied about it, a gate that counted a missing `curl` as a pass, and a recipe in
 the docs pinned to a tag that already existed.
 
-**simplified:** Everything shipped to users now gets reviewed by the pipeline
-first, even the commit that only changes the version number. That rule exists
-because skipping it once let eight bugs into the code that builds the releases -
-found later by review, fixed in v2.9.1.
+**simplified:** Every shipped change gets direct local and CI checks before
+merge, including the version bump. This matters because eight defects once
+entered the release plumbing through unexamined changes and were fixed in
+v2.9.1.
 
 ```
 bash scripts/linux-gate.sh     # the real binary on Xvfb: pixels + state files
