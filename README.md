@@ -2,8 +2,8 @@
 
 [![ci](https://github.com/mnsky-tyan/mnpdf/actions/workflows/ci.yml/badge.svg)](https://github.com/mnsky-tyan/mnpdf/actions/workflows/ci.yml)
 
-A small, fast, native PDF reader for Windows. One executable plus PDFium, no
-installer, no runtime, no framework.
+A small, fast, native PDF reader for Windows and Linux. One executable plus
+PDFium, no installer, no runtime, no framework.
 
 It reads, searches and marks up PDFs without leaving marks on the page: text
 you select stays selectable, highlights and pins can be undone and re-done
@@ -11,20 +11,33 @@ individually, and the file you opened is never rewritten unless you ask.
 
 ## Download
 
-Portable ZIP: the [**latest release**](https://github.com/mnsky-tyan/mnpdf/releases/latest)
-(`mnpdf.exe`, `pdfium.dll`, `README.txt`, `PDFIUM-LICENSE.txt`).
+The [**latest release**](https://github.com/mnsky-tyan/mnpdf/releases/latest)
+carries both portable builds:
 
-Extract it anywhere and run `mnpdf.exe`. Keep `pdfium.dll` next to the
-executable - the two are a matched pair. There is no installer, nothing is
-registered, and the folder can be copied to another machine or a USB stick
-as-is.
+* **Windows x64:** `mnpdf-win-x64-vX.Y.Z.zip`
+  (`mnpdf.exe`, `pdfium.dll`, `README.txt`, `PDFIUM-LICENSE.txt`)
+* **Linux x64:** `mnpdf-linux-x64-vX.Y.Z.tar.gz`
+  (`mnpdf`, `libpdfium.so`, `README-linux.txt`, `PDFIUM-LICENSE.txt`, the
+  launcher icon and `install-menu-entry.sh`)
 
-The app tells you when a newer release exists (at most one check per hour),
-and the check button then becomes an update button: it downloads the official
-ZIP, replaces `mnpdf.exe` and `pdfium.dll` in the folder the app runs from and
-restarts. An unsaved document blocks the swap until you save it, and a failed
-download changes nothing. Extracting the new ZIP over the old folder by hand
-works exactly as before.
+On Windows, extract the ZIP anywhere and run `mnpdf.exe`. Keep `pdfium.dll`
+next to the executable - the two are a matched pair. There is no installer,
+nothing is registered, and the folder can be copied to another machine or a
+USB stick as-is.
+
+On Linux, unpack the tarball and run `./mnpdf` from inside the versioned
+directory. It needs GTK3 and libcurl, both normally already installed. Run
+`./install-menu-entry.sh` once to add the unpacked copy to the application
+menu and the PDF Open With list. See `README-linux.txt` for scale overrides,
+shared-state details and the remaining platform differences.
+
+The Windows app tells you when a newer release exists (at most one check per
+hour), and the check button then becomes an update button: it downloads the
+official ZIP, replaces `mnpdf.exe` and `pdfium.dll` in the folder the app runs
+from and restarts. An unsaved document blocks the swap until you save it, and
+a failed download changes nothing. Extracting the new ZIP over the old folder
+by hand works exactly as before. The Linux build checks for a newer Linux
+archive and reports it; it does not install the update yet.
 
 ## What it does
 
@@ -72,7 +85,7 @@ sidecar until then, exactly like a highlight.
 replaced - the one you had a moment ago - so opening the wrong file by
 mistake costs one click to undo. It spans this session only.
 
-**Printing.** `Ctrl+P` opens the standard Windows print dialog and prints
+**Printing.** `Ctrl+P` opens the platform's standard print dialog and prints
 clean pages. Annotations, highlights and pins stay in the file and on screen
 and are simply not printed.
 
@@ -89,12 +102,12 @@ strip away for a taller view of the document, and **Show tab strip** brings it
 back; the choice is remembered, and `Ctrl+T`, `Ctrl+W` and `Ctrl+Tab` still
 move between tabs while the strip is hidden.
 
-**Several windows.** Run `mnpdf.exe` twice and you get two independent
-windows, each reading its own document, so two PDFs can sit side by side. The
-window that started first owns the remembered settings and the document a
-plain launch reopens; later windows read those shared settings but start empty
-and write none of them. A plain second launch starts empty rather than
-reopening what the first window already has.
+**Several windows.** Run the app twice and you get two independent windows,
+each reading its own document, so two PDFs can sit side by side. The window
+that started first owns the remembered settings and the document a plain
+launch reopens; later windows read those shared settings but start empty and
+write none of them. A plain second launch starts empty rather than reopening
+what the first window already has.
 
 **The window.** Hide the titlebar and the caption is gone for good - it does
 not come back when another window takes focus. The window can still be moved
@@ -124,7 +137,10 @@ including after quitting while minimised.
 
 ## Where things live
 
-Everything the app remembers is under `%APPDATA%\mnpdf`:
+Windows keeps everything under `%APPDATA%\mnpdf`; Linux uses
+`${XDG_CONFIG_HOME:-~/.config}/mnpdf`. The files have the same format, and the
+document sidecar has the same path hash, so a shared config directory lines
+the two readers up on the same document.
 
 | File | Contents |
 |---|---|
@@ -141,7 +157,7 @@ recoverable while autosave is on.
 
 ## Building
 
-Windows, MSVC and PDFium. `build.bat` compiles `src/main.cpp` against
+**Windows:** MSVC and PDFium. `build.bat` compiles `src/main.cpp` against
 `third_party/pdfium` (headers, the import library and the runtime DLL) and
 links the icon from `mnpdf.rc`:
 
@@ -151,6 +167,17 @@ build.bat
 
 It needs the Visual Studio developer command prompt paths, which the script
 sets up itself with `VsDevCmd.bat -arch=x64`. Output lands in `build/`.
+
+**Linux:** cmake, g++, GTK3 and libcurl development headers. PDFium is
+vendored under `third_party/pdfium-linux`:
+
+```
+./build-linux.sh
+```
+
+Output lands in `build-linux/`. The script first renders the test PDF through
+PDFium, then builds the reader and runs the headless engine suite. See
+`docs/linux.md` for the port's design and file-format contract.
 
 ## Tests
 
@@ -214,6 +241,19 @@ powershell -ExecutionPolicy Bypass -File scripts\test-ci.ps1
 update flow itself - what the dialog answers, a full install against a scratch
 copy, and an update that fails with a reason.
 
+On Linux, `scripts/linux-gate.sh` builds the same source and drives the real
+binary on a virtual X display. It checks rendered pixels, sidecar and
+preference files, drawers, scale handling, shared-window behaviour and the
+update check:
+
+```
+bash scripts/linux-gate.sh
+```
+
+GitHub Actions runs both platform gates on every push to `main` and every pull
+request. The release workflow runs them again from the tag before publishing
+either asset.
+
 ## Repository layout
 
 ```
@@ -228,10 +268,14 @@ test-*.ps1            feature suites (select-msg, features, suite2,
 test-release.ps1      release contract: version agreement with README.txt, the
                       ZIP file list, the update dialog, a full self-install
 scripts/gate-test.sh  WSL entry point: build and all nine suites
-scripts/test-ci.ps1   Windows/CI entry point: the same build and suites
+scripts/test-ci.ps1   Windows CI entry point: the same build and suites
+scripts/linux-gate.sh Linux CI entry point: build, engine suite, Xvfb gate
 scripts/make-release-zip.ps1  the release ZIP: it refuses to build when
                       kAppVersion, README.txt and the archive name disagree
-.github/workflows/ci.yml  runs test-ci.ps1 on a Windows runner
+scripts/make-release-tarball.sh  the Linux tarball, with the binary, PDFium,
+                      launcher icon and menu installer
+.github/workflows/ci.yml  runs the Windows and Linux gates on every push/PR
+.github/workflows/release.yml  publishes both platform assets from a v* tag
 ```
 
 ## Release contract
@@ -264,4 +308,4 @@ and without the machine's own reader as its subject.
 
 PDFium is used under the BSD-3-Clause license; see
 [`PDFIUM-LICENSE.txt`](PDFIUM-LICENSE.txt) in this repository, which
-is also shipped inside every release ZIP.
+is also shipped inside both release archives.

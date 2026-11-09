@@ -49,3 +49,22 @@ jobs:
             ${{ runner.temp }}\mnpdf-ci-*\**
           if-no-files-found: ignore
           retention-days: 7
+
+  linux-suite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # build-linux.sh renders the test document through the vendored PDFium,
+      # builds the reader and runs the headless engine suite. The gate then
+      # drives the real binary on Xvfb and verifies its pixels and state files.
+      - name: Install the Linux runtime and test dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libgtk-3-dev libcurl4-openssl-dev \
+            xvfb x11-utils python3-pil desktop-file-utils xdotool
+
+      - name: Build and run the Linux gate
+        run: ./scripts/linux-gate.sh
